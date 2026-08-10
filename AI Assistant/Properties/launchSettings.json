@@ -1,0 +1,10 @@
+{
+  "profiles": {
+    "AI Assistant": {
+      "commandName": "Project"
+    },
+    "Container (Dockerfile)": {
+      "commandName": "Docker"
+    }
+  }
+}
