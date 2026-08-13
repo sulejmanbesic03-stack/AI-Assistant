@@ -10,28 +10,33 @@ namespace AI_Assistant.Tools
         private readonly List<string> allowedRoots;
 
 
-        public FileSystemTools(List<string> allowedRoots)
+        public FileSystemTools(
+            List<string> allowedRoots
+        )
         {
-            this.allowedRoots = allowedRoots
-                .Select(path =>
-                    Path.GetFullPath(path)
-                        .TrimEnd(
-                            Path.DirectorySeparatorChar,
-                            Path.AltDirectorySeparatorChar
-                        )
-                    + Path.DirectorySeparatorChar
-                )
-                .ToList();
+            this.allowedRoots =
+                allowedRoots
+                    .Select(path =>
+                        Path.GetFullPath(path)
+                            .TrimEnd(
+                                Path.DirectorySeparatorChar,
+                                Path.AltDirectorySeparatorChar
+                            )
+                    )
+                    .Distinct(
+                        StringComparer.OrdinalIgnoreCase
+                    )
+                    .ToList();
         }
 
-        public string ListAllowedRoots()
-        {
-            return string.Join(
-                "\n",
-                allowedRoots
-            );
-        }
-        private string GetSafePath(string path)
+
+        // ============================================
+        // SAFE PATH
+        // ============================================
+
+        private string GetSafePath(
+            string path
+        )
         {
             string fullPath =
                 Path.GetFullPath(path)
@@ -39,6 +44,7 @@ namespace AI_Assistant.Tools
                         Path.DirectorySeparatorChar,
                         Path.AltDirectorySeparatorChar
                     );
+
 
             bool isAllowed =
                 allowedRoots.Any(root =>
@@ -49,19 +55,23 @@ namespace AI_Assistant.Tools
                             Path.AltDirectorySeparatorChar
                         );
 
-                    bool isRootItself =
+
+                    bool isRoot =
                         fullPath.Equals(
                             cleanRoot,
                             StringComparison.OrdinalIgnoreCase
                         );
 
-                    bool isInsideRoot =
+
+                    bool isInside =
                         fullPath.StartsWith(
-                            cleanRoot + Path.DirectorySeparatorChar,
+                            cleanRoot +
+                            Path.DirectorySeparatorChar,
                             StringComparison.OrdinalIgnoreCase
                         );
 
-                    return isRootItself || isInsideRoot;
+
+                    return isRoot || isInside;
                 });
 
 
@@ -78,24 +88,49 @@ namespace AI_Assistant.Tools
 
 
         // ============================================
+        // ALLOWED ROOTS
+        // ============================================
+
+        public string ListAllowedRoots()
+        {
+            if (allowedRoots.Count == 0)
+            {
+                return
+                    "Nema dozvoljenih filesystem lokacija.";
+            }
+
+
+            return string.Join(
+                "\n",
+                allowedRoots
+            );
+        }
+
+
+        // ============================================
         // CREATE FOLDER
         // ============================================
 
-        public string CreateFolder(string folderPath)
+        public string CreateFolder(
+            string folderPath
+        )
         {
             string fullPath =
                 GetSafePath(folderPath);
 
 
-            Directory.CreateDirectory(fullPath);
+            Directory.CreateDirectory(
+                fullPath
+            );
 
 
-            return $"Folder napravljen: {fullPath}";
+            return
+                $"Folder napravljen: {fullPath}";
         }
 
 
         // ============================================
-        // CREATE FILE
+        // CREATE / OVERWRITE FILE
         // ============================================
 
         public string CreateFile(
@@ -108,12 +143,20 @@ namespace AI_Assistant.Tools
 
 
             string? directory =
-                Path.GetDirectoryName(fullPath);
+                Path.GetDirectoryName(
+                    fullPath
+                );
 
 
-            if (!string.IsNullOrWhiteSpace(directory))
+            if (
+                !string.IsNullOrWhiteSpace(
+                    directory
+                )
+            )
             {
-                Directory.CreateDirectory(directory);
+                Directory.CreateDirectory(
+                    directory
+                );
             }
 
 
@@ -123,15 +166,18 @@ namespace AI_Assistant.Tools
             );
 
 
-            return $"File napravljen: {fullPath}";
+            return
+                $"File napravljen: {fullPath}";
         }
 
 
         // ============================================
-        // READ FILE
+        // READ WHOLE FILE
         // ============================================
 
-        public string ReadFile(string filePath)
+        public string ReadFile(
+            string filePath
+        )
         {
             string fullPath =
                 GetSafePath(filePath);
@@ -139,11 +185,100 @@ namespace AI_Assistant.Tools
 
             if (!File.Exists(fullPath))
             {
-                return $"File ne postoji: {fullPath}";
+                return
+                    $"File ne postoji: {fullPath}";
             }
 
 
-            return File.ReadAllText(fullPath);
+            return
+                File.ReadAllText(
+                    fullPath
+                );
+        }
+
+
+        // ============================================
+        // READ FILE SECTION
+        // ============================================
+
+        public string ReadFileSection(
+            string filePath,
+            int startLine,
+            int endLine
+        )
+        {
+            string fullPath =
+                GetSafePath(filePath);
+
+
+            if (!File.Exists(fullPath))
+            {
+                return
+                    $"File ne postoji: {fullPath}";
+            }
+
+
+            if (startLine < 1)
+            {
+                startLine = 1;
+            }
+
+
+            if (endLine < startLine)
+            {
+                return
+                    "Neispravan line range.";
+            }
+
+
+            string[] lines =
+                File.ReadAllLines(
+                    fullPath
+                );
+
+
+            if (lines.Length == 0)
+            {
+                return
+                    $"File je prazan: {fullPath}";
+            }
+
+
+            if (startLine > lines.Length)
+            {
+                return
+                    $"Start line {startLine} je iza kraja filea. File ima {lines.Length} linija.";
+            }
+
+
+            endLine =
+                Math.Min(
+                    endLine,
+                    lines.Length
+                );
+
+
+            IEnumerable<string> selectedLines =
+                lines
+                    .Skip(startLine - 1)
+                    .Take(
+                        endLine -
+                        startLine +
+                        1
+                    )
+                    .Select(
+                        (line, index) =>
+                            $"{startLine + index}: {line}"
+                    );
+
+
+            return
+                $"FILE: {fullPath}\n" +
+                $"LINES: {startLine}-{endLine} / {lines.Length}\n\n" +
+                string.Join(
+                    "\n",
+                    selectedLines
+                );
         }
 
 
@@ -151,7 +286,9 @@ namespace AI_Assistant.Tools
         // LIST FILES
         // ============================================
 
-        public string ListFiles(string folderPath)
+        public string ListFiles(
+            string folderPath
+        )
         {
             string fullPath =
                 GetSafePath(folderPath);
@@ -159,17 +296,21 @@ namespace AI_Assistant.Tools
 
             if (!Directory.Exists(fullPath))
             {
-                return $"Folder ne postoji: {fullPath}";
+                return
+                    $"Folder ne postoji: {fullPath}";
             }
 
 
             string[] files =
-                Directory.GetFiles(fullPath);
+                Directory.GetFiles(
+                    fullPath
+                );
 
 
             if (files.Length == 0)
             {
-                return "Folder nema fileova.";
+                return
+                    "Folder nema fileova.";
             }
 
 
@@ -184,7 +325,9 @@ namespace AI_Assistant.Tools
         // LIST DIRECTORIES
         // ============================================
 
-        public string ListDirectories(string folderPath)
+        public string ListDirectories(
+            string folderPath
+        )
         {
             string fullPath =
                 GetSafePath(folderPath);
@@ -192,17 +335,21 @@ namespace AI_Assistant.Tools
 
             if (!Directory.Exists(fullPath))
             {
-                return $"Folder ne postoji: {fullPath}";
+                return
+                    $"Folder ne postoji: {fullPath}";
             }
 
 
             string[] directories =
-                Directory.GetDirectories(fullPath);
+                Directory.GetDirectories(
+                    fullPath
+                );
 
 
             if (directories.Length == 0)
             {
-                return "Folder nema podfoldera.";
+                return
+                    "Folder nema podfoldera.";
             }
 
 
@@ -210,6 +357,137 @@ namespace AI_Assistant.Tools
                 "\n",
                 directories
             );
+        }
+
+
+        // ============================================
+        // FIND FILE
+        // ============================================
+
+        public string FindFile(
+            string rootPath,
+            string fileName
+        )
+        {
+            string safeRoot =
+                GetSafePath(rootPath);
+
+
+            if (!Directory.Exists(safeRoot))
+            {
+                return
+                    $"Folder ne postoji: {safeRoot}";
+            }
+
+
+            EnumerationOptions options =
+                new EnumerationOptions
+                {
+                    RecurseSubdirectories = true,
+                    IgnoreInaccessible = true
+                };
+
+
+            string[] files =
+                Directory
+                    .EnumerateFiles(
+                        safeRoot,
+                        fileName,
+                        options
+                    )
+                    .Take(50)
+                    .ToArray();
+
+
+            if (files.Length == 0)
+            {
+                return
+                    $"Nije pronađen '{fileName}' unutar {safeRoot}";
+            }
+
+
+            return string.Join(
+                "\n",
+                files
+            );
+        }
+
+
+        // ============================================
+        // SEARCH ALL ROOTS + READ
+        // ============================================
+
+        public string SearchAndReadFile(
+            string fileName
+        )
+        {
+            EnumerationOptions options =
+                new EnumerationOptions
+                {
+                    RecurseSubdirectories = true,
+                    IgnoreInaccessible = true
+                };
+
+
+            foreach (
+                string root
+                in allowedRoots
+            )
+            {
+                if (!Directory.Exists(root))
+                {
+                    continue;
+                }
+
+
+                string? match =
+                    Directory
+                        .EnumerateFiles(
+                            root,
+                            fileName,
+                            options
+                        )
+                        .FirstOrDefault();
+
+
+                if (match == null)
+                {
+                    continue;
+                }
+
+
+                FileInfo fileInfo =
+                    new FileInfo(match);
+
+
+                // Velike source fileove nećemo slati cijele.
+                if (fileInfo.Length > 20000)
+                {
+                    int lineCount =
+                        File.ReadLines(match)
+                            .Count();
+
+
+                    return
+                        $"FOUND FILE:\n{match}\n\n" +
+                        $"File je velik ({fileInfo.Length} bytes, {lineCount} lines).\n" +
+                        $"Koristi read_file_section za potrebne dijelove.";
+                }
+
+
+                string content =
+                    File.ReadAllText(
+                        match
+                    );
+
+
+                return
+                    $"FOUND FILE:\n{match}\n\nCONTENT:\n{content}";
+            }
+
+
+            return
+                $"Nije pronađen file: {fileName}";
         }
 
 
@@ -226,28 +504,32 @@ namespace AI_Assistant.Tools
             string safeSource =
                 GetSafePath(sourcePath);
 
+
             string safeDestination =
                 GetSafePath(destinationPath);
 
 
             if (!File.Exists(safeSource))
             {
-                return $"Izvorni file ne postoji: {safeSource}";
+                return
+                    $"Izvorni file ne postoji: {safeSource}";
             }
 
 
-            string? destinationDirectory =
+            string? directory =
                 Path.GetDirectoryName(
                     safeDestination
                 );
 
 
-            if (!string.IsNullOrWhiteSpace(
-                destinationDirectory
-            ))
+            if (
+                !string.IsNullOrWhiteSpace(
+                    directory
+                )
+            )
             {
                 Directory.CreateDirectory(
-                    destinationDirectory
+                    directory
                 );
             }
 
@@ -260,7 +542,7 @@ namespace AI_Assistant.Tools
 
 
             return
-                $"File kopiran iz:\n{safeSource}\nU:\n{safeDestination}";
+                $"File kopiran:\n{safeSource}\n→\n{safeDestination}";
         }
 
 
@@ -277,28 +559,32 @@ namespace AI_Assistant.Tools
             string safeSource =
                 GetSafePath(sourcePath);
 
+
             string safeDestination =
                 GetSafePath(destinationPath);
 
 
             if (!File.Exists(safeSource))
             {
-                return $"Izvorni file ne postoji: {safeSource}";
+                return
+                    $"Izvorni file ne postoji: {safeSource}";
             }
 
 
-            string? destinationDirectory =
+            string? directory =
                 Path.GetDirectoryName(
                     safeDestination
                 );
 
 
-            if (!string.IsNullOrWhiteSpace(
-                destinationDirectory
-            ))
+            if (
+                !string.IsNullOrWhiteSpace(
+                    directory
+                )
+            )
             {
                 Directory.CreateDirectory(
-                    destinationDirectory
+                    directory
                 );
             }
 
@@ -321,48 +607,7 @@ namespace AI_Assistant.Tools
 
 
             return
-                $"File premješten iz:\n{safeSource}\nU:\n{safeDestination}";
-        }
-
-
-        // ============================================
-        // FIND FILE
-        // ============================================
-
-        public string FindFile(
-            string rootPath,
-            string fileName
-        )
-        {
-            string safeRoot =
-                GetSafePath(rootPath);
-
-
-            if (!Directory.Exists(safeRoot))
-            {
-                return $"Folder ne postoji: {safeRoot}";
-            }
-
-
-            string[] files =
-                Directory.GetFiles(
-                    safeRoot,
-                    fileName,
-                    SearchOption.AllDirectories
-                );
-
-
-            if (files.Length == 0)
-            {
-                return
-                    $"Nije pronađen file '{fileName}' unutar {safeRoot}";
-            }
-
-
-            return string.Join(
-                "\n",
-                files
-            );
+                $"File premješten:\n{safeSource}\n→\n{safeDestination}";
         }
     }
 }

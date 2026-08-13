@@ -1,9 +1,11 @@
 ﻿
 Microsoft Visual Studio Solution File, Format Version 12.00
 # Visual Studio Version 17
-VisualStudioVersion = 17.14.37516.0 d17.14
+VisualStudioVersion = 17.14.37516.0
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AI Assistant", "AI Assistant\AI Assistant.csproj", "{4F3D70F7-0B10-44AE-AB1D-85C0A8D02ED5}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "AI Assistant Updater", "AI Assistant Updater\AI Assistant Updater.csproj", "{2AB73953-23B1-457B-8AEC-F557FFA4BA2E}"
 EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
@@ -15,6 +17,10 @@ Global
 		{4F3D70F7-0B10-44AE-AB1D-85C0A8D02ED5}.Debug|Any CPU.Build.0 = Debug|Any CPU
 		{4F3D70F7-0B10-44AE-AB1D-85C0A8D02ED5}.Release|Any CPU.ActiveCfg = Release|Any CPU
 		{4F3D70F7-0B10-44AE-AB1D-85C0A8D02ED5}.Release|Any CPU.Build.0 = Release|Any CPU
+		{2AB73953-23B1-457B-8AEC-F557FFA4BA2E}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{2AB73953-23B1-457B-8AEC-F557FFA4BA2E}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{2AB73953-23B1-457B-8AEC-F557FFA4BA2E}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{2AB73953-23B1-457B-8AEC-F557FFA4BA2E}.Release|Any CPU.Build.0 = Release|Any CPU
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE
