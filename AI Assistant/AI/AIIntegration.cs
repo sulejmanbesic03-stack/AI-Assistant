@@ -4,6 +4,7 @@ using System;
 using System.Collections.Generic;
 using System.Linq;
 using System.Net.Http;
+using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
@@ -13,69 +14,276 @@ public class AIIntegration
     private readonly HttpClient client;
     private readonly FileSystemTools fileTools;
 
-    private List<ChatMessage> conversationHistory;
+    private readonly List<ChatMessage> conversationHistory;
 
-    public AIIntegration(string workspacePath)
+    private const string Model =
+        "openai/gpt-oss-20b";
+
+
+    public AIIntegration(List<string> allowedRoots)
     {
         client = new HttpClient();
 
-        fileTools = new FileSystemTools(workspacePath);
+        fileTools =
+            new FileSystemTools(allowedRoots);
 
-        conversationHistory = new List<ChatMessage>();
+        conversationHistory =
+            new List<ChatMessage>();
     }
+
 
     public async Task<string> Ask(string prompt)
     {
         string? apiKey =
-            Environment.GetEnvironmentVariable("GEMINI_API_KEY");
+            Environment.GetEnvironmentVariable(
+                "GROQ_API_KEY"
+            );
 
-        if (string.IsNullOrEmpty(apiKey))
+
+        if (string.IsNullOrWhiteSpace(apiKey))
         {
-            return "Gemini API key nije pronađen!";
+            return "Groq API key nije pronađen!";
         }
 
 
-        // 1. Zapamti novu user poruku
+        // ============================================
+        // USER PORUKA U CHAT HISTORY
+        // ============================================
+
         conversationHistory.Add(
-            new ChatMessage("user", prompt)
+            new ChatMessage(
+                "user",
+                prompt
+            )
         );
 
 
-        // 2. Pretvori naš ChatMessage history
-        // u format koji Gemini očekuje
-        var contents = conversationHistory
-            .Select(message => new
-            {
-                role = message.Role,
+        // ============================================
+        // PRETVORI HISTORY U GROQ MESSAGES
+        // ============================================
 
-                parts = new[]
+        List<object> messages =
+            conversationHistory
+                .Select(message => (object)new
                 {
+                    role = message.Role,
+                    content = message.Message
+                })
+                .ToList();
+
+
+        // ============================================
+        // AGENT LOOP
+        // ============================================
+
+        int iteration = 0;
+        const int maxIterations = 25;
+
+
+        while (iteration < maxIterations)
+        {
+            iteration++;
+
+
+            // ========================================
+            // REQUEST BODY
+            // ========================================
+
+            var requestBody = new
+            {
+                model = Model,
+
+                messages = messages,
+
+                tools = new object[]
+                {new
+                            {
+                                type = "function",
+
+                                function = new
+                                {
+                                    name = "find_file",
+
+                                    description =
+                                        "Searches recursively for a file inside an allowed directory.",
+
+                                    parameters = new
+                                    {
+                                        type = "object",
+
+                                        properties = new
+                                        {
+                                            rootPath = new
+                                            {
+                                                type = "string",
+
+                                                description =
+                                                    "Allowed root directory where the search should begin."
+                                            },
+
+                                            fileName = new
+                                            {
+                                                type = "string",
+
+                                                description =
+                                                    "File name or search pattern, for example Player.cs or *.fbx."
+                                            }
+                                        },
+
+                                        required = new[]
+                                        {
+                                            "rootPath",
+                                            "fileName"
+                                        }
+                                    }
+                                }
+                            },
+                                               new
+                            {
+                                type = "function",
+
+                                function = new
+                                {
+                                    name = "move_file",
+
+                                    description =
+                                        "Moves a file from one allowed path to another allowed path.",
+
+                                    parameters = new
+                                    {
+                                        type = "object",
+
+                                        properties = new
+                                        {
+                                            sourcePath = new
+                                            {
+                                                type = "string",
+
+                                                description =
+                                                    "Full path of the source file."
+                                            },
+
+                                            destinationPath = new
+                                            {
+                                                type = "string",
+
+                                                description =
+                                                    "Full destination path including file name."
+                                            },
+
+                                            overwrite = new
+                                            {
+                                                type = "boolean",
+
+                                                description =
+                                                    "Whether an existing destination file may be overwritten."
+                                            }
+                                        },
+
+                                        required = new[]
+                                        {
+                                            "sourcePath",
+                                            "destinationPath",
+                                            "overwrite"
+                                        }
+                                    }
+                                }
+                            }, // =================================
+                                                // CREATE FOLDER
+                                               new
+                            {
+                                type = "function",
+
+                                function = new
+                                {
+                                    name = "copy_file",
+
+                                    description =
+                                        "Copies a file from one allowed path to another allowed path.",
+
+                                    parameters = new
+                                    {
+                                        type = "object",
+
+                                        properties = new
+                                        {
+                                            sourcePath = new
+                                            {
+                                                type = "string",
+
+                                                description =
+                                                    "Full path of the source file."
+                                            },
+
+                                            destinationPath = new
+                                            {
+                                                type = "string",
+
+                                                description =
+                                                    "Full destination path including file name."
+                                            },
+
+                                            overwrite = new
+                                            {
+                                                type = "boolean",
+
+                                                description =
+                                                    "Whether an existing destination file may be overwritten."
+                                            }
+                                        },
+
+                                        required = new[]
+                                        {
+                                            "sourcePath",
+                                            "destinationPath",
+                                            "overwrite"
+                                        }
+                                    }
+                                }
+                            }, // =================================
+                    new
+                        {
+                            type = "function",
+
+                            function = new
+                            {
+                                name = "list_directories",
+
+                                description =
+                                    "Lists subdirectories inside an allowed folder.",
+
+                                parameters = new
+                                {
+                                    type = "object",
+
+                                    properties = new
+                                    {
+                                        folderPath = new
+                                        {
+                                            type = "string",
+
+                                            description =
+                                                "Full path of the allowed folder."
+                                        }
+                                    },
+
+                                    required = new[]
+                                    {
+                                        "folderPath"
+                                    }
+                                }
+                            }
+                        },
                     new
                     {
-                        text = message.Message
-                    }
-                }
-            })
-            .ToArray();
+                        type = "function",
 
-
-        // 3. Opisujemo Geminiju koje alate ima
-        var requestBody = new
-        {
-            contents = contents,
-
-            tools = new[]
-            {
-                new
-                {
-                    functionDeclarations = new[]
-                    {
-                        new
+                        function = new
                         {
                             name = "create_folder",
 
                             description =
-                                "Creates a new folder inside the allowed workspace.",
+                                "Creates a folder inside the allowed workspace.",
 
                             parameters = new
                             {
@@ -88,7 +296,148 @@ public class AIIntegration
                                         type = "string",
 
                                         description =
-                                            "Name of the folder to create."
+                                            "Relative path of the folder to create inside the workspace."
+                                    }
+                                },
+
+                                required = new[]
+                                {
+                                    "folderName"
+                                }
+                            }
+                        }
+                    },
+
+
+                    // =================================
+                    // CREATE FILE
+                    // =================================
+
+                    new
+                    {
+                        type = "function",
+
+                        function = new
+                        {
+                            name = "create_file",
+
+                            description =
+                                "Creates or overwrites a file inside the allowed workspace and writes text content into it.",
+
+                            parameters = new
+                            {
+                                type = "object",
+
+                                properties = new
+                                {
+                                    fileName = new
+                                    {
+                                        type = "string",
+
+                                        description =
+                                            "Relative path and file name inside the workspace."
+                                    },
+
+                                    content = new
+                                    {
+                                        type = "string",
+
+                                        description =
+                                            "Text content that should be written into the file."
+                                    }
+                                },
+
+                                required = new[]
+                                {
+                                    "fileName",
+                                    "content"
+                                }
+                            }
+                        }
+                    },
+
+
+                    // =================================
+                    // READ FILE
+                    // =================================
+
+                    new
+                    {
+                        type = "function",
+
+                        function = new
+                        {
+                            name = "read_file",
+
+                            description =
+                                "Reads the text contents of a file inside the allowed workspace.",
+
+                            parameters = new
+                            {
+                                type = "object",
+
+                                properties = new
+                                {
+                                    fileName = new
+                                    {
+                                        type = "string",
+
+                                        description =
+                                            "Relative path of the file to read."
+                                    }
+                                },
+
+                                required = new[]
+                                {
+                                    "fileName"
+                                }
+                            }
+                        }
+                    },
+
+                    new
+                        {
+                            type = "function",
+
+                            function = new
+                            {
+                                name = "list_allowed_roots",
+
+                                description =
+                                    "Returns all filesystem root directories that the agent is allowed to access.",
+
+                                parameters = new
+                                {
+                                    type = "object",
+                                    properties = new { }
+                                }
+                            }
+                        },
+                                    
+
+                    new
+                    {
+                        type = "function",
+
+                        function = new
+                        {
+                            name = "list_files",
+
+                            description =
+                                "Lists files inside a folder in the allowed workspace.",
+
+                            parameters = new
+                            {
+                                type = "object",
+
+                                properties = new
+                                {
+                                    folderName = new
+                                    {
+                                        type = "string",
+
+                                        description =
+                                            "Relative folder path. Use an empty string for the workspace root."
                                     }
                                 },
 
@@ -99,111 +448,403 @@ public class AIIntegration
                             }
                         }
                     }
-                }
-            }
-        };
+                },
+
+                tool_choice = "auto"
+            };
 
 
-        string json =
-            JsonSerializer.Serialize(requestBody);
+            string json =
+                JsonSerializer.Serialize(
+                    requestBody
+                );
 
 
-        using StringContent content = new StringContent(
-            json,
-            Encoding.UTF8,
-            "application/json"
-        );
+            using StringContent content =
+                new StringContent(
+                    json,
+                    Encoding.UTF8,
+                    "application/json"
+                );
 
 
-        string url =
-            $"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash-preview:generateContent?key={apiKey}";
+            // ========================================
+            // AUTHORIZATION
+            // ========================================
+
+            client.DefaultRequestHeaders.Authorization =
+                new AuthenticationHeaderValue(
+                    "Bearer",
+                    apiKey
+                );
 
 
-        // 4. Pošalji request Geminiju
-        HttpResponseMessage response =
-            await client.PostAsync(url, content);
+            string url =
+                "https://api.groq.com/openai/v1/chat/completions";
 
 
-        string responseText =
-            await response.Content.ReadAsStringAsync();
+            // ========================================
+            // SEND REQUEST
+            // ========================================
+
+            HttpResponseMessage response =
+                await client.PostAsync(
+                    url,
+                    content
+                );
 
 
-        if (!response.IsSuccessStatusCode)
-        {
-            return $"Gemini API greška:\n{responseText}";
-        }
+            string responseText =
+                await response.Content
+                    .ReadAsStringAsync();
 
 
-        using JsonDocument document =
-            JsonDocument.Parse(responseText);
-
-
-        JsonElement parts = document
-            .RootElement
-            .GetProperty("candidates")[0]
-            .GetProperty("content")
-            .GetProperty("parts");
-
-
-        // 5. Provjeri svaki dio Gemini odgovora
-        foreach (JsonElement part in parts.EnumerateArray())
-        {
-            // Je li Gemini zatražio tool?
-            if (part.TryGetProperty(
-                "functionCall",
-                out JsonElement functionCall))
+            if (!response.IsSuccessStatusCode)
             {
-                string functionName =
-                    functionCall
-                    .GetProperty("name")
-                    .GetString() ?? "";
+                return
+                    $"Groq API greška:\n{responseText}";
+            }
 
 
-                // Trenutno imamo samo jedan tool
-                if (functionName == "create_folder")
+            // ========================================
+            // PARSE RESPONSE
+            // ========================================
+
+            using JsonDocument document =
+                JsonDocument.Parse(
+                    responseText
+                );
+
+
+            JsonElement message =
+                document
+                    .RootElement
+                    .GetProperty("choices")[0]
+                    .GetProperty("message");
+
+
+            // ========================================
+            // TOOL CALLS?
+            // ========================================
+
+            if (
+                message.TryGetProperty(
+                    "tool_calls",
+                    out JsonElement toolCalls
+                )
+                &&
+                toolCalls.ValueKind ==
+                    JsonValueKind.Array
+                &&
+                toolCalls.GetArrayLength() > 0
+            )
+            {
+                // ====================================
+                // MORAMO SAČUVATI ASSISTANT TOOL CALL
+                // ====================================
+
+                object assistantMessage =
+                    JsonSerializer.Deserialize<object>(
+                        message.GetRawText()
+                    )!;
+
+
+                messages.Add(
+                    assistantMessage
+                );
+
+
+                // ====================================
+                // OBRADI SVE TOOL CALLOVE
+                // ====================================
+
+                foreach (
+                    JsonElement toolCall
+                    in toolCalls.EnumerateArray()
+                )
                 {
-                    string folderName =
-                        functionCall
-                        .GetProperty("args")
-                        .GetProperty("folderName")
-                        .GetString() ?? "";
+                    string toolCallId =
+                        toolCall
+                            .GetProperty("id")
+                            .GetString()
+                        ?? "";
 
 
-                    if (string.IsNullOrWhiteSpace(folderName))
+                    JsonElement function =
+                        toolCall
+                            .GetProperty("function");
+
+
+                    string functionName =
+                        function
+                            .GetProperty("name")
+                            .GetString()
+                        ?? "";
+
+
+                    string argumentsJson =
+                        function
+                            .GetProperty("arguments")
+                            .GetString()
+                        ?? "{}";
+
+
+                    using JsonDocument argsDocument =
+                        JsonDocument.Parse(
+                            argumentsJson
+                        );
+
+
+                    JsonElement args =
+                        argsDocument.RootElement;
+
+
+                    string toolResult;
+
+
+                    // =================================
+                    // CREATE FOLDER
+                    // =================================
+            
+
+                    try
                     {
-                        return "Gemini nije poslao ispravno ime foldera.";
+                        if (functionName == "create_folder")
+                        {
+                            string folderPath =
+                                args
+                                    .GetProperty("folderName")
+                                    .GetString()
+                                ?? "";
+
+                            toolResult =
+                                fileTools.CreateFolder(
+                                    folderPath
+                                );
+                        }
+
+                        else if (functionName == "create_file")
+                        {
+                            string filePath =
+                                args
+                                    .GetProperty("fileName")
+                                    .GetString()
+                                ?? "";
+
+                            string fileContent =
+                                args
+                                    .GetProperty("content")
+                                    .GetString()
+                                ?? "";
+
+                            toolResult =
+                                fileTools.CreateFile(
+                                    filePath,
+                                    fileContent
+                                );
+                        }
+
+                        else if (functionName == "read_file")
+                        {
+                            string filePath =
+                                args
+                                    .GetProperty("fileName")
+                                    .GetString()
+                                ?? "";
+
+                            toolResult =
+                                fileTools.ReadFile(
+                                    filePath
+                                );
+                        }
+
+                        else if (functionName == "list_files")
+                        {
+                            string folderPath =
+                                args
+                                    .GetProperty("folderName")
+                                    .GetString()
+                                ?? "";
+
+                            toolResult =
+                                fileTools.ListFiles(
+                                    folderPath
+                                );
+                        }
+
+                        else if (functionName == "list_directories")
+                        {
+                            string folderPath =
+                                args
+                                    .GetProperty("folderPath")
+                                    .GetString()
+                                ?? "";
+
+                            toolResult =
+                                fileTools.ListDirectories(
+                                    folderPath
+                                );
+                        }
+
+                        else if (functionName == "find_file")
+                        {
+                            string rootPath =
+                                args
+                                    .GetProperty("rootPath")
+                                    .GetString()
+                                ?? "";
+
+                            string fileName =
+                                args
+                                    .GetProperty("fileName")
+                                    .GetString()
+                                ?? "";
+
+                            toolResult =
+                                fileTools.FindFile(
+                                    rootPath,
+                                    fileName
+                                );
+                        }
+
+                        else if (functionName == "copy_file")
+                        {
+                            string sourcePath =
+                                args
+                                    .GetProperty("sourcePath")
+                                    .GetString()
+                                ?? "";
+
+                            string destinationPath =
+                                args
+                                    .GetProperty("destinationPath")
+                                    .GetString()
+                                ?? "";
+
+                            bool overwrite =
+                                args
+                                    .GetProperty("overwrite")
+                                    .GetBoolean();
+
+                            toolResult =
+                                fileTools.CopyFile(
+                                    sourcePath,
+                                    destinationPath,
+                                    overwrite
+                                );
+                        }
+
+                        else if (functionName == "move_file")
+                        {
+                            string sourcePath =
+                                args
+                                    .GetProperty("sourcePath")
+                                    .GetString()
+                                ?? "";
+
+                            string destinationPath =
+                                args
+                                    .GetProperty("destinationPath")
+                                    .GetString()
+                                ?? "";
+
+                            bool overwrite =
+                                args
+                                    .GetProperty("overwrite")
+                                    .GetBoolean();
+
+                            toolResult =
+                                fileTools.MoveFile(
+                                    sourcePath,
+                                    destinationPath,
+                                    overwrite
+                                );
+                        }
+
+                        else if (functionName == "list_allowed_roots")
+                        {
+                            toolResult =
+                                fileTools.ListAllowedRoots();
+                        }
+
+                        else
+                        {
+                            toolResult =
+                                $"Nepoznat tool: {functionName}";
+                        }
+                    }
+                    catch (UnauthorizedAccessException ex)
+                    {
+                        toolResult =
+                            $"ACCESS DENIED: {ex.Message}";
+                    }
+                    catch (Exception ex)
+                    {
+                        toolResult =
+                            $"TOOL ERROR: {ex.Message}";
                     }
 
+                    messages.Add(
+                        new
+                        {
+                            role = "tool",
 
-                    string toolResult =
-                        fileTools.CreateFolder(folderName);
+                            tool_call_id =
+                                toolCallId,
 
+                            name =
+                                functionName,
 
-                    return toolResult;
+                            content =
+                                toolResult
+                        }
+                    );
                 }
+
+
+                // Nakon svih toolova,
+                // while ponovo šalje Groq-u.
+                continue;
             }
 
 
-            // Ako nije function call,
-            // možda je običan AI tekst
-            if (part.TryGetProperty(
-                "text",
-                out JsonElement textElement))
+            // ========================================
+            // NORMALNI FINALNI ODGOVOR
+            // ========================================
+
+            if (
+                message.TryGetProperty(
+                    "content",
+                    out JsonElement contentElement
+                )
+                &&
+                contentElement.ValueKind
+                    != JsonValueKind.Null
+            )
             {
                 string answer =
-                    textElement.GetString() ?? "";
+                    contentElement.GetString()
+                    ?? "";
 
 
                 conversationHistory.Add(
-                    new ChatMessage("model", answer)
+                    new ChatMessage(
+                        "assistant",
+                        answer
+                    )
                 );
 
 
                 return answer;
             }
+
+
+            return
+                "Groq nije vratio ni odgovor ni tool call.";
         }
 
 
-        return "Gemini nije vratio tekst niti poznati tool call.";
+        return
+            "Agent je dostigao maksimalan broj tool koraka.";
     }
 }

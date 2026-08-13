@@ -1,8 +1,18 @@
 ﻿using AI_Assistant.Tools;
+using System.Collections;
+List<string> allowedRoots = new List<string>
+{
+    @"C:\AIWorkspace",
+    @"C:\BlenderProjects",
+    @"C:\SubstanceProjects",
+    @"D:\UnityProjects\MyGame"
+  
+};
 
-AIIntegration ai = new AIIntegration(
-    @"C:\AIWorkspace"
-);
+
+AIIntegration ai = new AIIntegration(allowedRoots);
+
+
 
 while (true)
 {
