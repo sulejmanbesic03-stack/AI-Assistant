@@ -10,6 +10,14 @@ namespace AI_Assistant.Tools
         private readonly List<string> allowedRoots;
 
 
+        private const long MaxWholeFileReadBytes =
+            12000;
+
+
+        private const int MaxReadSectionLines =
+            120;
+
+
         public FileSystemTools(
             List<string> allowedRoots
         )
@@ -38,6 +46,22 @@ namespace AI_Assistant.Tools
             string path
         )
         {
+            if (string.IsNullOrWhiteSpace(path))
+            {
+                throw new UnauthorizedAccessException(
+                    "Path je prazan."
+                );
+            }
+
+
+            if (!Path.IsPathRooted(path))
+            {
+                throw new UnauthorizedAccessException(
+                    "Generic filesystem tools zahtijevaju apsolutnu putanju."
+                );
+            }
+
+
             string fullPath =
                 Path.GetFullPath(path)
                     .TrimEnd(
@@ -49,29 +73,24 @@ namespace AI_Assistant.Tools
             bool isAllowed =
                 allowedRoots.Any(root =>
                 {
-                    string cleanRoot =
-                        root.TrimEnd(
-                            Path.DirectorySeparatorChar,
-                            Path.AltDirectorySeparatorChar
-                        );
-
-
                     bool isRoot =
                         fullPath.Equals(
-                            cleanRoot,
+                            root,
                             StringComparison.OrdinalIgnoreCase
                         );
 
 
-                    bool isInside =
+                    bool isInsideRoot =
                         fullPath.StartsWith(
-                            cleanRoot +
+                            root +
                             Path.DirectorySeparatorChar,
                             StringComparison.OrdinalIgnoreCase
                         );
 
 
-                    return isRoot || isInside;
+                    return
+                        isRoot ||
+                        isInsideRoot;
                 });
 
 
@@ -88,7 +107,7 @@ namespace AI_Assistant.Tools
 
 
         // ============================================
-        // ALLOWED ROOTS
+        // LIST ALLOWED ROOTS
         // ============================================
 
         public string ListAllowedRoots()
@@ -101,7 +120,7 @@ namespace AI_Assistant.Tools
 
 
             return string.Join(
-                "\n",
+                Environment.NewLine,
                 allowedRoots
             );
         }
@@ -125,7 +144,7 @@ namespace AI_Assistant.Tools
 
 
             return
-                $"Folder napravljen: {fullPath}";
+                $"FOLDER CREATED:\n{fullPath}";
         }
 
 
@@ -148,11 +167,7 @@ namespace AI_Assistant.Tools
                 );
 
 
-            if (
-                !string.IsNullOrWhiteSpace(
-                    directory
-                )
-            )
+            if (!string.IsNullOrWhiteSpace(directory))
             {
                 Directory.CreateDirectory(
                     directory
@@ -167,7 +182,7 @@ namespace AI_Assistant.Tools
 
 
             return
-                $"File napravljen: {fullPath}";
+                $"FILE WRITTEN:\n{fullPath}";
         }
 
 
@@ -186,7 +201,27 @@ namespace AI_Assistant.Tools
             if (!File.Exists(fullPath))
             {
                 return
-                    $"File ne postoji: {fullPath}";
+                    $"FILE NOT FOUND:\n{fullPath}";
+            }
+
+
+            FileInfo info =
+                new FileInfo(fullPath);
+
+
+            if (info.Length > MaxWholeFileReadBytes)
+            {
+                int lineCount =
+                    File.ReadLines(fullPath)
+                        .Count();
+
+
+                return
+                    $"FILE TOO LARGE FOR FULL READ\n" +
+                    $"PATH: {fullPath}\n" +
+                    $"SIZE: {info.Length} bytes\n" +
+                    $"LINES: {lineCount}\n" +
+                    $"Use read_file_section.";
             }
 
 
@@ -214,7 +249,7 @@ namespace AI_Assistant.Tools
             if (!File.Exists(fullPath))
             {
                 return
-                    $"File ne postoji: {fullPath}";
+                    $"FILE NOT FOUND:\n{fullPath}";
             }
 
 
@@ -227,7 +262,19 @@ namespace AI_Assistant.Tools
             if (endLine < startLine)
             {
                 return
-                    "Neispravan line range.";
+                    "READ FAILED: endLine mora biti >= startLine.";
+            }
+
+
+            if (
+                endLine - startLine + 1 >
+                MaxReadSectionLines
+            )
+            {
+                endLine =
+                    startLine +
+                    MaxReadSectionLines -
+                    1;
             }
 
 
@@ -240,14 +287,14 @@ namespace AI_Assistant.Tools
             if (lines.Length == 0)
             {
                 return
-                    $"File je prazan: {fullPath}";
+                    $"FILE IS EMPTY:\n{fullPath}";
             }
 
 
             if (startLine > lines.Length)
             {
                 return
-                    $"Start line {startLine} je iza kraja filea. File ima {lines.Length} linija.";
+                    $"READ FAILED: File ima {lines.Length} linija.";
             }
 
 
@@ -276,7 +323,7 @@ namespace AI_Assistant.Tools
                 $"FILE: {fullPath}\n" +
                 $"LINES: {startLine}-{endLine} / {lines.Length}\n\n" +
                 string.Join(
-                    "\n",
+                    Environment.NewLine,
                     selectedLines
                 );
         }
@@ -297,7 +344,7 @@ namespace AI_Assistant.Tools
             if (!Directory.Exists(fullPath))
             {
                 return
-                    $"Folder ne postoji: {fullPath}";
+                    $"FOLDER NOT FOUND:\n{fullPath}";
             }
 
 
@@ -314,10 +361,11 @@ namespace AI_Assistant.Tools
             }
 
 
-            return string.Join(
-                "\n",
-                files
-            );
+            return
+                string.Join(
+                    Environment.NewLine,
+                    files
+                );
         }
 
 
@@ -336,7 +384,7 @@ namespace AI_Assistant.Tools
             if (!Directory.Exists(fullPath))
             {
                 return
-                    $"Folder ne postoji: {fullPath}";
+                    $"FOLDER NOT FOUND:\n{fullPath}";
             }
 
 
@@ -353,10 +401,11 @@ namespace AI_Assistant.Tools
             }
 
 
-            return string.Join(
-                "\n",
-                directories
-            );
+            return
+                string.Join(
+                    Environment.NewLine,
+                    directories
+                );
         }
 
 
@@ -376,7 +425,7 @@ namespace AI_Assistant.Tools
             if (!Directory.Exists(safeRoot))
             {
                 return
-                    $"Folder ne postoji: {safeRoot}";
+                    $"FOLDER NOT FOUND:\n{safeRoot}";
             }
 
 
@@ -388,39 +437,55 @@ namespace AI_Assistant.Tools
                 };
 
 
-            string[] files =
+            string[] matches =
                 Directory
                     .EnumerateFiles(
                         safeRoot,
                         fileName,
                         options
                     )
-                    .Take(50)
+                    .Take(25)
                     .ToArray();
 
 
-            if (files.Length == 0)
+            if (matches.Length == 0)
             {
                 return
-                    $"Nije pronađen '{fileName}' unutar {safeRoot}";
+                    $"FILE NOT FOUND: {fileName}";
             }
 
 
-            return string.Join(
-                "\n",
-                files
-            );
+            return
+                string.Join(
+                    Environment.NewLine,
+                    matches
+                );
         }
 
 
         // ============================================
-        // SEARCH ALL ROOTS + READ
+        // SEARCH ALL ROOTS + READ SMALL FILE
         // ============================================
 
         public string SearchAndReadFile(
             string fileName
         )
         {
+            if (string.IsNullOrWhiteSpace(fileName))
+            {
+                return
+                    "SEARCH FAILED: fileName je prazan.";
+            }
+
+
+            // Ovaj tool prima samo filename/pattern,
+            // ne full path.
+            fileName =
+                Path.GetFileName(
+                    fileName
+                );
+
+
             EnumerationOptions options =
                 new EnumerationOptions
                 {
@@ -429,10 +494,7 @@ namespace AI_Assistant.Tools
                 };
 
 
-            foreach (
-                string root
-                in allowedRoots
-            )
+            foreach (string root in allowedRoots)
             {
                 if (!Directory.Exists(root))
                 {
@@ -456,38 +518,33 @@ namespace AI_Assistant.Tools
                 }
 
 
-                FileInfo fileInfo =
+                FileInfo info =
                     new FileInfo(match);
 
 
-                // Velike source fileove nećemo slati cijele.
-                if (fileInfo.Length > 20000)
+                int lineCount =
+                    File.ReadLines(match)
+                        .Count();
+
+
+                if (info.Length > MaxWholeFileReadBytes)
                 {
-                    int lineCount =
-                        File.ReadLines(match)
-                            .Count();
-
-
                     return
                         $"FOUND FILE:\n{match}\n\n" +
-                        $"File je velik ({fileInfo.Length} bytes, {lineCount} lines).\n" +
-                        $"Koristi read_file_section za potrebne dijelove.";
+                        $"SIZE: {info.Length} bytes\n" +
+                        $"LINES: {lineCount}\n" +
+                        $"File je prevelik za full read. Use read_file_section.";
                 }
 
 
-                string content =
-                    File.ReadAllText(
-                        match
-                    );
-
-
                 return
-                    $"FOUND FILE:\n{match}\n\nCONTENT:\n{content}";
+                    $"FOUND FILE:\n{match}\n\n" +
+                    $"CONTENT:\n{File.ReadAllText(match)}";
             }
 
 
             return
-                $"Nije pronađen file: {fileName}";
+                $"FILE NOT FOUND: {fileName}";
         }
 
 
@@ -512,7 +569,7 @@ namespace AI_Assistant.Tools
             if (!File.Exists(safeSource))
             {
                 return
-                    $"Izvorni file ne postoji: {safeSource}";
+                    $"SOURCE FILE NOT FOUND:\n{safeSource}";
             }
 
 
@@ -522,11 +579,7 @@ namespace AI_Assistant.Tools
                 );
 
 
-            if (
-                !string.IsNullOrWhiteSpace(
-                    directory
-                )
-            )
+            if (!string.IsNullOrWhiteSpace(directory))
             {
                 Directory.CreateDirectory(
                     directory
@@ -542,7 +595,8 @@ namespace AI_Assistant.Tools
 
 
             return
-                $"File kopiran:\n{safeSource}\n→\n{safeDestination}";
+                $"FILE COPIED:\n" +
+                $"{safeSource}\n→\n{safeDestination}";
         }
 
 
@@ -567,7 +621,7 @@ namespace AI_Assistant.Tools
             if (!File.Exists(safeSource))
             {
                 return
-                    $"Izvorni file ne postoji: {safeSource}";
+                    $"SOURCE FILE NOT FOUND:\n{safeSource}";
             }
 
 
@@ -577,11 +631,7 @@ namespace AI_Assistant.Tools
                 );
 
 
-            if (
-                !string.IsNullOrWhiteSpace(
-                    directory
-                )
-            )
+            if (!string.IsNullOrWhiteSpace(directory))
             {
                 Directory.CreateDirectory(
                     directory
@@ -607,7 +657,8 @@ namespace AI_Assistant.Tools
 
 
             return
-                $"File premješten:\n{safeSource}\n→\n{safeDestination}";
+                $"FILE MOVED:\n" +
+                $"{safeSource}\n→\n{safeDestination}";
         }
     }
 }

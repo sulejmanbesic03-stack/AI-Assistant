@@ -16,6 +16,8 @@ namespace AI_Assistant.Tools
         private readonly string backupRoot;
         private readonly string stagingRoot;
 
+        private bool backupCreated;
+        private bool sourceModified;
         private bool lastBuildSucceeded;
 
 
@@ -26,21 +28,17 @@ namespace AI_Assistant.Tools
         )
         {
             this.projectFilePath =
-                Path.GetFullPath(
-                    projectFilePath
-                );
-
+                Path.GetFullPath(projectFilePath);
 
             this.sourceRoot =
-                Path.GetFullPath(
-                    sourceRoot
-                );
-
+                Path.GetFullPath(sourceRoot)
+                    .TrimEnd(
+                        Path.DirectorySeparatorChar,
+                        Path.AltDirectorySeparatorChar
+                    );
 
             this.updaterProjectPath =
-                Path.GetFullPath(
-                    updaterProjectPath
-                );
+                Path.GetFullPath(updaterProjectPath);
 
 
             backupRoot =
@@ -72,7 +70,7 @@ namespace AI_Assistant.Tools
             if (!Directory.Exists(sourceRoot))
             {
                 return
-                    $"Source root ne postoji: {sourceRoot}";
+                    $"SOURCE INSPECTION FAILED:\nSource root ne postoji:\n{sourceRoot}";
             }
 
 
@@ -92,21 +90,9 @@ namespace AI_Assistant.Tools
                         options
                     )
                     .Where(path =>
-                        !path.Contains(
-                            $"{Path.DirectorySeparatorChar}bin{Path.DirectorySeparatorChar}",
-                            StringComparison.OrdinalIgnoreCase
-                        )
-                        &&
-                        !path.Contains(
-                            $"{Path.DirectorySeparatorChar}obj{Path.DirectorySeparatorChar}",
-                            StringComparison.OrdinalIgnoreCase
-                        )
-                        &&
-                        !path.Contains(
-                            $"{Path.DirectorySeparatorChar}.vs{Path.DirectorySeparatorChar}",
-                            StringComparison.OrdinalIgnoreCase
-                        )
+                        !IsIgnoredBuildPath(path)
                     )
+                    .OrderBy(path => path)
                     .ToArray();
 
 
@@ -118,27 +104,36 @@ namespace AI_Assistant.Tools
                 $"SOURCE ROOT: {sourceRoot}"
             );
 
-
             result.AppendLine(
                 $"PROJECT: {projectFilePath}"
             );
 
+            result.AppendLine();
+
+            result.AppendLine(
+                $"BACKUP CREATED: {backupCreated}"
+            );
+
+            result.AppendLine(
+                $"SOURCE MODIFIED: {sourceModified}"
+            );
+
+            result.AppendLine(
+                $"LAST BUILD SUCCESS: {lastBuildSucceeded}"
+            );
 
             result.AppendLine();
 
 
-            if (files.Length == 0)
-            {
-                result.AppendLine(
-                    "Nisu pronađeni C# source fajlovi."
-                );
-
-                return result.ToString();
-            }
-
-
             foreach (string file in files)
             {
+                string relativePath =
+                    Path.GetRelativePath(
+                        sourceRoot,
+                        file
+                    );
+
+
                 int lineCount =
                     File.ReadLines(file)
                         .Count();
@@ -149,7 +144,219 @@ namespace AI_Assistant.Tools
 
 
                 result.AppendLine(
-                    $"{file} | {lineCount} lines | {info.Length} bytes"
+                    $"{relativePath} | {lineCount} lines | {info.Length} bytes"
+                );
+            }
+
+
+            return result.ToString();
+        }
+        public string FindSelfText(
+    string relativePath,
+    string searchText
+)
+        {
+            if (string.IsNullOrWhiteSpace(searchText))
+            {
+                return
+                    "SELF FIND FAILED: searchText je prazan.";
+            }
+
+            string safePath;
+
+            try
+            {
+                safePath =
+                    GetSafeSelfPath(
+                        relativePath
+                    );
+            }
+            catch (Exception ex)
+            {
+                return
+                    $"SELF FIND DENIED: {ex.Message}";
+            }
+
+            if (!File.Exists(safePath))
+            {
+                return
+                    $"SELF FIND FAILED: File ne postoji:\n{relativePath}";
+            }
+
+            string[] lines =
+                File.ReadAllLines(
+                    safePath
+                );
+
+            var matches =
+                lines
+                    .Select(
+                        (line, index) =>
+                            new
+                            {
+                                Line = line,
+                                Number = index + 1
+                            }
+                    )
+                    .Where(item =>
+                        item.Line.Contains(
+                            searchText,
+                            StringComparison.Ordinal
+                        )
+                    )
+                    .Take(10)
+                    .ToList();
+
+            if (matches.Count == 0)
+            {
+                return
+                    $"SELF FIND FAILED:\n" +
+                    $"FILE: {relativePath}\n" +
+                    $"TEXT: {searchText}";
+            }
+
+            StringBuilder result =
+                new StringBuilder();
+
+            result.AppendLine(
+                $"FOUND IN: {relativePath}"
+            );
+
+            result.AppendLine(
+                $"MATCH COUNT SHOWN: {matches.Count}"
+            );
+
+            result.AppendLine();
+
+            foreach (var match in matches)
+            {
+                result.AppendLine(
+                    $"LINE {match.Number}: {match.Line.Trim()}"
+                );
+            }
+
+            int firstLine =
+                matches[0].Number;
+
+            int suggestedStart =
+                Math.Max(
+                    1,
+                    firstLine - 20
+                );
+
+            int suggestedEnd =
+                Math.Min(
+                    lines.Length,
+                    firstLine + 80
+                );
+
+            result.AppendLine();
+
+            result.AppendLine(
+                $"SUGGESTED READ RANGE: {suggestedStart}-{suggestedEnd}"
+            );
+
+            return
+                result.ToString();
+        }
+
+        // ============================================
+        // READ SELF FILE SECTION
+        // ============================================
+
+        public string ReadSelfFileSection(
+            string relativePath,
+            int startLine,
+            int endLine
+        )
+        {
+            string safePath;
+
+
+            try
+            {
+                safePath =
+                    GetSafeSelfPath(
+                        relativePath
+                    );
+            }
+            catch (Exception ex)
+            {
+                return
+                    $"SELF READ DENIED: {ex.Message}";
+            }
+
+
+            if (!File.Exists(safePath))
+            {
+                return
+                    $"SELF READ FAILED: File ne postoji:\n{relativePath}";
+            }
+
+
+            if (startLine < 1)
+            {
+                startLine = 1;
+            }
+
+
+            if (endLine < startLine)
+            {
+                return
+                    "SELF READ FAILED: endLine mora biti >= startLine.";
+            }
+
+
+            string[] lines =
+                File.ReadAllLines(
+                    safePath
+                );
+
+
+            if (lines.Length == 0)
+            {
+                return
+                    $"SELF FILE IS EMPTY:\n{relativePath}";
+            }
+
+
+            if (startLine > lines.Length)
+            {
+                return
+                    $"SELF READ FAILED: File ima samo {lines.Length} linija.";
+            }
+
+
+            endLine =
+                Math.Min(
+                    endLine,
+                    lines.Length
+                );
+
+
+            StringBuilder result =
+                new StringBuilder();
+
+
+            result.AppendLine(
+                $"FILE: {relativePath}"
+            );
+
+            result.AppendLine(
+                $"LINES: {startLine}-{endLine} / {lines.Length}"
+            );
+
+            result.AppendLine();
+
+
+            for (
+                int i = startLine - 1;
+                i < endLine;
+                i++
+            )
+            {
+                result.AppendLine(
+                    $"{i + 1}: {lines[i]}"
                 );
             }
 
@@ -167,7 +374,7 @@ namespace AI_Assistant.Tools
             if (!Directory.Exists(sourceRoot))
             {
                 return
-                    $"BACKUP FAILED: Source root ne postoji:\n{sourceRoot}";
+                    $"BACKUP FAILED:\nSource root ne postoji:\n{sourceRoot}";
             }
 
 
@@ -184,13 +391,13 @@ namespace AI_Assistant.Tools
                 );
 
 
-            Directory.CreateDirectory(
-                backupPath
-            );
-
-
             try
             {
+                Directory.CreateDirectory(
+                    backupPath
+                );
+
+
                 CopySourceDirectory(
                     sourceRoot,
                     backupPath
@@ -198,13 +405,209 @@ namespace AI_Assistant.Tools
             }
             catch (Exception ex)
             {
+                backupCreated = false;
+
                 return
                     $"BACKUP FAILED:\n{ex.Message}";
             }
 
 
+            backupCreated = true;
+            sourceModified = false;
+            lastBuildSucceeded = false;
+
+
             return
                 $"BACKUP SUCCESS:\n{backupPath}";
+        }
+
+
+        // ============================================
+        // WRITE WHOLE SELF FILE
+        // ============================================
+
+        public string WriteSelfFile(
+            string relativePath,
+            string content
+        )
+        {
+            if (!backupCreated)
+            {
+                return
+                    "WRITE DENIED: backup_project mora prvo biti uspješno izvršen.";
+            }
+
+
+            string safePath;
+
+
+            try
+            {
+                safePath =
+                    GetSafeSelfPath(
+                        relativePath
+                    );
+            }
+            catch (Exception ex)
+            {
+                return
+                    $"WRITE DENIED: {ex.Message}";
+            }
+
+
+            try
+            {
+                string? directory =
+                    Path.GetDirectoryName(
+                        safePath
+                    );
+
+
+                if (!string.IsNullOrWhiteSpace(directory))
+                {
+                    Directory.CreateDirectory(
+                        directory
+                    );
+                }
+
+
+                WriteFileAtomic(
+                    safePath,
+                    content
+                );
+            }
+            catch (Exception ex)
+            {
+                return
+                    $"WRITE FAILED:\n{ex.Message}";
+            }
+
+
+            MarkSourceModified();
+
+
+            return
+                $"WRITE SUCCESS:\n{relativePath}";
+        }
+
+
+        // ============================================
+        // REPLACE SELF TEXT
+        // ============================================
+
+        public string ReplaceSelfText(
+            string relativePath,
+            string oldText,
+            string newText
+        )
+        {
+            if (!backupCreated)
+            {
+                return
+                    "REPLACE DENIED: backup_project mora prvo biti uspješno izvršen.";
+            }
+
+
+            if (string.IsNullOrWhiteSpace(oldText))
+            {
+                return
+                    "REPLACE FAILED: oldText ne smije biti prazan.";
+            }
+
+
+            string safePath;
+
+
+            try
+            {
+                safePath =
+                    GetSafeSelfPath(
+                        relativePath
+                    );
+            }
+            catch (Exception ex)
+            {
+                return
+                    $"REPLACE DENIED: {ex.Message}";
+            }
+
+
+            if (!File.Exists(safePath))
+            {
+                return
+                    $"REPLACE FAILED: File ne postoji:\n{relativePath}";
+            }
+
+
+            string originalContent;
+
+
+            try
+            {
+                originalContent =
+                    File.ReadAllText(
+                        safePath
+                    );
+            }
+            catch (Exception ex)
+            {
+                return
+                    $"REPLACE FAILED: File nije moguće pročitati.\n{ex.Message}";
+            }
+
+
+            int occurrenceCount =
+                CountOccurrences(
+                    originalContent,
+                    oldText
+                );
+
+
+            if (occurrenceCount == 0)
+            {
+                return
+                    "REPLACE FAILED: oldText nije pronađen. " +
+                    "Ponovo pročitaj relevantnu sekciju fajla i koristi tačan tekst.";
+            }
+
+
+            if (occurrenceCount > 1)
+            {
+                return
+                    $"REPLACE DENIED: oldText se pojavljuje {occurrenceCount} puta. " +
+                    "Koristi veći i jedinstveniji blok teksta da izmjena ne bude dvosmislena.";
+            }
+
+
+            string updatedContent =
+                originalContent.Replace(
+                    oldText,
+                    newText,
+                    StringComparison.Ordinal
+                );
+
+
+            try
+            {
+                WriteFileAtomic(
+                    safePath,
+                    updatedContent
+                );
+            }
+            catch (Exception ex)
+            {
+                return
+                    $"REPLACE FAILED: Nova verzija nije mogla biti upisana.\n{ex.Message}";
+            }
+
+
+            MarkSourceModified();
+
+
+            return
+                $"REPLACE SUCCESS:\n{relativePath}\n" +
+                $"Old chars: {oldText.Length}\n" +
+                $"New chars: {newText.Length}";
         }
 
 
@@ -220,7 +623,7 @@ namespace AI_Assistant.Tools
             if (!File.Exists(projectFilePath))
             {
                 return
-                    $"BUILD FAILED: Project nije pronađen:\n{projectFilePath}";
+                    $"BUILD FAILED:\nProject nije pronađen:\n{projectFilePath}";
             }
 
 
@@ -242,7 +645,7 @@ namespace AI_Assistant.Tools
             catch (Exception ex)
             {
                 return
-                    $"BUILD FAILED: staging folder nije moguće pripremiti.\n{ex.Message}";
+                    $"BUILD FAILED:\nStaging folder nije moguće pripremiti.\n{ex.Message}";
             }
 
 
@@ -253,10 +656,10 @@ namespace AI_Assistant.Tools
 
                     Arguments =
                         $"build \"{projectFilePath}\" " +
-                        $"-c Release " +
+                        "-c Release " +
                         $"-o \"{stagingRoot}\" " +
-                        $"--nologo " +
-                        $"-v:minimal",
+                        "--nologo " +
+                        "-v:minimal",
 
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
@@ -330,32 +733,46 @@ namespace AI_Assistant.Tools
 
         public string RestartSelf()
         {
+            if (!backupCreated)
+            {
+                return
+                    "RESTART DENIED: backup_project nije izvršen.";
+            }
+
+
+            if (!sourceModified)
+            {
+                return
+                    "RESTART DENIED: source nije izmijenjen.";
+            }
+
+
             if (!lastBuildSucceeded)
             {
                 return
-                    "RESTART DENIED: build_self mora prvo vratiti BUILD SUCCESS.";
+                    "RESTART DENIED: build_self mora prvo završiti sa BUILD SUCCESS.";
             }
 
 
             if (!File.Exists(updaterProjectPath))
             {
                 return
-                    $"RESTART FAILED: Updater project nije pronađen:\n{updaterProjectPath}";
+                    $"RESTART FAILED:\nUpdater project nije pronađen:\n{updaterProjectPath}";
             }
 
 
-            string updaterBuildResult =
+            string updaterBuild =
                 BuildUpdater();
 
 
             if (
-                !updaterBuildResult.StartsWith(
+                !updaterBuild.StartsWith(
                     "UPDATER BUILD SUCCESS",
                     StringComparison.Ordinal
                 )
             )
             {
-                return updaterBuildResult;
+                return updaterBuild;
             }
 
 
@@ -364,7 +781,11 @@ namespace AI_Assistant.Tools
 
 
             string currentDirectory =
-                AppContext.BaseDirectory;
+                AppContext.BaseDirectory
+                    .TrimEnd(
+                        Path.DirectorySeparatorChar,
+                        Path.AltDirectorySeparatorChar
+                    );
 
 
             string? currentExePath =
@@ -374,7 +795,7 @@ namespace AI_Assistant.Tools
             if (string.IsNullOrWhiteSpace(currentExePath))
             {
                 return
-                    "RESTART FAILED: nije moguće pronaći trenutni executable.";
+                    "RESTART FAILED: trenutni executable nije pronađen.";
             }
 
 
@@ -388,21 +809,54 @@ namespace AI_Assistant.Tools
                 new ProcessStartInfo
                 {
                     FileName = "dotnet",
-
-                    Arguments =
-                        $"run " +
-                        $"--project \"{updaterProjectPath}\" " +
-                        $"-c Release " +
-                        $"--no-build " +
-                        $"-- " +
-                        $"{currentPid} " +
-                        $"\"{stagingRoot}\" " +
-                        $"\"{currentDirectory}\" " +
-                        $"\"{exeName}\"",
-
                     UseShellExecute = false,
                     CreateNoWindow = false
                 };
+
+
+            updaterInfo.ArgumentList.Add(
+                "run"
+            );
+
+            updaterInfo.ArgumentList.Add(
+                "--project"
+            );
+
+            updaterInfo.ArgumentList.Add(
+                updaterProjectPath
+            );
+
+            updaterInfo.ArgumentList.Add(
+                "-c"
+            );
+
+            updaterInfo.ArgumentList.Add(
+                "Release"
+            );
+
+            updaterInfo.ArgumentList.Add(
+                "--no-build"
+            );
+
+            updaterInfo.ArgumentList.Add(
+                "--"
+            );
+
+            updaterInfo.ArgumentList.Add(
+                currentPid.ToString()
+            );
+
+            updaterInfo.ArgumentList.Add(
+                stagingRoot
+            );
+
+            updaterInfo.ArgumentList.Add(
+                currentDirectory
+            );
+
+            updaterInfo.ArgumentList.Add(
+                exeName
+            );
 
 
             Process? updaterProcess =
@@ -432,6 +886,229 @@ namespace AI_Assistant.Tools
 
 
         // ============================================
+        // CHECK SELF PATH
+        // ============================================
+
+        public bool IsSelfPath(
+            string path
+        )
+        {
+            try
+            {
+                string fullPath =
+                    Path.GetFullPath(path)
+                        .TrimEnd(
+                            Path.DirectorySeparatorChar,
+                            Path.AltDirectorySeparatorChar
+                        );
+
+
+                bool isRoot =
+                    fullPath.Equals(
+                        sourceRoot,
+                        StringComparison.OrdinalIgnoreCase
+                    );
+
+
+                bool insideRoot =
+                    fullPath.StartsWith(
+                        sourceRoot +
+                        Path.DirectorySeparatorChar,
+                        StringComparison.OrdinalIgnoreCase
+                    );
+
+
+                return isRoot || insideRoot;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+
+        // ============================================
+        // SAFE RELATIVE SELF PATH
+        // ============================================
+
+        private string GetSafeSelfPath(
+            string relativePath
+        )
+        {
+            if (string.IsNullOrWhiteSpace(relativePath))
+            {
+                throw new UnauthorizedAccessException(
+                    "Relative path je prazan."
+                );
+            }
+
+
+            if (Path.IsPathRooted(relativePath))
+            {
+                throw new UnauthorizedAccessException(
+                    "Self-development tools prihvataju samo relativne putanje."
+                );
+            }
+
+
+            string fullPath =
+                Path.GetFullPath(
+                    Path.Combine(
+                        sourceRoot,
+                        relativePath
+                    )
+                )
+                .TrimEnd(
+                    Path.DirectorySeparatorChar,
+                    Path.AltDirectorySeparatorChar
+                );
+
+
+            bool isRoot =
+                fullPath.Equals(
+                    sourceRoot,
+                    StringComparison.OrdinalIgnoreCase
+                );
+
+
+            bool isInside =
+                fullPath.StartsWith(
+                    sourceRoot +
+                    Path.DirectorySeparatorChar,
+                    StringComparison.OrdinalIgnoreCase
+                );
+
+
+            if (!isRoot && !isInside)
+            {
+                throw new UnauthorizedAccessException(
+                    "Path pokušava izaći iz source projekta."
+                );
+            }
+
+
+            if (IsIgnoredBuildPath(fullPath))
+            {
+                throw new UnauthorizedAccessException(
+                    "Pisanje u bin, obj, .git ili .vs nije dozvoljeno."
+                );
+            }
+
+
+            return fullPath;
+        }
+
+
+        // ============================================
+        // ATOMIC FILE WRITE
+        // ============================================
+
+        private void WriteFileAtomic(
+            string destinationPath,
+            string content
+        )
+        {
+            string? directory =
+                Path.GetDirectoryName(
+                    destinationPath
+                );
+
+
+            if (string.IsNullOrWhiteSpace(directory))
+            {
+                throw new IOException(
+                    "Destination directory nije pronađen."
+                );
+            }
+
+
+            Directory.CreateDirectory(
+                directory
+            );
+
+
+            string tempFile =
+                Path.Combine(
+                    directory,
+                    $".ai_temp_{Guid.NewGuid():N}.tmp"
+                );
+
+
+            try
+            {
+                File.WriteAllText(
+                    tempFile,
+                    content
+                );
+
+
+                File.Move(
+                    tempFile,
+                    destinationPath,
+                    true
+                );
+            }
+            finally
+            {
+                if (File.Exists(tempFile))
+                {
+                    File.Delete(
+                        tempFile
+                    );
+                }
+            }
+        }
+
+
+        // ============================================
+        // COUNT EXACT OCCURRENCES
+        // ============================================
+
+        private int CountOccurrences(
+            string text,
+            string value
+        )
+        {
+            int count =
+                0;
+
+
+            int index =
+                0;
+
+
+            while (
+                (
+                    index =
+                        text.IndexOf(
+                            value,
+                            index,
+                            StringComparison.Ordinal
+                        )
+                )
+                >= 0
+            )
+            {
+                count++;
+
+                index +=
+                    value.Length;
+            }
+
+
+            return count;
+        }
+
+
+        private void MarkSourceModified()
+        {
+            sourceModified = true;
+
+            lastBuildSucceeded = false;
+        }
+
+
+        // ============================================
         // BUILD UPDATER
         // ============================================
 
@@ -444,9 +1121,7 @@ namespace AI_Assistant.Tools
 
                     Arguments =
                         $"build \"{updaterProjectPath}\" " +
-                        $"-c Release " +
-                        $"--nologo " +
-                        $"-v:minimal",
+                        "-c Release --nologo -v:minimal",
 
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
@@ -495,7 +1170,7 @@ namespace AI_Assistant.Tools
 
 
         // ============================================
-        // COPY SOURCE DIRECTORY FOR BACKUP
+        // COPY BACKUP
         // ============================================
 
         private void CopySourceDirectory(
@@ -513,16 +1188,12 @@ namespace AI_Assistant.Tools
                 in Directory.GetFiles(source)
             )
             {
-                string destinationFile =
+                File.Copy(
+                    file,
                     Path.Combine(
                         destination,
                         Path.GetFileName(file)
-                    );
-
-
-                File.Copy(
-                    file,
-                    destinationFile,
+                    ),
                     true
                 );
             }
@@ -533,30 +1204,30 @@ namespace AI_Assistant.Tools
                 in Directory.GetDirectories(source)
             )
             {
-                string directoryName =
+                string name =
                     Path.GetFileName(
                         directory
                     );
 
 
                 if (
-                    directoryName.Equals(
+                    name.Equals(
                         "bin",
                         StringComparison.OrdinalIgnoreCase
                     )
                     ||
-                    directoryName.Equals(
+                    name.Equals(
                         "obj",
                         StringComparison.OrdinalIgnoreCase
                     )
                     ||
-                    directoryName.Equals(
-                        ".vs",
+                    name.Equals(
+                        ".git",
                         StringComparison.OrdinalIgnoreCase
                     )
                     ||
-                    directoryName.Equals(
-                        ".git",
+                    name.Equals(
+                        ".vs",
                         StringComparison.OrdinalIgnoreCase
                     )
                 )
@@ -565,18 +1236,45 @@ namespace AI_Assistant.Tools
                 }
 
 
-                string destinationDirectory =
-                    Path.Combine(
-                        destination,
-                        directoryName
-                    );
-
-
                 CopySourceDirectory(
                     directory,
-                    destinationDirectory
+                    Path.Combine(
+                        destination,
+                        name
+                    )
                 );
             }
+        }
+
+
+        private bool IsIgnoredBuildPath(
+            string path
+        )
+        {
+            string slash =
+                Path.DirectorySeparatorChar.ToString();
+
+
+            return
+                path.Contains(
+                    $"{slash}bin{slash}",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                ||
+                path.Contains(
+                    $"{slash}obj{slash}",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                ||
+                path.Contains(
+                    $"{slash}.git{slash}",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                ||
+                path.Contains(
+                    $"{slash}.vs{slash}",
+                    StringComparison.OrdinalIgnoreCase
+                );
         }
     }
 }

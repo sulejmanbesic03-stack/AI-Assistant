@@ -4,11 +4,24 @@ using System.IO;
 using System.Threading;
 
 
-if (args.Length < 4)
+// ============================================
+// ARGUMENT VALIDATION
+// ============================================
+
+if (args.Length != 4)
 {
     Console.WriteLine(
-        "Updater nije dobio dovoljno argumenata."
+        $"Updater očekuje 4 argumenta. Dobijeno: {args.Length}"
     );
+
+
+    for (int i = 0; i < args.Length; i++)
+    {
+        Console.WriteLine(
+            $"ARG[{i}] = {args[i]}"
+        );
+    }
+
 
     return;
 }
@@ -22,14 +35,14 @@ if (
 )
 {
     Console.WriteLine(
-        "Neispravan PID."
+        "Neispravan parent PID."
     );
 
     return;
 }
 
 
-string newBuildDirectory =
+string stagingDirectory =
     Path.GetFullPath(
         args[1]
     );
@@ -41,7 +54,7 @@ string targetDirectory =
     );
 
 
-string exeName =
+string executableName =
     args[3];
 
 
@@ -51,13 +64,33 @@ Console.WriteLine(
 
 
 Console.WriteLine(
-    $"Čekam PID {parentPid}..."
+    $"Parent PID: {parentPid}"
+);
+
+
+Console.WriteLine(
+    $"Staging: {stagingDirectory}"
+);
+
+
+Console.WriteLine(
+    $"Target: {targetDirectory}"
+);
+
+
+Console.WriteLine(
+    $"Executable: {executableName}"
 );
 
 
 // ============================================
-// WAIT FOR OLD AGENT
+// WAIT FOR OLD PROCESS
 // ============================================
+
+Console.WriteLine(
+    $"Čekam PID {parentPid}..."
+);
+
 
 try
 {
@@ -71,23 +104,23 @@ try
 }
 catch
 {
-    // Stari proces možda već ne postoji.
+    // Proces je možda već ugašen.
 }
 
 
 Thread.Sleep(
-    1000
+    750
 );
 
 
 // ============================================
-// VALIDATE
+// VALIDATE STAGING
 // ============================================
 
-if (!Directory.Exists(newBuildDirectory))
+if (!Directory.Exists(stagingDirectory))
 {
     Console.WriteLine(
-        $"Staging build ne postoji:\n{newBuildDirectory}"
+        $"UPDATE FAILED: staging ne postoji:\n{stagingDirectory}"
     );
 
     return;
@@ -100,46 +133,66 @@ Directory.CreateDirectory(
 
 
 // ============================================
-// INSTALL
+// COPY BUILD
 // ============================================
 
 Console.WriteLine(
-    "Instaliram novu verziju..."
+    "Kopiram novu verziju..."
 );
 
 
-CopyDirectory(
-    newBuildDirectory,
-    targetDirectory
-);
-
-
-// ============================================
-// RESTART
-// ============================================
-
-string newExePath =
-    Path.Combine(
-        targetDirectory,
-        exeName
+try
+{
+    CopyDirectory(
+        stagingDirectory,
+        targetDirectory
     );
-
-
-if (!File.Exists(newExePath))
+}
+catch (Exception ex)
 {
     Console.WriteLine(
-        $"Executable nije pronađen:\n{newExePath}"
+        $"UPDATE FAILED:\n{ex}"
     );
 
     return;
 }
 
 
+// ============================================
+// VALIDATE EXECUTABLE
+// ============================================
+
+string executablePath =
+    Path.Combine(
+        targetDirectory,
+        executableName
+    );
+
+
+if (!File.Exists(executablePath))
+{
+    Console.WriteLine(
+        $"UPDATE FAILED: executable nije pronađen:\n{executablePath}"
+    );
+
+    return;
+}
+
+
+// ============================================
+// START NEW VERSION
+// ============================================
+
+Console.WriteLine(
+    $"Pokrećem novu verziju:\n{executablePath}"
+);
+
+
 ProcessStartInfo startInfo =
     new ProcessStartInfo
     {
         FileName =
-            newExePath,
+            executablePath,
 
         WorkingDirectory =
             targetDirectory,
@@ -149,13 +202,24 @@ ProcessStartInfo startInfo =
     };
 
 
-Process.Start(
-    startInfo
-);
+Process? newProcess =
+    Process.Start(
+        startInfo
+    );
+
+
+if (newProcess == null)
+{
+    Console.WriteLine(
+        "UPDATE FAILED: nova verzija nije pokrenuta."
+    );
+
+    return;
+}
 
 
 Console.WriteLine(
-    "Nova verzija pokrenuta."
+    $"Nova verzija pokrenuta. PID: {newProcess.Id}"
 );
 
 

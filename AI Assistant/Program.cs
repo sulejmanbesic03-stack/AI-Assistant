@@ -1,33 +1,103 @@
-﻿using System.Collections.Generic;
+﻿using AI_Assistant.AI;
+
+using System;
+using System.Collections.Generic;
+using System.IO;
+
+
+// ============================================
+// FIND MAIN PROJECT
+// ============================================
+
+string projectFile =
+    FindProjectFileUpwards(
+        AppContext.BaseDirectory,
+        "AI Assistant.csproj"
+    )
+    ??
+    throw new FileNotFoundException(
+        "AI Assistant.csproj nije pronađen."
+    );
 
 
 string sourceRoot =
-    @"C:\Users\sulja\source\repos\AI Assistant\AI Assistant";
+    Path.GetDirectoryName(
+        projectFile
+    )
+    ??
+    throw new DirectoryNotFoundException(
+        "Source root nije pronađen."
+    );
 
 
-string projectFile =
-    @"C:\Users\sulja\source\repos\AI Assistant\AI Assistant\AI Assistant.csproj";
+// ============================================
+// FIND SOLUTION / UPDATER
+// ============================================
+
+string solutionRoot =
+    Directory.GetParent(
+        sourceRoot
+    )?.FullName
+    ??
+    throw new DirectoryNotFoundException(
+        "Solution root nije pronađen."
+    );
 
 
 string updaterProject =
-    @"C:\Users\sulja\source\repos\AI Assistant\AI Assistant Updater\AI Assistant Updater.csproj";
+    Path.Combine(
+        solutionRoot,
+        "AI Assistant Updater",
+        "AI Assistant Updater.csproj"
+    );
 
+
+if (!File.Exists(updaterProject))
+{
+    throw new FileNotFoundException(
+        $"Updater project nije pronađen:\n{updaterProject}"
+    );
+}
+
+
+// ============================================
+// ALLOWED FILESYSTEM ROOTS
+// ============================================
 
 List<string> allowedRoots =
-    new List<string>
+    new List<string>();
+
+
+string[] optionalRoots =
+{
+    @"C:\AIWorkspace",
+    @"C:\BlenderProjects",
+    @"C:\SubstanceProjects"
+};
+
+
+foreach (string root in optionalRoots)
+{
+    if (Directory.Exists(root))
     {
-        @"C:\AIWorkspace",
+        allowedRoots.Add(
+            root
+        );
+    }
+}
 
-        @"C:\BlenderProjects",
 
-        @"C:\SubstanceProjects",
+// Agent mora moći čitati svoj source.
+// Pisanje u source je dodatno zaštićeno
+// kroz SelfDevelopmentTools.
+allowedRoots.Add(
+    sourceRoot
+);
 
-        sourceRoot
 
-        // Kasnije:
-        // @"C:\UnityProjects\MyGame"
-    };
-
+// ============================================
+// START AGENT
+// ============================================
 
 AIIntegration ai =
     new AIIntegration(
@@ -36,6 +106,19 @@ AIIntegration ai =
         sourceRoot,
         updaterProject
     );
+
+
+Console.WriteLine(
+    "AI Assistant pokrenut."
+);
+
+
+Console.WriteLine(
+    "Upiši EXIT za izlaz."
+);
+
+
+Console.WriteLine();
 
 
 while (true)
@@ -52,7 +135,7 @@ while (true)
     if (
         prompt?.Equals(
             "EXIT",
-            System.StringComparison.OrdinalIgnoreCase
+            StringComparison.OrdinalIgnoreCase
         )
         == true
     )
@@ -67,10 +150,6 @@ while (true)
         )
     )
     {
-        Console.WriteLine(
-            "Nisi unio pitanje."
-        );
-
         continue;
     }
 
@@ -84,4 +163,44 @@ while (true)
     Console.WriteLine(
         $"AI: {answer}"
     );
+}
+
+
+// ============================================
+// FIND CSPROJ UPWARDS
+// ============================================
+
+static string? FindProjectFileUpwards(
+    string startDirectory,
+    string projectFileName
+)
+{
+    DirectoryInfo? directory =
+        new DirectoryInfo(
+            startDirectory
+        );
+
+
+    while (directory != null)
+    {
+        string candidate =
+            Path.Combine(
+                directory.FullName,
+                projectFileName
+            );
+
+
+        if (File.Exists(candidate))
+        {
+            return
+                candidate;
+        }
+
+
+        directory =
+            directory.Parent;
+    }
+
+
+    return null;
 }
