@@ -21,6 +21,8 @@ namespace AI_Assistant.AI
 
         private readonly SelfDevelopmentTools selfTools;
 
+        private readonly UnityBridgeTools unityTools;
+
         private readonly List<ChatMessage> conversationHistory;
 
 
@@ -75,7 +77,8 @@ namespace AI_Assistant.AI
                     sourceRoot,
                     updaterProjectPath
                 );
-
+            unityTools =
+                    new UnityBridgeTools();
 
             conversationHistory =
                 new List<ChatMessage>();
@@ -541,7 +544,26 @@ namespace AI_Assistant.AI
                         Use search_and_read_file when you know a filename but not its location.
 
                         For large files use read_file_section.
+                       
+                        UNITY BRIDGE:
 
+                        Unity read tools:
+                        - get_active_scene
+                        - get_scene_hierarchy
+                        - get_console_errors
+
+                        Unity action tools:
+                        - create_gameobject
+
+                        Before changing a Unity scene, use get_scene_hierarchy when the current hierarchy or parent path is not already known.
+
+                        Use an empty parentPath to create a root GameObject.
+
+                        Use only exact hierarchy paths returned by get_scene_hierarchy.
+
+                        After a Unity action, use get_scene_hierarchy only when verification is needed.
+
+                        Do not claim that a Unity action succeeded unless its tool result confirms success.
 
                         SELF DEVELOPMENT:
 
@@ -1191,7 +1213,74 @@ namespace AI_Assistant.AI
                             )
                         );
                 }
+                if (
+                    functionName ==
+                    "set_transform"
+                )
+                {
+                    return
+                        unityTools.SetTransform(
+                            GetStringArg(args, "objectPath"),
 
+                            GetFloatArg(args, "positionX"),
+                            GetFloatArg(args, "positionY"),
+                            GetFloatArg(args, "positionZ"),
+
+                            GetFloatArg(args, "rotationX"),
+                            GetFloatArg(args, "rotationY"),
+                            GetFloatArg(args, "rotationZ"),
+
+                            GetFloatArg(args, "scaleX"),
+                            GetFloatArg(args, "scaleY"),
+                            GetFloatArg(args, "scaleZ")
+                        );
+                }
+                // ====================================
+                // UNITY BRIDGE - READ ONLY
+                // ====================================
+                if (
+                    functionName ==
+                    "create_gameobject"
+                )
+                {
+                    return
+                        unityTools.CreateGameObject(
+                            GetStringArg(
+                                args,
+                                "name"
+                            ),
+                            GetStringArg(
+                                args,
+                                "parentPath"
+                            )
+                        );
+                }
+                if (
+                    functionName ==
+                    "get_active_scene"
+                )
+                {
+                    return
+                        unityTools.GetActiveScene();
+                }
+                if (
+                    functionName ==
+                    "get_scene_hierarchy"
+                )
+                {
+                    return
+                        unityTools.GetSceneHierarchy();
+                }
+
+
+                if (
+                    functionName ==
+                    "get_console_errors"
+                )
+                {
+                    return
+                        unityTools.GetConsoleErrors();
+                }
 
                 if (
                     functionName ==
@@ -1377,7 +1466,38 @@ namespace AI_Assistant.AI
             return "";
         }
 
+        private float GetFloatArg(
+    JsonElement args,
+    string propertyName
+)
+        {
+            if (
+                !args.TryGetProperty(
+                    propertyName,
+                    out JsonElement value
+                )
+            )
+            {
+                throw new JsonException(
+                    $"Missing required number argument: {propertyName}"
+                );
+            }
 
+
+            if (
+                value.ValueKind !=
+                JsonValueKind.Number
+            )
+            {
+                throw new JsonException(
+                    $"Argument {propertyName} must be a number."
+                );
+            }
+
+
+            return
+                value.GetSingle();
+        }
         private int GetIntArg(
             JsonElement args,
             string name
@@ -1482,14 +1602,115 @@ namespace AI_Assistant.AI
                     "get_agent_version",
                     "Returns the current AI Assistant version. Takes no arguments."
                 ),
-
+                ToolNoArgs(
+                    "get_active_scene",
+                    "Returns read-only information about the active scene in the currently open Unity Editor. Takes no arguments."
+                ),
 
                 ToolNoArgs(
                     "list_allowed_roots",
                     "Returns the absolute filesystem roots that normal filesystem tools may access. Takes no arguments."
+                )
+                ,ToolNoArgs(
+                        "get_scene_hierarchy",
+                        "Returns the read-only hierarchy of the active Unity scene, including GameObjects, transforms, components and children. Takes no arguments."
                 ),
 
 
+                ToolNoArgs(
+                        "get_console_errors",
+                        "Returns Unity errors, exceptions and assertions captured since the Unity bridge loaded. Takes no arguments."
+                ),
+
+                new
+{
+    type = "function",
+
+    function = new
+    {
+        name =
+            "set_transform",
+
+        description =
+            "Sets the world position, world rotation and local scale of an existing Unity GameObject. " +
+            "objectPath must exactly match a hierarchyPath returned by get_scene_hierarchy.",
+
+        parameters = new
+        {
+            type = "object",
+
+            properties = new
+            {
+                objectPath = new
+                {
+                    type = "string"
+                },
+
+                positionX = new
+                {
+                    type = "number"
+                },
+
+                positionY = new
+                {
+                    type = "number"
+                },
+
+                positionZ = new
+                {
+                    type = "number"
+                },
+
+                rotationX = new
+                {
+                    type = "number"
+                },
+
+                rotationY = new
+                {
+                    type = "number"
+                },
+
+                rotationZ = new
+                {
+                    type = "number"
+                },
+
+                scaleX = new
+                {
+                    type = "number"
+                },
+
+                scaleY = new
+                {
+                    type = "number"
+                },
+
+                scaleZ = new
+                {
+                    type = "number"
+                }
+            },
+
+            required = new[]
+            {
+                "objectPath",
+
+                "positionX",
+                "positionY",
+                "positionZ",
+
+                "rotationX",
+                "rotationY",
+                "rotationZ",
+
+                "scaleX",
+                "scaleY",
+                "scaleZ"
+            }
+        }
+    }
+},
                 new
                 {
                     type = "function",
@@ -1555,7 +1776,51 @@ namespace AI_Assistant.AI
                     }
                 },
 
+                new
+                    {
+                        type = "function",
 
+                        function = new
+                        {
+                            name =
+                                "create_gameobject",
+
+                            description =
+                                "Creates a new GameObject in the active Unity scene. " +
+                                "Use an empty parentPath to create it at scene root. " +
+                                "To create it as a child, parentPath must be an exact hierarchy path returned by get_scene_hierarchy.",
+
+                            parameters = new
+                            {
+                                type = "object",
+
+                                properties = new
+                                {
+                                    name = new
+                                    {
+                                        type = "string",
+
+                                        description =
+                                            "Name of the new GameObject."
+                                    },
+
+                                    parentPath = new
+                                    {
+                                        type = "string",
+
+                                        description =
+                                            "Exact parent hierarchy path, for example Environment/Trees. Use an empty string for scene root."
+                                    }
+                                },
+
+                                required = new[]
+                                {
+                                    "name",
+                                    "parentPath"
+                                }
+                            }
+                        }
+                    },
                 new
                 {
                     type = "function",
