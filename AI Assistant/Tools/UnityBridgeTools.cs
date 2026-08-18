@@ -4,7 +4,6 @@ using System.Text;
 using System.Text.Json;
 using System.Threading.Tasks;
 
-
 namespace AI_Assistant.Tools
 {
     public class UnityBridgeTools
@@ -12,29 +11,26 @@ namespace AI_Assistant.Tools
         private const string ReadBaseUrl =
             "http://127.0.0.1:47821";
 
-
         private const string ActionBaseUrl =
             "http://127.0.0.1:47822";
 
+        private const string SafeActionBaseUrl =
+            "http://127.0.0.1:47823";
 
         private const string BridgeHeaderValue =
             "AI-Assistant-Local";
 
-
         private readonly HttpClient client;
-
 
         public UnityBridgeTools()
         {
             client =
                 new HttpClient();
 
-
             client.Timeout =
                 TimeSpan.FromSeconds(
                     5
                 );
-
 
             client.DefaultRequestHeaders.Add(
                 "X-AI-Bridge",
@@ -42,40 +38,33 @@ namespace AI_Assistant.Tools
             );
         }
 
-
         // ============================================
         // READ-ONLY UNITY TOOLS
         // ============================================
 
         public string GetActiveScene()
         {
-            return
-                SendGetRequest(
-                    "/active-scene"
-                );
+            return SendGetRequest(
+                "/active-scene"
+            );
         }
-
 
         public string GetSceneHierarchy()
         {
-            return
-                SendGetRequest(
-                    "/scene-hierarchy"
-                );
+            return SendGetRequest(
+                "/scene-hierarchy"
+            );
         }
-
 
         public string GetConsoleErrors()
         {
-            return
-                SendGetRequest(
-                    "/console-errors"
-                );
+            return SendGetRequest(
+                "/console-errors"
+            );
         }
 
-
         // ============================================
-        // CREATE GAMEOBJECT
+        // ORIGINAL ACTION SERVER
         // ============================================
 
         public string CreateGameObject(
@@ -87,24 +76,16 @@ namespace AI_Assistant.Tools
                 JsonSerializer.Serialize(
                     new
                     {
-                        name = name,
-
-                        parentPath = parentPath
+                        name,
+                        parentPath
                     }
                 );
 
-
-            return
-                SendPostRequest(
-                    "/create-gameobject",
-                    json
-                );
+            return SendPostRequest(
+                "/create-gameobject",
+                json
+            );
         }
-
-
-        // ============================================
-        // SET TRANSFORM
-        // ============================================
 
         public string SetTransform(
             string objectPath,
@@ -123,36 +104,410 @@ namespace AI_Assistant.Tools
                 JsonSerializer.Serialize(
                     new
                     {
-                        objectPath = objectPath,
-
-                        positionX = positionX,
-
-                        positionY = positionY,
-
-                        positionZ = positionZ,
-
-                        rotationX = rotationX,
-
-                        rotationY = rotationY,
-
-                        rotationZ = rotationZ,
-
-                        scaleX = scaleX,
-
-                        scaleY = scaleY,
-
-                        scaleZ = scaleZ
+                        objectPath,
+                        positionX,
+                        positionY,
+                        positionZ,
+                        rotationX,
+                        rotationY,
+                        rotationZ,
+                        scaleX,
+                        scaleY,
+                        scaleZ
                     }
                 );
 
-
-            return
-                SendPostRequest(
-                    "/set-transform",
-                    json
-                );
+            return SendPostRequest(
+                "/set-transform",
+                json
+            );
         }
 
+        // ============================================
+        // SAFE ACTION SERVER
+        // ============================================
+
+        public string AddComponent(
+            string objectPath,
+            string componentType
+        )
+        {
+            return SendSafePostRequest(
+                "/add-component",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        objectPath,
+                        componentType
+                    }
+                )
+            );
+        }
+
+        public string AttachScript(
+            string objectPath,
+            string scriptType
+        )
+        {
+            return SendSafePostRequest(
+                "/attach-script",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        objectPath,
+                        componentType = scriptType
+                    }
+                )
+            );
+        }
+
+        public string SaveScene()
+        {
+            return SendSafePostRequest(
+                "/save-scene",
+                "{}"
+            );
+        }
+
+        public string CreatePrimitive(
+            string primitiveType,
+            string name,
+            string parentPath
+        )
+        {
+            return SendSafePostRequest(
+                "/create-primitive",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        primitiveType,
+                        name,
+                        parentPath
+                    }
+                )
+            );
+        }
+
+        public string RenameGameObject(
+            string objectPath,
+            string newName
+        )
+        {
+            return SendSafePostRequest(
+                "/rename-gameobject",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        objectPath,
+                        newName
+                    }
+                )
+            );
+        }
+
+        public string SetParent(
+            string objectPath,
+            string parentPath
+        )
+        {
+            return SendSafePostRequest(
+                "/set-parent",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        objectPath,
+                        parentPath
+                    }
+                )
+            );
+        }
+
+        public string SetActive(
+            string objectPath,
+            bool active
+        )
+        {
+            return SendSafePostRequest(
+                "/set-active",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        objectPath,
+                        active
+                    }
+                )
+            );
+        }
+
+        public string FindAssets(
+            string filter,
+            string searchFolder
+        )
+        {
+            return SendSafePostRequest(
+                "/find-assets",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        filter,
+                        searchFolder
+                    }
+                )
+            );
+        }
+
+        public string GetAssetInfo(
+            string assetPath
+        )
+        {
+            return SendSafePostRequest(
+                "/get-asset-info",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        assetPath
+                    }
+                )
+            );
+        }
+
+        public string CreateMaterial(
+            string assetPath,
+            string shaderName
+        )
+        {
+            return SendSafePostRequest(
+                "/create-material",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        assetPath,
+                        shaderName
+                    }
+                )
+            );
+        }
+
+        public string SetMaterialColor(
+            string materialPath,
+            float red,
+            float green,
+            float blue,
+            float alpha
+        )
+        {
+            return SendSafePostRequest(
+                "/set-material-color",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        materialPath,
+                        red,
+                        green,
+                        blue,
+                        alpha
+                    }
+                )
+            );
+        }
+
+        public string AssignMaterial(
+            string objectPath,
+            string materialPath
+        )
+        {
+            return SendSafePostRequest(
+                "/assign-material",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        objectPath,
+                        materialPath
+                    }
+                )
+            );
+        }
+
+        public string ImportAsset(
+            string assetPath
+        )
+        {
+            return SendSafePostRequest(
+                "/import-asset",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        assetPath
+                    }
+                )
+            );
+        }
+
+        public string SetPosition(
+            string objectPath,
+            float x,
+            float y,
+            float z
+        )
+        {
+            return SendSafePostRequest(
+                "/set-position",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        objectPath,
+                        x,
+                        y,
+                        z
+                    }
+                )
+            );
+        }
+
+        public string SetRotation(
+            string objectPath,
+            float x,
+            float y,
+            float z
+        )
+        {
+            return SendSafePostRequest(
+                "/set-rotation",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        objectPath,
+                        x,
+                        y,
+                        z
+                    }
+                )
+            );
+        }
+
+        public string SetScale(
+            string objectPath,
+            float x,
+            float y,
+            float z
+        )
+        {
+            return SendSafePostRequest(
+                "/set-scale",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        objectPath,
+                        x,
+                        y,
+                        z
+                    }
+                )
+            );
+        }
+
+        // ============================================
+        // DUPLICATE AND PHYSICS
+        // ============================================
+
+        public string DuplicateGameObject(
+            string objectPath,
+            string newName,
+            string parentPath
+        )
+        {
+            return SendSafePostRequest(
+                "/duplicate-gameobject",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        objectPath,
+                        newName,
+                        parentPath
+                    }
+                )
+            );
+        }
+
+        public string ConfigureRigidbody(
+            string objectPath,
+            float mass,
+            bool useGravity,
+            bool isKinematic
+        )
+        {
+            return SendSafePostRequest(
+                "/configure-rigidbody",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        objectPath,
+                        mass,
+                        useGravity,
+                        isKinematic
+                    }
+                )
+            );
+        }
+
+        public string ConfigureCollider(
+            string objectPath,
+            bool enabled,
+            bool isTrigger
+        )
+        {
+            return SendSafePostRequest(
+                "/configure-collider",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        objectPath,
+                        enabled,
+                        isTrigger
+                    }
+                )
+            );
+        }
+
+        // ============================================
+        // PREFABS
+        // ============================================
+
+        public string CreatePrefab(
+            string objectPath,
+            string assetPath
+        )
+        {
+            return SendSafePostRequest(
+                "/create-prefab",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        objectPath,
+                        assetPath
+                    }
+                )
+            );
+        }
+
+        public string InstantiatePrefab(
+            string assetPath,
+            string name,
+            string parentPath
+        )
+        {
+            return SendSafePostRequest(
+                "/instantiate-prefab",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        assetPath,
+                        name,
+                        parentPath
+                    }
+                )
+            );
+        }
 
         // ============================================
         // SEND GET
@@ -172,24 +527,20 @@ namespace AI_Assistant.Tools
                         .GetAwaiter()
                         .GetResult();
 
-
-                return
-                    ReadResponse(
-                        response
-                    );
+                return ReadResponse(
+                    response
+                );
             }
             catch (Exception ex)
             {
-                return
-                    FormatConnectionError(
-                        ex
-                    );
+                return FormatConnectionError(
+                    ex
+                );
             }
         }
 
-
         // ============================================
-        // SEND POST
+        // SEND POST - ORIGINAL ACTION SERVER
         // ============================================
 
         private string SendPostRequest(
@@ -206,7 +557,6 @@ namespace AI_Assistant.Tools
                         "application/json"
                     );
 
-
                 using HttpResponseMessage response =
                     client
                         .PostAsync(
@@ -216,21 +566,56 @@ namespace AI_Assistant.Tools
                         .GetAwaiter()
                         .GetResult();
 
-
-                return
-                    ReadResponse(
-                        response
-                    );
+                return ReadResponse(
+                    response
+                );
             }
             catch (Exception ex)
             {
-                return
-                    FormatConnectionError(
-                        ex
-                    );
+                return FormatConnectionError(
+                    ex
+                );
             }
         }
 
+        // ============================================
+        // SEND POST - SAFE ACTION SERVER
+        // ============================================
+
+        private string SendSafePostRequest(
+            string endpoint,
+            string json
+        )
+        {
+            try
+            {
+                using StringContent content =
+                    new StringContent(
+                        json,
+                        Encoding.UTF8,
+                        "application/json"
+                    );
+
+                using HttpResponseMessage response =
+                    client
+                        .PostAsync(
+                            SafeActionBaseUrl + endpoint,
+                            content
+                        )
+                        .GetAwaiter()
+                        .GetResult();
+
+                return ReadResponse(
+                    response
+                );
+            }
+            catch (Exception ex)
+            {
+                return FormatConnectionError(
+                    ex
+                );
+            }
+        }
 
         // ============================================
         // READ RESPONSE
@@ -246,18 +631,44 @@ namespace AI_Assistant.Tools
                     .GetAwaiter()
                     .GetResult();
 
-
             if (!response.IsSuccessStatusCode)
             {
-                return
-                    $"UNITY BRIDGE ERROR ({(int)response.StatusCode}):\n" +
-                    responseBody;
-            }
+                string message =
+                    ExtractErrorMessage(
+                        responseBody
+                    );
 
+                string errorCode =
+                    ClassifyError(
+                        (int)response.StatusCode,
+                        message
+                    );
+
+                if (errorCode == "ALREADY_EXISTS")
+                {
+                    return JsonSerializer.Serialize(
+                        new
+                        {
+                            success = true,
+                            status = "already_exists",
+                            message
+                        }
+                    );
+                }
+
+                return JsonSerializer.Serialize(
+                    new
+                    {
+                        success = false,
+                        errorCode,
+                        statusCode = (int)response.StatusCode,
+                        message
+                    }
+                );
+            }
 
             return responseBody;
         }
-
 
         // ============================================
         // CONNECTION ERRORS
@@ -269,22 +680,182 @@ namespace AI_Assistant.Tools
         {
             if (ex is TaskCanceledException)
             {
-                return
-                    "UNITY BRIDGE TIMEOUT: Unity nije odgovorio u roku od 5 sekundi.";
+                return CreateFailure(
+                    "TIMEOUT",
+                    "Unity nije odgovorio u roku od 5 sekundi."
+                );
             }
-
 
             if (ex is HttpRequestException)
             {
-                return
-                    "UNITY BRIDGE OFFLINE:\n" +
-                    "Provjeri da li je Unity Editor otvoren i bridge pokrenut.\n" +
-                    ex.Message;
+                return CreateFailure(
+                    "OFFLINE",
+                    "Provjeri da li je Unity Editor otvoren i bridge pokrenut. " +
+                    ex.Message
+                );
             }
 
+            return CreateFailure(
+                "CONNECTION_ERROR",
+                ex.Message
+            );
+        }
 
-            return
-                $"UNITY BRIDGE ERROR:\n{ex.Message}";
+        private string ExtractErrorMessage(
+            string responseBody
+        )
+        {
+            try
+            {
+                using JsonDocument document =
+                    JsonDocument.Parse(
+                        responseBody
+                    );
+
+                JsonElement root =
+                    document.RootElement;
+
+                if (
+                    root.TryGetProperty(
+                        "error",
+                        out JsonElement error
+                    )
+                )
+                {
+                    return error.GetString()
+                        ?? responseBody;
+                }
+
+                if (
+                    root.TryGetProperty(
+                        "message",
+                        out JsonElement message
+                    )
+                )
+                {
+                    return message.GetString()
+                        ?? responseBody;
+                }
+            }
+            catch
+            {
+                // Bridge je vratio tekst koji nije JSON.
+            }
+
+            return responseBody;
+        }
+
+        private string ClassifyError(
+            int statusCode,
+            string message
+        )
+        {
+            if (
+                message.Contains(
+                    "already exists",
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                return "ALREADY_EXISTS";
+            }
+
+            if (
+                message.Contains(
+                    "Unknown endpoint",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                ||
+                message.Contains(
+                    "Unknown action endpoint",
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                return "ENDPOINT_NOT_FOUND";
+            }
+
+            if (
+                message.Contains(
+                    "GameObject not found",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                ||
+                message.Contains(
+                    "GameObject nije pronađen",
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                return "GAMEOBJECT_NOT_FOUND";
+            }
+
+            if (
+                message.Contains(
+                    "Parent not found",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                ||
+                message.Contains(
+                    "Parent GameObject nije pronađen",
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                return "PARENT_NOT_FOUND";
+            }
+
+            if (
+                message.Contains(
+                    "Asset not found",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                ||
+                message.Contains(
+                    "Material not found",
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                return "ASSET_NOT_FOUND";
+            }
+
+            if (statusCode == 403)
+            {
+                return "UNAUTHORIZED";
+            }
+
+            if (statusCode == 405)
+            {
+                return "METHOD_NOT_ALLOWED";
+            }
+
+            if (statusCode == 400)
+            {
+                return "VALIDATION_FAILED";
+            }
+
+            if (statusCode == 404)
+            {
+                return "RESOURCE_NOT_FOUND";
+            }
+
+            return "UNITY_OPERATION_FAILED";
+        }
+
+        private string CreateFailure(
+            string errorCode,
+            string message
+        )
+        {
+            return JsonSerializer.Serialize(
+                new
+                {
+                    success = false,
+                    errorCode,
+                    message
+                }
+            );
         }
     }
 }

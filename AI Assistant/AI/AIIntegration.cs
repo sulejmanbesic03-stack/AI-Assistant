@@ -43,7 +43,7 @@ namespace AI_Assistant.AI
 
 
         private const int MaxToolCyclesInContext =
-            3;
+            6;
 
 
         private const int MaxToolUseRecoveryAttempts =
@@ -114,8 +114,8 @@ namespace AI_Assistant.AI
             );
 
 
-            HashSet<string> executedToolCalls =
-                new HashSet<string>(
+            Dictionary<string, string> executedToolResults =
+                new Dictionary<string, string>(
                     StringComparer.Ordinal
                 );
 
@@ -136,6 +136,17 @@ namespace AI_Assistant.AI
                 0;
 
 
+            object[] toolDefinitions =
+                BuildToolDefinitionsForTask(
+                    prompt
+                );
+
+
+            Console.WriteLine(
+                $"[TOOLS] {GetRegisteredToolNames(toolDefinitions)}"
+            );
+
+
             while (iteration < MaxIterations)
             {
                 iteration++;
@@ -146,10 +157,6 @@ namespace AI_Assistant.AI
                         baseMessages,
                         toolCycles
                     );
-
-
-                object[] toolDefinitions =
-                    BuildToolDefinitions();
 
 
                 object requestBody =
@@ -225,7 +232,9 @@ namespace AI_Assistant.AI
 
 
                         string registeredTools =
-                            GetRegisteredToolNames();
+                            GetRegisteredToolNames(
+                                toolDefinitions
+                            );
 
 
                         baseMessages.Add(
@@ -346,6 +355,12 @@ namespace AI_Assistant.AI
                             ?? "{}";
 
 
+                        if (IsNoArgTool(functionName))
+                        {
+                            argumentsJson = "{}";
+                        }
+
+
                         Console.WriteLine(
                             $"[TOOL {iteration}] {functionName} | {argumentsJson}"
                         );
@@ -367,27 +382,32 @@ namespace AI_Assistant.AI
 
 
                         if (
-                            executedToolCalls.Contains(
-                                signature
+                            executedToolResults.TryGetValue(
+                                signature,
+                                out string cachedResult
                             )
                         )
                         {
                             toolResult =
-                                "DUPLICATE TOOL CALL BLOCKED. " +
-                                "This exact tool with equivalent arguments already ran during this task.";
+                                cachedResult;
+
+
+                            Console.WriteLine(
+                                $"[CACHE {iteration}] Reusing previous result."
+                            );
                         }
                         else
                         {
-                            executedToolCalls.Add(
-                                signature
-                            );
-
-
                             toolResult =
                                 ExecuteTool(
                                     functionName,
                                     argumentsJson
                                 );
+
+
+                            executedToolResults[
+                                signature
+                            ] = toolResult;
                         }
 
 
@@ -395,6 +415,34 @@ namespace AI_Assistant.AI
                             TrimToolResult(
                                 toolResult
                             );
+
+
+                        Console.WriteLine(
+                            $"[RESULT {iteration}] {TrimConsoleResult(toolResult)}"
+                        );
+
+
+                        if (
+                            TryGetUnityFailure(
+                                toolResult,
+                                out string failureMessage
+                            )
+                        )
+                        {
+                            string answer =
+                                $"Unity action stopped: {failureMessage}";
+
+
+                            conversationHistory.Add(
+                                new ChatMessage(
+                                    "assistant",
+                                    answer
+                                )
+                            );
+
+
+                            return answer;
+                        }
 
 
                         currentCycle.Add(
@@ -554,6 +602,48 @@ namespace AI_Assistant.AI
 
                         Unity action tools:
                         - create_gameobject
+                        - set_position
+                        - set_rotation
+                        - set_scale
+                        - add_component
+                        - attach_script
+                        - save_scene
+                        - create_primitive
+                        - rename_gameobject
+                        - set_parent
+                        - set_active
+                        - find_assets
+                        - get_asset_info
+                        - create_material
+                        - set_material_color
+                        - assign_material
+                        - import_asset
+
+                        UNITY ACTION RULES:
+
+                        When the user asks you to change Unity, call the appropriate registered Unity action tool immediately.
+
+                        Never print, describe, suggest or simulate a tool call as JSON, code or instructions.
+
+                        Never tell the user to execute a tool call. You execute registered tools yourself.
+
+                        After using get_scene_hierarchy to locate an object, continue in the same task by calling the requested action tool.
+
+                        Do not stop after observation when the user requested an action.
+
+                        Do not ask for confirmation unless the user explicitly requested a preview or confirmation.
+
+                        Prefer set_position, set_rotation and set_scale over the legacy set_transform tool.
+
+                        Each vector action uses only objectPath, x, y and z. All vector values must be JSON numbers without quotes.
+
+                        After an action succeeds, give the user a short final confirmation.
+
+                        After every Unity action, inspect its tool result.
+
+                        If a result contains UNITY BRIDGE ERROR, OFFLINE, TIMEOUT, success=false or another failure, do not continue with dependent actions and do not claim success.
+
+                        Retry a failed action at most once. If it fails again, report the exact tool error.
 
                         Before changing a Unity scene, use get_scene_hierarchy when the current hierarchy or parent path is not already known.
 
@@ -881,6 +971,21 @@ namespace AI_Assistant.AI
         // ============================================
         // NORMALIZE JSON
         // ============================================
+
+        private bool IsNoArgTool(string functionName)
+        {
+            return functionName == "get_agent_version"
+                || functionName == "save_scene"
+                || functionName == "get_active_scene"
+                || functionName == "get_scene_hierarchy"
+                || functionName == "get_console_errors"
+                || functionName == "list_allowed_roots"
+                || functionName == "inspect_self_structure"
+                || functionName == "backup_project"
+                || functionName == "build_self"
+                || functionName == "restart_self";
+        }
+
 
         private string NormalizeJson(
             string json
@@ -1235,6 +1340,86 @@ namespace AI_Assistant.AI
                             GetFloatArg(args, "scaleZ")
                         );
                 }
+
+                if (functionName == "add_component")
+                {
+                    return unityTools.AddComponent(GetStringArg(args, "objectPath"), GetStringArg(args, "componentType"));
+                }
+
+                if (functionName == "attach_script")
+                {
+                    return unityTools.AttachScript(GetStringArg(args, "objectPath"), GetStringArg(args, "scriptType"));
+                }
+
+                if (functionName == "save_scene")
+                {
+                    return unityTools.SaveScene();
+                }
+
+                if (functionName == "create_primitive")
+                {
+                    return unityTools.CreatePrimitive(GetStringArg(args, "primitiveType"), GetStringArg(args, "name"), GetStringArg(args, "parentPath"));
+                }
+
+                if (functionName == "rename_gameobject")
+                {
+                    return unityTools.RenameGameObject(GetStringArg(args, "objectPath"), GetStringArg(args, "newName"));
+                }
+
+                if (functionName == "set_parent")
+                {
+                    return unityTools.SetParent(GetStringArg(args, "objectPath"), GetStringArg(args, "parentPath"));
+                }
+
+                if (functionName == "set_active")
+                {
+                    return unityTools.SetActive(GetStringArg(args, "objectPath"), GetBoolArg(args, "active"));
+                }
+
+                if (functionName == "find_assets")
+                {
+                    return unityTools.FindAssets(GetStringArg(args, "filter"), GetStringArg(args, "searchFolder"));
+                }
+
+                if (functionName == "get_asset_info")
+                {
+                    return unityTools.GetAssetInfo(GetStringArg(args, "assetPath"));
+                }
+
+                if (functionName == "create_material")
+                {
+                    return unityTools.CreateMaterial(GetStringArg(args, "assetPath"), GetStringArg(args, "shaderName"));
+                }
+
+                if (functionName == "set_material_color")
+                {
+                    return unityTools.SetMaterialColor(GetStringArg(args, "materialPath"), GetFloatArg(args, "red"), GetFloatArg(args, "green"), GetFloatArg(args, "blue"), GetFloatArg(args, "alpha"));
+                }
+
+                if (functionName == "assign_material")
+                {
+                    return unityTools.AssignMaterial(GetStringArg(args, "objectPath"), GetStringArg(args, "materialPath"));
+                }
+
+                if (functionName == "import_asset")
+                {
+                    return unityTools.ImportAsset(GetStringArg(args, "assetPath"));
+                }
+
+                if (functionName == "set_position")
+                {
+                    return unityTools.SetPosition(GetStringArg(args, "objectPath"), GetFloatArg(args, "x"), GetFloatArg(args, "y"), GetFloatArg(args, "z"));
+                }
+
+                if (functionName == "set_rotation")
+                {
+                    return unityTools.SetRotation(GetStringArg(args, "objectPath"), GetFloatArg(args, "x"), GetFloatArg(args, "y"), GetFloatArg(args, "z"));
+                }
+
+                if (functionName == "set_scale")
+                {
+                    return unityTools.SetScale(GetStringArg(args, "objectPath"), GetFloatArg(args, "x"), GetFloatArg(args, "y"), GetFloatArg(args, "z"));
+                }
                 // ====================================
                 // UNITY BRIDGE - READ ONLY
                 // ====================================
@@ -1438,6 +1623,43 @@ namespace AI_Assistant.AI
         }
 
 
+        private string TrimConsoleResult(string result)
+        {
+            string oneLine = result.Replace("\r", " ").Replace("\n", " ").Trim();
+            return oneLine.Length <= 300 ? oneLine : oneLine.Substring(0, 300) + "...";
+        }
+
+
+        private bool TryGetUnityFailure(string toolResult, out string failureMessage)
+        {
+            failureMessage = "";
+
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(toolResult);
+                JsonElement root = document.RootElement;
+                if (!root.TryGetProperty("success", out JsonElement success)
+                    || success.ValueKind != JsonValueKind.False)
+                {
+                    return false;
+                }
+
+                string errorCode = root.TryGetProperty("errorCode", out JsonElement code)
+                    ? code.GetString() ?? "UNITY_FAILURE"
+                    : "UNITY_FAILURE";
+                string message = root.TryGetProperty("message", out JsonElement messageElement)
+                    ? messageElement.GetString() ?? toolResult
+                    : toolResult;
+                failureMessage = $"{errorCode}: {message}";
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+
         // ============================================
         // ARG HELPERS
         // ============================================
@@ -1555,11 +1777,73 @@ namespace AI_Assistant.AI
         // REGISTERED TOOL NAMES
         // ============================================
 
-        private string GetRegisteredToolNames()
+        private object[] BuildToolDefinitionsForTask(string prompt)
+        {
+            string context = prompt + "\n" + string.Join("\n", conversationHistory.TakeLast(5).Select(message => message.Message));
+            bool isUnityTask = ContainsAny(context, "unity", "scene", "scena", "gameobject", "hierarchy", "materijal", "material", "shader", "asset", "component", "komponent", "transform", "rigidbody", "collider", "renderer", "primitive", "physicscube", "prefab");
+            bool isSelfTask = ContainsAny(context, "self-development", "self development", "backup_project", "build_self", "restart_self", "replace_self_text", "write_self_file", "vlastiti source", "svoj source", "svoj kod");
+
+            HashSet<string> selected = new HashSet<string>(StringComparer.Ordinal) { "get_agent_version" };
+
+            if (isUnityTask)
+            {
+                selected.UnionWith(new[]
+                {
+                    "get_active_scene", "get_scene_hierarchy", "get_console_errors",
+                    "create_gameobject", "set_position", "set_rotation", "set_scale", "add_component", "attach_script",
+                    "save_scene", "create_primitive", "rename_gameobject", "set_parent",
+                    "set_active", "find_assets", "get_asset_info", "create_material",
+                    "set_material_color", "assign_material", "import_asset"
+                });
+            }
+
+            if (isSelfTask)
+            {
+                selected.UnionWith(new[]
+                {
+                    "inspect_self_structure", "find_self_text", "read_self_file_section",
+                    "backup_project", "write_self_file", "replace_self_text",
+                    "build_self", "restart_self"
+                });
+            }
+
+            if (!isUnityTask && !isSelfTask)
+            {
+                selected.UnionWith(new[]
+                {
+                    "list_allowed_roots", "search_and_read_file", "read_file",
+                    "read_file_section", "create_folder", "create_file", "list_files",
+                    "list_directories", "find_file", "copy_file", "move_file"
+                });
+            }
+
+            return BuildToolDefinitions()
+                .Where(definition => selected.Contains(GetToolDefinitionName(definition)))
+                .ToArray();
+        }
+
+
+        private bool ContainsAny(string text, params string[] values)
+        {
+            return values.Any(value => text.Contains(value, StringComparison.OrdinalIgnoreCase));
+        }
+
+
+        private string GetToolDefinitionName(object definition)
+        {
+            string json = JsonSerializer.Serialize(definition);
+            using JsonDocument document = JsonDocument.Parse(json);
+            return document.RootElement.GetProperty("function").GetProperty("name").GetString() ?? "";
+        }
+
+
+        private string GetRegisteredToolNames(
+            object[] toolDefinitions
+        )
         {
             string json =
                 JsonSerializer.Serialize(
-                    BuildToolDefinitions()
+                    toolDefinitions
                 );
 
 
@@ -1602,6 +1886,68 @@ namespace AI_Assistant.AI
                     "get_agent_version",
                     "Returns the current AI Assistant version. Takes no arguments."
                 ),
+
+                ToolNoArgs(
+                    "save_scene",
+                    "Saves the active Unity scene. Call only after requested changes succeed. Takes no arguments."
+                ),
+
+                UnityTwoStringTool("add_component", "Adds a built-in or package Unity Component with Undo support.", "objectPath", "Exact hierarchy path.", "componentType", "Component class name, for example Rigidbody or BoxCollider."),
+                UnityTwoStringTool("attach_script", "Attaches an existing compiled MonoBehaviour script with Undo support.", "objectPath", "Exact hierarchy path.", "scriptType", "Compiled MonoBehaviour class name."),
+                UnityThreeStringTool("create_primitive", "Creates a Unity primitive with Undo support.", "primitiveType", "Cube, Sphere, Capsule, Cylinder, Plane or Quad.", "name", "New GameObject name.", "parentPath", "Exact parent path or empty string for root."),
+                UnityTwoStringTool("rename_gameobject", "Renames an existing Unity GameObject with Undo support.", "objectPath", "Exact hierarchy path.", "newName", "New GameObject name."),
+                UnityTwoStringTool("set_parent", "Moves a GameObject under a different parent with Undo support.", "objectPath", "Exact hierarchy path.", "parentPath", "Exact new parent path or empty string for root."),
+                UnityTwoStringTool("find_assets", "Finds up to 50 Unity assets inside a safe Assets folder.", "filter", "Unity AssetDatabase search filter, for example t:Material.", "searchFolder", "Assets folder path, for example Assets or Assets/Materials."),
+                UnityOneStringTool("get_asset_info", "Returns name and type information for one Unity asset.", "assetPath", "Exact path inside Assets/."),
+                UnityTwoStringTool("create_material", "Creates a new Unity material inside Assets. Fails if the asset already exists.", "assetPath", "New .mat path inside Assets/.", "shaderName", "Shader name, for example Universal Render Pipeline/Lit."),
+                UnityTwoStringTool("assign_material", "Assigns an existing material to the Renderer on a GameObject.", "objectPath", "Exact hierarchy path.", "materialPath", "Exact .mat path inside Assets/."),
+                UnityOneStringTool("import_asset", "Forces Unity to import or reimport an existing file already located inside Assets/.", "assetPath", "Exact existing path inside Assets/."),
+                UnityVectorTool("set_position", "Sets world position on an existing Unity GameObject."),
+                UnityVectorTool("set_rotation", "Sets world Euler rotation on an existing Unity GameObject."),
+                UnityVectorTool("set_scale", "Sets local scale on an existing Unity GameObject."),
+
+                new
+                {
+                    type = "function",
+                    function = new
+                    {
+                        name = "set_material_color",
+                        description = "Sets the main color of an existing Unity material. Color channels use numbers from 0 to 1.",
+                        parameters = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                materialPath = new { type = "string" },
+                                red = new { type = "number" },
+                                green = new { type = "number" },
+                                blue = new { type = "number" },
+                                alpha = new { type = "number" }
+                            },
+                            required = new[] { "materialPath", "red", "green", "blue", "alpha" }
+                        }
+                    }
+                },
+
+                new
+                {
+                    type = "function",
+                    function = new
+                    {
+                        name = "set_active",
+                        description = "Sets an existing Unity GameObject active or inactive with Undo support.",
+                        parameters = new
+                        {
+                            type = "object",
+                            properties = new
+                            {
+                                objectPath = new { type = "string", description = "Exact hierarchy path." },
+                                active = new { type = "boolean", description = "Desired active state." }
+                            },
+                            required = new[] { "objectPath", "active" }
+                        }
+                    }
+                },
                 ToolNoArgs(
                     "get_active_scene",
                     "Returns read-only information about the active scene in the currently open Unity Editor. Takes no arguments."
@@ -1632,8 +1978,11 @@ namespace AI_Assistant.AI
             "set_transform",
 
         description =
-            "Sets the world position, world rotation and local scale of an existing Unity GameObject. " +
-            "objectPath must exactly match a hierarchyPath returned by get_scene_hierarchy.",
+            "Immediately changes the transform of an existing Unity GameObject. " +
+            "Call this tool directly when the user asks to move, rotate or scale an object. " +
+            "Never display this call as JSON text. " +
+            "objectPath must exactly match a hierarchyPath returned by get_scene_hierarchy. " +
+            "All position, rotation and scale arguments must be JSON numbers without quotes.",
 
         parameters = new
         {
@@ -2330,6 +2679,125 @@ namespace AI_Assistant.AI
         // ============================================
         // SIMPLE NO-ARG TOOL FACTORY
         // ============================================
+
+        private object UnityVectorTool(string name, string description)
+        {
+            return new
+            {
+                type = "function",
+                function = new
+                {
+                    name,
+                    description,
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new
+                        {
+                            objectPath = new { type = "string", description = "Exact hierarchy path." },
+                            x = new { type = "number" },
+                            y = new { type = "number" },
+                            z = new { type = "number" }
+                        },
+                        required = new[] { "objectPath", "x", "y", "z" }
+                    }
+                }
+            };
+        }
+
+
+        private object UnityOneStringTool(
+            string name,
+            string description,
+            string argumentName,
+            string argumentDescription
+        )
+        {
+            return new
+            {
+                type = "function",
+                function = new
+                {
+                    name,
+                    description,
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new Dictionary<string, object>
+                        {
+                            [argumentName] = new { type = "string", description = argumentDescription }
+                        },
+                        required = new[] { argumentName }
+                    }
+                }
+            };
+        }
+
+
+        private object UnityTwoStringTool(
+            string name,
+            string description,
+            string firstName,
+            string firstDescription,
+            string secondName,
+            string secondDescription
+        )
+        {
+            return new
+            {
+                type = "function",
+                function = new
+                {
+                    name,
+                    description,
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new Dictionary<string, object>
+                        {
+                            [firstName] = new { type = "string", description = firstDescription },
+                            [secondName] = new { type = "string", description = secondDescription }
+                        },
+                        required = new[] { firstName, secondName }
+                    }
+                }
+            };
+        }
+
+
+        private object UnityThreeStringTool(
+            string name,
+            string description,
+            string firstName,
+            string firstDescription,
+            string secondName,
+            string secondDescription,
+            string thirdName,
+            string thirdDescription
+        )
+        {
+            return new
+            {
+                type = "function",
+                function = new
+                {
+                    name,
+                    description,
+                    parameters = new
+                    {
+                        type = "object",
+                        properties = new Dictionary<string, object>
+                        {
+                            [firstName] = new { type = "string", description = firstDescription },
+                            [secondName] = new { type = "string", description = secondDescription },
+                            [thirdName] = new { type = "string", description = thirdDescription }
+                        },
+                        required = new[] { firstName, secondName, thirdName }
+                    }
+                }
+            };
+        }
+
 
         private object ToolNoArgs(
             string name,
