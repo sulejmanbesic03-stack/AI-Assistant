@@ -1,20 +1,20 @@
-﻿using AI_Assistant.Tools;
+﻿using AI_Assistant.TempCapabilities;
+using AI_Assistant.Tools;
 
-using System;
-using System.Collections.Generic;
 using System.Globalization;
-using System.Linq;
 using System.Net;
-using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using System.Threading.Tasks;
 
 namespace AI_Assistant.AI
 {
-    public class AIIntegration
+    public sealed class AIIntegration
     {
+        // ============================================================
+        // SERVICES
+        // ============================================================
+
         private readonly HttpClient client;
 
         private readonly FileSystemTools fileTools;
@@ -23,36 +23,49 @@ namespace AI_Assistant.AI
 
         private readonly UnityBridgeTools unityTools;
 
+        private readonly TempCapabilityManager tempCapabilities;
+
         private readonly List<ChatMessage> conversationHistory;
 
 
+        // ============================================================
+        // MODEL / RESOURCE LIMITS
+        // ============================================================
+
         private const string Model =
-            "openai/gpt-oss-20b";
+            "openai/gpt-oss-120b";
 
 
+        // Normal task should finish in only a few cycles.
         private const int MaxIterations =
-            16;
+            8;
 
 
+        // Tool results are sent back to the model.
+        // Keep them compact.
         private const int MaxToolResultChars =
-            7000;
+            4500;
 
 
         private const int MaxChatHistoryMessages =
-            6;
+            4;
 
 
         private const int MaxToolCyclesInContext =
-            6;
+            3;
 
 
         private const int MaxToolUseRecoveryAttempts =
-            2;
+            1;
 
 
         private const int MaxRateLimitRetries =
             4;
 
+
+        // ============================================================
+        // CONSTRUCTOR
+        // ============================================================
 
         public AIIntegration(
             List<string> allowedRoots,
@@ -77,17 +90,27 @@ namespace AI_Assistant.AI
                     sourceRoot,
                     updaterProjectPath
                 );
+
+
             unityTools =
-                    new UnityBridgeTools();
+                new UnityBridgeTools();
+
+
+            tempCapabilities =
+                new TempCapabilityManager(
+                    sourceRoot,
+                    unityTools
+                );
+
 
             conversationHistory =
                 new List<ChatMessage>();
         }
 
 
-        // ============================================
+        // ============================================================
         // ASK
-        // ============================================
+        // ============================================================
 
         public async Task<string> Ask(
             string prompt
@@ -99,7 +122,11 @@ namespace AI_Assistant.AI
                 );
 
 
-            if (string.IsNullOrWhiteSpace(apiKey))
+            if (
+                string.IsNullOrWhiteSpace(
+                    apiKey
+                )
+            )
             {
                 return
                     "GROQ_API_KEY nije pronađen.";
@@ -128,6 +155,27 @@ namespace AI_Assistant.AI
                 new List<List<object>>();
 
 
+            object[] toolDefinitions =
+                BuildToolDefinitionsForTask(
+                    prompt
+                );
+
+
+            Console.WriteLine(
+                "[TOOLS] "
+                +
+                (
+                    toolDefinitions.Length == 0
+                        ?
+                        "none"
+                        :
+                        GetRegisteredToolNames(
+                            toolDefinitions
+                        )
+                )
+            );
+
+
             int iteration =
                 0;
 
@@ -136,18 +184,10 @@ namespace AI_Assistant.AI
                 0;
 
 
-            object[] toolDefinitions =
-                BuildToolDefinitionsForTask(
-                    prompt
-                );
-
-
-            Console.WriteLine(
-                $"[TOOLS] {GetRegisteredToolNames(toolDefinitions)}"
-            );
-
-
-            while (iteration < MaxIterations)
+            while (
+                iteration <
+                MaxIterations
+            )
             {
                 iteration++;
 
@@ -159,43 +199,26 @@ namespace AI_Assistant.AI
                     );
 
 
-                object requestBody =
-                    new
-                    {
-                        model =
-                            Model,
-
-                        messages =
-                            requestMessages,
-
-                        tool_choice =
-                            "auto",
-
-                        reasoning_effort =
-                            "low",
-
-                        tools =
-                            toolDefinitions
-                    };
-
-
-                string json =
-                    JsonSerializer.Serialize(
-                        requestBody
+                string requestJson =
+                    BuildRequestJson(
+                        requestMessages,
+                        toolDefinitions
                     );
 
 
-                client.DefaultRequestHeaders.Authorization =
-                    new AuthenticationHeaderValue(
-                        "Bearer",
-                        apiKey
-                    );
+                client
+                    .DefaultRequestHeaders
+                    .Authorization =
+                        new AuthenticationHeaderValue(
+                            "Bearer",
+                            apiKey
+                        );
 
 
-                HttpResponseMessage response =
+                using HttpResponseMessage response =
                     await SendWithRateLimitRetry(
                         "https://api.groq.com/openai/v1/chat/completions",
-                        json
+                        requestJson
                     );
 
 
@@ -204,11 +227,13 @@ namespace AI_Assistant.AI
                         .ReadAsStringAsync();
 
 
-                // ====================================
+                // ====================================================
                 // API ERROR
-                // ====================================
+                // ====================================================
 
-                if (!response.IsSuccessStatusCode)
+                if (
+                    !response.IsSuccessStatusCode
+                )
                 {
                     bool recoverableToolError =
                         IsRecoverableToolUseError(
@@ -220,56 +245,31 @@ namespace AI_Assistant.AI
                         recoverableToolError
                         &&
                         toolUseRecoveryAttempts <
-                            MaxToolUseRecoveryAttempts
+                        MaxToolUseRecoveryAttempts
                     )
                     {
                         toolUseRecoveryAttempts++;
 
 
-                        Console.WriteLine(
-                            $"[TOOL RECOVERY] Invalid/hallucinated tool call. Retry {toolUseRecoveryAttempts}/{MaxToolUseRecoveryAttempts}..."
-                        );
-
-
-                        string registeredTools =
-                            GetRegisteredToolNames(
-                                toolDefinitions
-                            );
-
-
                         baseMessages.Add(
                             new
                             {
-                                role = "system",
+                                role =
+                                    "system",
 
                                 content =
-                                    $"""
-                                    Your previous tool call was rejected by the API.
-
-                                    Retry the user's task using ONLY tools actually registered in this request.
-
-                                    Registered tool names:
-                                    {registeredTools}
-
-                                    Tool names must match exactly.
-                                    Do not append channel names, markup, punctuation, suffixes, prefixes, or internal tokens to a tool name.
-
-                                    Tool arguments must be strict valid JSON.
-                                    Never invent parameters that are not defined by the selected tool.
-
-                                    If you expected a tool that is not registered, do not call it.
-                                    """
+                                    "Previous tool call was invalid. " +
+                                    "Retry once using ONLY registered tool names and exact JSON parameters: "
+                                    +
+                                    GetRegisteredToolNames(
+                                        toolDefinitions
+                                    )
                             }
                         );
 
 
-                        response.Dispose();
-
                         continue;
                     }
-
-
-                    response.Dispose();
 
 
                     return
@@ -283,9 +283,6 @@ namespace AI_Assistant.AI
                     );
 
 
-                response.Dispose();
-
-
                 JsonElement message =
                     document
                         .RootElement
@@ -293,9 +290,9 @@ namespace AI_Assistant.AI
                         .GetProperty("message");
 
 
-                // ====================================
-                // TOOL CALL
-                // ====================================
+                // ====================================================
+                // TOOL CALLS
+                // ====================================================
 
                 if (
                     message.TryGetProperty(
@@ -304,9 +301,10 @@ namespace AI_Assistant.AI
                     )
                     &&
                     toolCalls.ValueKind ==
-                        JsonValueKind.Array
+                    JsonValueKind.Array
                     &&
-                    toolCalls.GetArrayLength() > 0
+                    toolCalls.GetArrayLength() >
+                    0
                 )
                 {
                     List<object> currentCycle =
@@ -314,9 +312,10 @@ namespace AI_Assistant.AI
 
 
                     object assistantMessage =
-                        JsonSerializer.Deserialize<object>(
-                            message.GetRawText()
-                        )!;
+                        JsonSerializer
+                            .Deserialize<object>(
+                                message.GetRawText()
+                            )!;
 
 
                     currentCycle.Add(
@@ -333,7 +332,8 @@ namespace AI_Assistant.AI
                             toolCall
                                 .GetProperty("id")
                                 .GetString()
-                            ?? "";
+                            ??
+                            "";
 
 
                         JsonElement function =
@@ -345,47 +345,53 @@ namespace AI_Assistant.AI
                             function
                                 .GetProperty("name")
                                 .GetString()
-                            ?? "";
+                            ??
+                            "";
 
 
                         string argumentsJson =
                             function
                                 .GetProperty("arguments")
                                 .GetString()
-                            ?? "{}";
+                            ??
+                            "{}";
 
 
-                        if (IsNoArgTool(functionName))
+                        if (
+                            IsNoArgTool(
+                                functionName
+                            )
+                        )
                         {
-                            argumentsJson = "{}";
+                            argumentsJson =
+                                "{}";
                         }
 
 
                         Console.WriteLine(
-                            $"[TOOL {iteration}] {functionName} | {argumentsJson}"
+                            $"[TOOL {iteration}] {functionName} | {FormatArgumentsForConsole(argumentsJson)}"
                         );
 
 
-                        string normalizedArguments =
+                        string signature =
+                            functionName
+                            +
+                            "|"
+                            +
                             NormalizeJson(
                                 argumentsJson
                             );
-
-
-                        string signature =
-                            functionName +
-                            "|" +
-                            normalizedArguments;
 
 
                         string toolResult;
 
 
                         if (
-                            executedToolResults.TryGetValue(
-                                signature,
-                                out string cachedResult
-                            )
+                            executedToolResults
+                                .TryGetValue(
+                                    signature,
+                                    out string? cachedResult
+                                )
                         )
                         {
                             toolResult =
@@ -393,7 +399,7 @@ namespace AI_Assistant.AI
 
 
                             Console.WriteLine(
-                                $"[CACHE {iteration}] Reusing previous result."
+                                $"[CACHE {iteration}] reused"
                             );
                         }
                         else
@@ -407,7 +413,8 @@ namespace AI_Assistant.AI
 
                             executedToolResults[
                                 signature
-                            ] = toolResult;
+                            ] =
+                                toolResult;
                         }
 
 
@@ -420,29 +427,6 @@ namespace AI_Assistant.AI
                         Console.WriteLine(
                             $"[RESULT {iteration}] {TrimConsoleResult(toolResult)}"
                         );
-
-
-                        if (
-                            TryGetUnityFailure(
-                                toolResult,
-                                out string failureMessage
-                            )
-                        )
-                        {
-                            string answer =
-                                $"Unity action stopped: {failureMessage}";
-
-
-                            conversationHistory.Add(
-                                new ChatMessage(
-                                    "assistant",
-                                    answer
-                                )
-                            );
-
-
-                            return answer;
-                        }
 
 
                         currentCycle.Add(
@@ -484,9 +468,9 @@ namespace AI_Assistant.AI
                 }
 
 
-                // ====================================
+                // ====================================================
                 // FINAL RESPONSE
-                // ====================================
+                // ====================================================
 
                 if (
                     message.TryGetProperty(
@@ -495,12 +479,13 @@ namespace AI_Assistant.AI
                     )
                     &&
                     contentElement.ValueKind !=
-                        JsonValueKind.Null
+                    JsonValueKind.Null
                 )
                 {
                     string answer =
                         contentElement.GetString()
-                        ?? "";
+                        ??
+                        "";
 
 
                     conversationHistory.Add(
@@ -511,23 +496,68 @@ namespace AI_Assistant.AI
                     );
 
 
-                    return answer;
+                    return
+                        answer;
                 }
 
 
                 return
-                    "Model nije vratio finalni odgovor niti tool call.";
+                    "Model nije vratio odgovor.";
             }
 
 
             return
-                $"Agent je dostigao maksimalan broj tool koraka ({MaxIterations}).";
+                $"Agent je dostigao maksimalno {MaxIterations} koraka.";
         }
 
 
-        // ============================================
-        // BASE MESSAGES
-        // ============================================
+        // ============================================================
+        // REQUEST JSON
+        // ============================================================
+
+        private static string BuildRequestJson(
+            List<object> messages,
+            object[] tools
+        )
+        {
+            Dictionary<string, object> body =
+                new Dictionary<string, object>
+                {
+                    ["model"] =
+                        Model,
+
+                    ["messages"] =
+                        messages,
+
+                    ["reasoning_effort"] =
+                        "low"
+                };
+
+
+            if (
+                tools.Length >
+                0
+            )
+            {
+                body["tool_choice"] =
+                    "auto";
+
+
+                body["tools"] =
+                    tools;
+            }
+
+
+            return
+                JsonSerializer.Serialize(
+                    body
+                );
+        }
+
+
+        // ============================================================
+        // SYSTEM PROMPT + CHAT HISTORY
+        // ============================================================
 
         private List<object> BuildBaseMessages()
         {
@@ -536,165 +566,259 @@ namespace AI_Assistant.AI
                 {
                     new
                     {
-                        role = "system",
+                        role =
+                            "system",
 
-                        content =
-                        """
-                        You are an efficient local AI development agent written in C#/.NET.
+                                              content =
+""""
+You are a highly efficient local C#/.NET game-development agent.
 
-                        CORE ARCHITECTURE:
+PRIMARY OBJECTIVE:
 
-                        AI/AIIntegration.cs contains:
-                        - Ask
-                        - ExecuteTool
-                        - BuildToolDefinitions
-                        - Groq request/tool loop
-
-                        Tools/AgentVersion.cs contains the agent version.
-
-                        Tools/FileSystemTools.cs contains generic filesystem operations.
-
-                        Tools/SelfDevelopmentTools.cs contains controlled self-development operations.
-
-                        There is NO ToolDefinitions.cs.
-                        There is NO ToolRegistry.cs.
-                        There is NO ITool interface.
-                        There is NO Tool base class.
-
-                        Never invent those files or types unless the user explicitly requests an architecture refactor.
+Complete the user's requested task correctly while using the minimum practical number of AI calls, tool calls, tokens and local operations.
 
 
-                        GENERAL TOOL RULES:
+GENERAL COST RULES:
 
-                        Use as few tool calls as possible.
-
-                        Never repeatedly call the same tool with equivalent arguments.
-
-                        Use only tools actually registered in request.tools.
-
-                        Tool names must match exactly.
-
-                        Never append internal tokens, channel names, markup, punctuation or suffixes to tool names.
-
-                        Tool arguments must be strict valid JSON.
-
-                        Do not invent parameters.
-
-                        Stop calling tools when the task is complete.
+- Prefer one broad local operation over many tiny operations.
+- Never call a tool merely to confirm information already known in the current task.
+- Never repeat an equivalent tool call.
+- Batch related work.
+- Inspect expensive state only when necessary before acting, after uncertainty/failure, or for final verification.
+- Stop immediately when the requested task is complete.
+- Do not narrate planned tool calls when you can execute them.
+- Tool arguments must be strict valid JSON.
+- Use only tools actually registered in the current request.
+- Do not invent tool names or parameters.
 
 
-                        NORMAL FILESYSTEM:
+TEMPORARY CAPABILITIES:
 
-                        Generic filesystem tools use ABSOLUTE paths.
+execute_temp_capability is an escape hatch for complex, missing or inefficient behavior.
 
-                        Use list_allowed_roots when you need to discover valid roots.
+Do NOT use execute_temp_capability when one simple existing tool can efficiently complete the task.
 
-                        Use search_and_read_file when you know a filename but not its location.
+Use execute_temp_capability when:
+- existing tools cannot perform the requested behavior,
+- one generated capability can replace many individual tool calls,
+- or a complex Unity task can be executed locally as one batch.
 
-                        For large files use read_file_section.
-                       
-                        UNITY BRIDGE:
+Prefer ONE broad task-specific temporary capability.
 
-                        Unity read tools:
-                        - get_active_scene
-                        - get_scene_hierarchy
-                        - get_console_errors
+Good:
+- SetupFpsController
+- BuildEnemySystem
+- CreateInteractionSetup
 
-                        Unity action tools:
-                        - create_gameobject
-                        - set_position
-                        - set_rotation
-                        - set_scale
-                        - add_component
-                        - attach_script
-                        - save_scene
-                        - create_primitive
-                        - rename_gameobject
-                        - set_parent
-                        - set_active
-                        - find_assets
-                        - get_asset_info
-                        - create_material
-                        - set_material_color
-                        - assign_material
-                        - import_asset
+Bad:
+- CreatePlayer
+- AddCamera
+- AddController
+- SetSpeed
+- SetJump
 
-                        UNITY ACTION RULES:
+Do not create many small temporary capabilities for one task.
 
-                        When the user asks you to change Unity, call the appropriate registered Unity action tool immediately.
+Temporary capability lifecycle is automatic:
 
-                        Never print, describe, suggest or simulate a tool call as JSON, code or instructions.
+generate
+-> validate
+-> compile
+-> execute
+-> unload
+-> delete
 
-                        Never tell the user to execute a tool call. You execute registered tools yourself.
+Do not manually create TempTools files.
 
-                        After using get_scene_hierarchy to locate an object, continue in the same task by calling the requested action tool.
+Generated temporary capability source must:
+- contain exactly one concrete ITempCapability implementation,
+- have a Name property exactly matching the requested capability name,
+- implement ExecuteAsync,
+- remain compact,
+- use only the controlled TempCapabilityContext.
 
-                        Do not stop after observation when the user requested an action.
+Do NOT use:
+- System.IO
+- System.Net
+- HttpClient
+- Process
+- Environment
+- reflection loading
+- operating-system filesystem APIs
+- unsafe code
 
-                        Do not ask for confirmation unless the user explicitly requested a preview or confirmation.
+If compilation fails:
+- read ALL returned compiler diagnostics,
+- fix ALL of them in ONE complete rewritten capability,
+- then retry.
+- Do not repair only one compiler error per retry.
 
-                        Prefer set_position, set_rotation and set_scale over the legacy set_transform tool.
 
-                        Each vector action uses only objectPath, x, y and z. All vector values must be JSON numbers without quotes.
+UNITY TEMP CAPABILITY RULES:
 
-                        After an action succeeds, give the user a short final confirmation.
+For multi-step Unity work, ALWAYS prefer:
 
-                        After every Unity action, inspect its tool result.
+context.NewUnityBatch()
 
-                        If a result contains UNITY BRIDGE ERROR, OFFLINE, TIMEOUT, success=false or another failure, do not continue with dependent actions and do not claim success.
+Do NOT manually construct Unity batch JSON.
 
-                        Retry a failed action at most once. If it fails again, report the exact tool error.
+Do NOT manually call context.Unity.ExecuteBatch with a hand-written JSON string.
 
-                        Before changing a Unity scene, use get_scene_hierarchy when the current hierarchy or parent path is not already known.
+Use the fluent UnityBatchBuilder API.
 
-                        Use an empty parentPath to create a root GameObject.
+Available Unity batch methods include:
 
-                        Use only exact hierarchy paths returned by get_scene_hierarchy.
+CreateGameObject(name, parentPath)
+CreatePrimitive(primitiveType, name, parentPath)
 
-                        After a Unity action, use get_scene_hierarchy only when verification is needed.
+DeleteGameObject(objectPath)
+RenameGameObject(objectPath, newName)
+SetParent(objectPath, parentPath)
+SetActive(objectPath, active)
 
-                        Do not claim that a Unity action succeeded unless its tool result confirms success.
+SetPosition(objectPath, x, y, z)
+SetRotation(objectPath, x, y, z)
+SetScale(objectPath, x, y, z)
 
-                        SELF DEVELOPMENT:
+AddComponent(objectPath, componentType)
+RemoveComponent(objectPath, componentType)
 
-                        Modify your own source only when the user explicitly asks you to modify yourself.
+SetInt(objectPath, componentType, propertyName, value)
+SetFloat(objectPath, componentType, propertyName, value)
+SetBool(objectPath, componentType, propertyName, value)
+SetString(objectPath, componentType, propertyName, value)
 
-                        Self-development paths are RELATIVE to the AI Assistant source root.
+SetVector2(objectPath, componentType, propertyName, x, y)
 
-                        Required workflow:
+SetVector3(objectPath, componentType, propertyName, x, y, z)
 
-                        1. backup_project
-                        2. inspect_self_structure only if needed
-                        3. find_self_text when you know a symbol/method name but not its line
-                        4. read_self_file_section for only the relevant range
-                        5. replace_self_text for targeted changes to EXISTING source files
-                        6. write_self_file mainly for NEW source files
-                        7. build_self
-                        8. if build fails, inspect only relevant code and repair it
-                        9. build again
-                        10. restart_self only after BUILD SUCCESS
+SetColor(objectPath, componentType, propertyName, red, green, blue, alpha)
 
-                        Never use create_file, copy_file or move_file to modify your own source.
+CreateScript(assetPath, content)
 
-                        Before using replace_self_text, copy oldText exactly from the current source.
-                        oldText should be large enough to occur exactly once.
+SaveScene()
 
-                        Do not rewrite an entire large AIIntegration.cs for a small modification.
+Execute()
 
-                        BuildToolDefinitions and ExecuteTool are both inside AI/AIIntegration.cs.
-                        Use find_self_text to locate them.
+Build ONE Unity batch whenever possible.
 
-                        Never assume a new tool exists merely because its class/file exists.
-                        A local agent tool is functional only when it is registered in BuildToolDefinitions and routed in ExecuteTool.
+Call Execute() ONCE at the end of the batch.
 
-                        The runtime enforces backup/build/restart safety.
-                        Do not attempt to bypass it.
-                        """
+Example pattern:
+
+string result =
+    context
+        .NewUnityBatch()
+        .CreateGameObject("Player")
+        .AddComponent(
+            "Player",
+            "UnityEngine.CharacterController"
+        )
+        .SetPosition(
+            "Player",
+            0f,
+            1f,
+            0f
+        )
+        .SaveScene()
+        .Execute();
+
+return Task.FromResult(result);
+
+
+For multiline Unity script content, use a C# raw string literal.
+
+Use three double-quote characters to open and close the script string.
+
+Example structure:
+
+string script = <RAW_STRING_START>
+using UnityEngine;
+
+public class Example : MonoBehaviour
+{
+}
+<RAW_STRING_END>;
+
+Then pass the string to:
+
+.CreateScript(
+    "Assets/Scripts/Example.cs",
+    script
+)
+
+The local batch builder serializes all JSON.
+The generated capability must NOT perform JSON escaping manually.
+
+
+UNITY WORKFLOW:
+
+For a simple Unity action, use the simple registered action tool.
+
+For a complex Unity setup:
+- avoid many direct action tool calls,
+- prefer one execute_temp_capability call,
+- build one NewUnityBatch(),
+- execute one local Unity batch.
+
+Read get_scene_hierarchy only when object identity or current hierarchy is actually needed.
+
+Do not automatically inspect hierarchy before creating entirely new known root objects unless existing state matters.
+
+Do not re-read hierarchy after every successful operation.
+
+Use exact hierarchy paths when addressing existing GameObjects.
+
+After complex scene modification, perform one final verification when useful.
+
+If the user explicitly asks to verify compiler errors, call get_console_errors after Unity has processed the changes.
+
+Never claim success if a tool result reports failure.
+
+
+UNITY SCRIPT CREATION:
+
+Creating a .cs script causes Unity compilation.
+
+Therefore a complex task that creates a script should normally:
+
+1. execute one temporary capability / Unity batch,
+2. allow Unity to import/compile the generated script,
+3. then use get_console_errors once if verification was requested.
+
+Do not repeatedly poll console errors unless necessary.
+
+
+FILESYSTEM:
+
+Normal filesystem paths are absolute and must be inside allowed roots.
+
+Avoid reading entire large files when a targeted section is sufficient.
+
+
+SELF DEVELOPMENT:
+
+Modify AI Assistant source only when the user explicitly asks to modify the agent itself.
+
+Self-development requires backup before source writes.
+
+Prefer targeted source reads and targeted edits.
+
+Build after source modifications.
+
+Never restart after a failed build.
+
+
+RESPONSE:
+
+When a requested task succeeds, respond briefly with what was completed.
+
+When something fails, report the useful error instead of pretending success.
+""""
+
                     }
                 };
-
-
-            IEnumerable<ChatMessage> recent =
+            IEnumerable<ChatMessage> recentHistory =
                 conversationHistory
                     .TakeLast(
                         MaxChatHistoryMessages
@@ -702,33 +826,35 @@ namespace AI_Assistant.AI
 
 
             messages.AddRange(
-                recent.Select(
-                    item => (object)new
-                    {
-                        role =
-                            item.Role,
+                recentHistory.Select(
+                    item =>
+                        (object)new
+                        {
+                            role =
+                                item.Role,
 
-                        content =
-                            item.Message
-                    }
+                            content =
+                                item.Message
+                        }
                 )
             );
 
 
-            return messages;
+            return
+                messages;
         }
 
 
-        // ============================================
-        // REQUEST MESSAGES
-        // ============================================
+        // ============================================================
+        // TOOL-CYCLE CONTEXT
+        // ============================================================
 
-        private List<object> BuildRequestMessages(
+        private static List<object> BuildRequestMessages(
             List<object> baseMessages,
             List<List<object>> toolCycles
         )
         {
-            List<object> messages =
+            List<object> result =
                 new List<object>(
                     baseMessages
                 );
@@ -739,281 +865,938 @@ namespace AI_Assistant.AI
                 in toolCycles
             )
             {
-                messages.AddRange(
+                result.AddRange(
                     cycle
                 );
             }
 
 
-            return messages;
+            return
+                result;
         }
 
 
-        // ============================================
-        // 429 RETRY
-        // ============================================
+        // ============================================================
+        // TASK-AWARE TOOL SELECTION
+        // ============================================================
 
-        private async Task<HttpResponseMessage> SendWithRateLimitRetry(
-            string url,
-            string json
+        private object[] BuildToolDefinitionsForTask(
+            string prompt
         )
         {
-            int retry =
-                0;
+            string text =
+                prompt.ToLowerInvariant();
 
 
-            while (true)
-            {
-                using StringContent content =
-                    new StringContent(
-                        json,
-                        Encoding.UTF8,
-                        "application/json"
-                    );
+            List<object> tools =
+                new List<object>();
 
 
-                HttpResponseMessage response =
-                    await client.PostAsync(
-                        url,
-                        content
-                    );
+            // ========================================================
+            // VERSION
+            // ========================================================
 
-
-                if (
-                    response.StatusCode !=
-                    HttpStatusCode.TooManyRequests
-                )
-                {
-                    return response;
-                }
-
-
-                string body =
-                    await response.Content
-                        .ReadAsStringAsync();
-
-
-                // Waiting does not fix a request which is
-                // itself larger than the permitted token budget.
-                if (
-                    body.Contains(
-                        "Request too large",
-                        StringComparison.OrdinalIgnoreCase
-                    )
-                )
-                {
-                    response.Content =
-                        new StringContent(
-                            body,
-                            Encoding.UTF8,
-                            "application/json"
-                        );
-
-
-                    return response;
-                }
-
-
-                retry++;
-
-
-                if (retry > MaxRateLimitRetries)
-                {
-                    response.Content =
-                        new StringContent(
-                            body,
-                            Encoding.UTF8,
-                            "application/json"
-                        );
-
-
-                    return response;
-                }
-
-
-                double waitSeconds =
-                    GetRetryAfterSeconds(
-                        response,
-                        retry
-                    );
-
-
-                Console.WriteLine(
-                    $"[RATE LIMIT] Čekam {Math.Ceiling(waitSeconds)} sekundi... ({retry}/{MaxRateLimitRetries})"
-                );
-
-
-                response.Dispose();
-
-
-                await Task.Delay(
-                    TimeSpan.FromSeconds(
-                        waitSeconds
-                    )
-                );
-            }
-        }
-
-
-        private double GetRetryAfterSeconds(
-            HttpResponseMessage response,
-            int retry
-        )
-        {
             if (
-                response.Headers.RetryAfter?.Delta
-                is TimeSpan delta
+                ContainsAny(
+                    text,
+                    "version",
+                    "verzija",
+                    "verziju"
+                )
             )
             {
+                tools.Add(
+                    ToolNoArgs(
+                        "get_agent_version",
+                        "Returns current AI Assistant version."
+                    )
+                );
+
+
                 return
-                    Math.Max(
-                        1,
-                        delta.TotalSeconds + 1
-                    );
+                    tools.ToArray();
+            }
+
+
+            // ========================================================
+            // SELF DEVELOPMENT
+            // ========================================================
+
+            bool selfDevelopment =
+                ContainsAny(
+                    text,
+                    "modify yourself",
+                    "change yourself",
+                    "improve yourself",
+                    "your source",
+                    "agent source",
+                    "aiintegration",
+                    "self development",
+                    "self-development",
+                    "izmijeni sebe",
+                    "promijeni sebe",
+                    "doradi sebe",
+                    "svoj kod",
+                    "tvoj kod",
+                    "agent kod",
+                    "agentu dodaj",
+                    "tool agent",
+                    "capability agent"
+                );
+
+
+            if (
+                selfDevelopment
+            )
+            {
+                AddSelfDevelopmentTools(
+                    tools
+                );
+
+
+                return
+                    tools.ToArray();
+            }
+
+
+            // ========================================================
+            // FILESYSTEM
+            // ========================================================
+
+            bool filesystemTask =
+                ContainsAny(
+                    text,
+                    "file",
+                    "folder",
+                    "directory",
+                    "fajl",
+                    "fajlu",
+                    "folderu",
+                    "datotek",
+                    "read code",
+                    "create code",
+                    "write code"
+                );
+
+
+            // ========================================================
+            // UNITY
+            // ========================================================
+
+            bool unityTask =
+                ContainsAny(
+                    text,
+                    "unity",
+                    "gameobject",
+                    "scene",
+                    "player",
+                    "camera",
+                    "rigidbody",
+                    "collider",
+                    "prefab",
+                    "material",
+                    "primitive",
+                    "component",
+                    "fps",
+                    "controller",
+                    "terrain",
+                    "object",
+                    "objekat",
+                    "enemy",
+                    "weapon",
+                    "inventory"
+                );
+
+
+            if (
+                unityTask
+            )
+            {
+                AddUnityToolsForTask(
+                    tools,
+                    text
+                );
             }
 
 
             if (
-                response.Headers.TryGetValues(
-                    "retry-after",
-                    out IEnumerable<string>? values
-                )
+                filesystemTask
+                &&
+                !unityTask
             )
             {
-                string? value =
-                    values.FirstOrDefault();
-
-
-                if (
-                    double.TryParse(
-                        value,
-                        NumberStyles.Any,
-                        CultureInfo.InvariantCulture,
-                        out double parsed
-                    )
-                )
-                {
-                    return
-                        Math.Max(
-                            1,
-                            parsed + 1
-                        );
-                }
+                AddFilesystemTools(
+                    tools,
+                    text
+                );
             }
 
 
             return
-                8 +
-                retry * 4;
+                tools
+                    .GroupBy(
+                        GetToolName,
+                        StringComparer.Ordinal
+                    )
+                    .Select(group =>
+                        group.First()
+                    )
+                    .ToArray();
         }
 
 
-        // ============================================
-        // TOOL ERROR RECOVERY
-        // ============================================
+        // ============================================================
+        // UNITY TOOL SELECTION
+        // ============================================================
 
-        private bool IsRecoverableToolUseError(
-            string responseText
+        private void AddUnityToolsForTask(
+            List<object> tools,
+            string text
         )
         {
-            try
+            bool complexTask =
+                ContainsAny(
+                    text,
+                    "setup",
+                    "system",
+                    "controller",
+                    "complete",
+                    "komplet",
+                    "napravi mi",
+                    "build",
+                    "create a",
+                    "fps",
+                    "inventory",
+                    "movement",
+                    "character",
+                    "enemy ai",
+                    "vehicle",
+                    "weapon",
+                    "interaction",
+                    "day night",
+                    "day/night",
+                    "whole",
+                    "entire",
+                    "cijeli",
+                    "čitav",
+                    "citav"
+                );
+
+
+            bool needsHierarchy =
+                !complexTask
+                &&
+                ContainsAny(
+                    text,
+                    "move",
+                    "pomjeri",
+                    "rotate",
+                    "rotir",
+                    "scale",
+                    "skal",
+                    "rename",
+                    "preimenuj",
+                    "parent",
+                    "child",
+                    "component",
+                    "material",
+                    "duplicate",
+                    "dupl",
+                    "rigidbody",
+                    "collider",
+                    "prefab"
+                );
+
+
+            if (
+                needsHierarchy
+            )
             {
-                using JsonDocument document =
-                    JsonDocument.Parse(
-                        responseText
-                    );
-
-
-                if (
-                    !document.RootElement.TryGetProperty(
-                        "error",
-                        out JsonElement error
+                tools.Add(
+                    ToolNoArgs(
+                        "get_scene_hierarchy",
+                        "Returns Unity hierarchy with exact GameObject paths."
                     )
-                )
-                {
-                    return false;
-                }
-
-
-                string? code =
-                    null;
-
-
-                if (
-                    error.TryGetProperty(
-                        "code",
-                        out JsonElement codeElement
-                    )
-                    &&
-                    codeElement.ValueKind ==
-                        JsonValueKind.String
-                )
-                {
-                    code =
-                        codeElement.GetString();
-                }
-
-
-                return
-                    string.Equals(
-                        code,
-                        "tool_use_failed",
-                        StringComparison.OrdinalIgnoreCase
-                    );
+                );
             }
-            catch
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "active scene",
+                    "current scene",
+                    "aktivna scena"
+                )
+            )
             {
-                return false;
+                tools.Add(
+                    ToolNoArgs(
+                        "get_active_scene",
+                        "Returns active Unity scene information."
+                    )
+                );
+            }
+
+
+            bool verificationRequested =
+                ContainsAny(
+                    text,
+                    "error",
+                    "errors",
+                    "console",
+                    "grešk",
+                    "gresk",
+                    "provjeri",
+                    "verify",
+                    "compile"
+                );
+
+
+            if (
+                verificationRequested
+            )
+            {
+                tools.Add(
+                    ToolNoArgs(
+                        "get_console_errors",
+                        "Returns Unity console errors/exceptions. Prefer one final check after changes."
+                    )
+                );
+            }
+
+
+            // ========================================================
+            // COMPLEX UNITY TASK
+            //
+            // Important:
+            // Do NOT send 15 simple mutation schemas.
+            // ========================================================
+
+            if (
+                complexTask
+            )
+            {
+                tools.Add(
+                    TempCapabilityTool()
+                );
+
+
+                return;
+            }
+
+
+            // ========================================================
+            // SIMPLE CREATE
+            // ========================================================
+
+            if (
+                ContainsAny(
+                    text,
+                    "create gameobject",
+                    "new gameobject",
+                    "napravi gameobject",
+                    "kreiraj gameobject"
+                )
+            )
+            {
+                tools.Add(
+                    CreateGameObjectTool()
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "primitive",
+                    "cube",
+                    "sphere",
+                    "capsule",
+                    "cylinder",
+                    "plane",
+                    "quad",
+                    "kock",
+                    "sfer"
+                )
+            )
+            {
+                tools.Add(
+                    CreatePrimitiveTool()
+                );
+            }
+
+
+            // ========================================================
+            // TRANSFORMS
+            // ========================================================
+
+            if (
+                ContainsAny(
+                    text,
+                    "position",
+                    "move",
+                    "pomjeri",
+                    "pozic"
+                )
+            )
+            {
+                tools.Add(
+                    VectorTool(
+                        "set_position",
+                        "Sets Unity GameObject world position."
+                    )
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "rotation",
+                    "rotate",
+                    "rotir"
+                )
+            )
+            {
+                tools.Add(
+                    VectorTool(
+                        "set_rotation",
+                        "Sets Unity GameObject Euler rotation."
+                    )
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "scale",
+                    "skal",
+                    "size",
+                    "velič",
+                    "velic"
+                )
+            )
+            {
+                tools.Add(
+                    VectorTool(
+                        "set_scale",
+                        "Sets Unity GameObject local scale."
+                    )
+                );
+            }
+
+
+            // ========================================================
+            // OBJECT MANAGEMENT
+            // ========================================================
+
+            if (
+                ContainsAny(
+                    text,
+                    "rename",
+                    "preimenuj"
+                )
+            )
+            {
+                tools.Add(
+                    TwoStringTool(
+                        "rename_gameobject",
+                        "Renames Unity GameObject.",
+                        "objectPath",
+                        "newName"
+                    )
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "parent",
+                    "child",
+                    "roditelj"
+                )
+            )
+            {
+                tools.Add(
+                    TwoStringTool(
+                        "set_parent",
+                        "Changes Unity GameObject parent.",
+                        "objectPath",
+                        "parentPath"
+                    )
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "active",
+                    "disable",
+                    "enable",
+                    "ugasi",
+                    "upali"
+                )
+            )
+            {
+                tools.Add(
+                    SetActiveTool()
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "duplicate",
+                    "copy object",
+                    "dupl"
+                )
+            )
+            {
+                tools.Add(
+                    DuplicateTool()
+                );
+            }
+
+
+            // ========================================================
+            // COMPONENTS
+            // ========================================================
+
+            if (
+                ContainsAny(
+                    text,
+                    "add component",
+                    "component",
+                    "komponent"
+                )
+            )
+            {
+                tools.Add(
+                    TwoStringTool(
+                        "add_component",
+                        "Adds a Unity component.",
+                        "objectPath",
+                        "componentType"
+                    )
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "attach script",
+                    "script",
+                    "skript"
+                )
+            )
+            {
+                tools.Add(
+                    TwoStringTool(
+                        "attach_script",
+                        "Attaches an existing Unity MonoBehaviour type.",
+                        "objectPath",
+                        "scriptType"
+                    )
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "rigidbody",
+                    "physics",
+                    "fizik"
+                )
+            )
+            {
+                tools.Add(
+                    ConfigureRigidbodyTool()
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "collider",
+                    "trigger"
+                )
+            )
+            {
+                tools.Add(
+                    ConfigureColliderTool()
+                );
+            }
+
+
+            // ========================================================
+            // ASSETS
+            // ========================================================
+
+            if (
+                ContainsAny(
+                    text,
+                    "find asset",
+                    "search asset",
+                    "pronadji asset",
+                    "pronađi asset"
+                )
+            )
+            {
+                tools.Add(
+                    TwoStringTool(
+                        "find_assets",
+                        "Finds Unity assets.",
+                        "filter",
+                        "searchFolder"
+                    )
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "asset info"
+                )
+            )
+            {
+                tools.Add(
+                    OneStringTool(
+                        "get_asset_info",
+                        "Returns Unity asset information.",
+                        "assetPath"
+                    )
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "create material",
+                    "napravi material",
+                    "napravi materijal"
+                )
+            )
+            {
+                tools.Add(
+                    TwoStringTool(
+                        "create_material",
+                        "Creates Unity material.",
+                        "assetPath",
+                        "shaderName"
+                    )
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "material color",
+                    "boju materijala",
+                    "color material"
+                )
+            )
+            {
+                tools.Add(
+                    MaterialColorTool()
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "assign material",
+                    "dodijeli material",
+                    "dodijeli materijal"
+                )
+            )
+            {
+                tools.Add(
+                    TwoStringTool(
+                        "assign_material",
+                        "Assigns material to renderer.",
+                        "objectPath",
+                        "materialPath"
+                    )
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "import asset",
+                    "importuj"
+                )
+            )
+            {
+                tools.Add(
+                    OneStringTool(
+                        "import_asset",
+                        "Imports or refreshes Unity asset.",
+                        "assetPath"
+                    )
+                );
+            }
+
+
+            // ========================================================
+            // PREFABS
+            // ========================================================
+
+            if (
+                ContainsAny(
+                    text,
+                    "create prefab",
+                    "napravi prefab"
+                )
+            )
+            {
+                tools.Add(
+                    TwoStringTool(
+                        "create_prefab",
+                        "Creates prefab from GameObject.",
+                        "objectPath",
+                        "assetPath"
+                    )
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "instantiate prefab",
+                    "spawn prefab"
+                )
+            )
+            {
+                tools.Add(
+                    InstantiatePrefabTool()
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "save",
+                    "sačuv",
+                    "sacuv"
+                )
+            )
+            {
+                tools.Add(
+                    ToolNoArgs(
+                        "save_scene",
+                        "Saves current Unity scene."
+                    )
+                );
             }
         }
 
 
-        // ============================================
-        // NORMALIZE JSON
-        // ============================================
+        // ============================================================
+        // FILESYSTEM TOOL SELECTION
+        // ============================================================
 
-        private bool IsNoArgTool(string functionName)
-        {
-            return functionName == "get_agent_version"
-                || functionName == "save_scene"
-                || functionName == "get_active_scene"
-                || functionName == "get_scene_hierarchy"
-                || functionName == "get_console_errors"
-                || functionName == "list_allowed_roots"
-                || functionName == "inspect_self_structure"
-                || functionName == "backup_project"
-                || functionName == "build_self"
-                || functionName == "restart_self";
-        }
-
-
-        private string NormalizeJson(
-            string json
+        private static void AddFilesystemTools(
+            List<object> tools,
+            string text
         )
         {
-            try
+            if (
+                ContainsAny(
+                    text,
+                    "root",
+                    "where",
+                    "gdje"
+                )
+            )
             {
-                using JsonDocument document =
-                    JsonDocument.Parse(
-                        json
-                    );
-
-
-                return
-                    JsonSerializer.Serialize(
-                        document.RootElement
-                    );
+                tools.Add(
+                    ToolNoArgs(
+                        "list_allowed_roots",
+                        "Lists allowed filesystem roots."
+                    )
+                );
             }
-            catch
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "search",
+                    "find",
+                    "pronad",
+                    "pronađ"
+                )
+            )
             {
-                return json;
+                tools.Add(
+                    OneStringTool(
+                        "search_and_read_file",
+                        "Searches allowed roots for filename and reads it when small.",
+                        "fileName"
+                    )
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "read",
+                    "pročitaj",
+                    "procitaj"
+                )
+            )
+            {
+                tools.Add(
+                    OneStringTool(
+                        "read_file",
+                        "Reads a file from an absolute allowed path.",
+                        "filePath"
+                    )
+                );
+
+
+                tools.Add(
+                    ReadSectionTool()
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "create folder",
+                    "napravi folder"
+                )
+            )
+            {
+                tools.Add(
+                    OneStringTool(
+                        "create_folder",
+                        "Creates directory inside an allowed root.",
+                        "folderPath"
+                    )
+                );
+            }
+
+
+            if (
+                ContainsAny(
+                    text,
+                    "create file",
+                    "write file",
+                    "napravi fajl"
+                )
+            )
+            {
+                tools.Add(
+                    TwoStringTool(
+                        "create_file",
+                        "Creates or overwrites normal file.",
+                        "filePath",
+                        "content"
+                    )
+                );
             }
         }
 
 
-        // ============================================
+        // ============================================================
+        // SELF DEVELOPMENT TOOL SELECTION
+        // ============================================================
+
+        private static void AddSelfDevelopmentTools(
+            List<object> tools
+        )
+        {
+            tools.Add(
+                ToolNoArgs(
+                    "backup_project",
+                    "Creates required backup before self modification."
+                )
+            );
+
+
+            tools.Add(
+                ToolNoArgs(
+                    "inspect_self_structure",
+                    "Lists AI Assistant source structure."
+                )
+            );
+
+
+            tools.Add(
+                TwoStringTool(
+                    "find_self_text",
+                    "Finds text in AI Assistant source file.",
+                    "relativePath",
+                    "searchText"
+                )
+            );
+
+
+            tools.Add(
+                SelfReadSectionTool()
+            );
+
+
+            tools.Add(
+                ThreeStringTool(
+                    "replace_self_text",
+                    "Replaces one exact unique text block.",
+                    "relativePath",
+                    "oldText",
+                    "newText"
+                )
+            );
+
+
+            tools.Add(
+                TwoStringTool(
+                    "write_self_file",
+                    "Writes a complete AI Assistant source file.",
+                    "relativePath",
+                    "content"
+                )
+            );
+
+
+            tools.Add(
+                ToolNoArgs(
+                    "build_self",
+                    "Builds AI Assistant."
+                )
+            );
+
+
+            tools.Add(
+                ToolNoArgs(
+                    "restart_self",
+                    "Restarts AI Assistant after successful build."
+                )
+            );
+        }
+
+
+        // ============================================================
         // TOOL ROUTER
-        // ============================================
+        // ============================================================
 
         private string ExecuteTool(
             string functionName,
@@ -1022,19 +1805,19 @@ namespace AI_Assistant.AI
         {
             try
             {
-                using JsonDocument argsDocument =
+                using JsonDocument document =
                     JsonDocument.Parse(
                         argumentsJson
                     );
 
 
                 JsonElement args =
-                    argsDocument.RootElement;
+                    document.RootElement;
 
 
-                // ====================================
+                // ====================================================
                 // VERSION
-                // ====================================
+                // ====================================================
 
                 if (
                     functionName ==
@@ -1046,9 +1829,561 @@ namespace AI_Assistant.AI
                 }
 
 
-                // ====================================
-                // NORMAL FILESYSTEM
-                // ====================================
+                // ====================================================
+                // TEMP CAPABILITY
+                // ====================================================
+
+                if (
+                    functionName ==
+                    "execute_temp_capability"
+                )
+                {
+                    string capabilityArguments =
+                        "{}";
+
+
+                    if (
+                        args.TryGetProperty(
+                            "arguments",
+                            out JsonElement argumentElement
+                        )
+                    )
+                    {
+                        capabilityArguments =
+                            argumentElement.GetRawText();
+                    }
+
+
+                    return
+                        tempCapabilities
+                            .ExecuteTemporaryCapability(
+                                GetStringArg(
+                                    args,
+                                    "name"
+                                ),
+                                GetStringArg(
+                                    args,
+                                    "source"
+                                ),
+                                capabilityArguments
+                            );
+                }
+
+
+                // ====================================================
+                // UNITY READ
+                // ====================================================
+
+                if (
+                    functionName ==
+                    "get_active_scene"
+                )
+                {
+                    return
+                        unityTools.GetActiveScene();
+                }
+
+
+                if (
+                    functionName ==
+                    "get_scene_hierarchy"
+                )
+                {
+                    return
+                        unityTools.GetSceneHierarchy();
+                }
+
+
+                if (
+                    functionName ==
+                    "get_console_errors"
+                )
+                {
+                    return
+                        unityTools.GetConsoleErrors();
+                }
+
+
+                // ====================================================
+                // UNITY OBJECTS
+                // ====================================================
+
+                if (
+                    functionName ==
+                    "create_gameobject"
+                )
+                {
+                    return
+                        unityTools.CreateGameObject(
+                            GetStringArg(
+                                args,
+                                "name"
+                            ),
+                            GetStringArg(
+                                args,
+                                "parentPath"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "create_primitive"
+                )
+                {
+                    return
+                        unityTools.CreatePrimitive(
+                            GetStringArg(
+                                args,
+                                "primitiveType"
+                            ),
+                            GetStringArg(
+                                args,
+                                "name"
+                            ),
+                            GetStringArg(
+                                args,
+                                "parentPath"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "set_position"
+                )
+                {
+                    return
+                        unityTools.SetPosition(
+                            GetStringArg(
+                                args,
+                                "objectPath"
+                            ),
+                            GetFloatArg(
+                                args,
+                                "x"
+                            ),
+                            GetFloatArg(
+                                args,
+                                "y"
+                            ),
+                            GetFloatArg(
+                                args,
+                                "z"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "set_rotation"
+                )
+                {
+                    return
+                        unityTools.SetRotation(
+                            GetStringArg(
+                                args,
+                                "objectPath"
+                            ),
+                            GetFloatArg(
+                                args,
+                                "x"
+                            ),
+                            GetFloatArg(
+                                args,
+                                "y"
+                            ),
+                            GetFloatArg(
+                                args,
+                                "z"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "set_scale"
+                )
+                {
+                    return
+                        unityTools.SetScale(
+                            GetStringArg(
+                                args,
+                                "objectPath"
+                            ),
+                            GetFloatArg(
+                                args,
+                                "x"
+                            ),
+                            GetFloatArg(
+                                args,
+                                "y"
+                            ),
+                            GetFloatArg(
+                                args,
+                                "z"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "rename_gameobject"
+                )
+                {
+                    return
+                        unityTools.RenameGameObject(
+                            GetStringArg(
+                                args,
+                                "objectPath"
+                            ),
+                            GetStringArg(
+                                args,
+                                "newName"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "set_parent"
+                )
+                {
+                    return
+                        unityTools.SetParent(
+                            GetStringArg(
+                                args,
+                                "objectPath"
+                            ),
+                            GetStringArg(
+                                args,
+                                "parentPath"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "set_active"
+                )
+                {
+                    return
+                        unityTools.SetActive(
+                            GetStringArg(
+                                args,
+                                "objectPath"
+                            ),
+                            GetBoolArg(
+                                args,
+                                "active"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "duplicate_gameobject"
+                )
+                {
+                    return
+                        unityTools.DuplicateGameObject(
+                            GetStringArg(
+                                args,
+                                "objectPath"
+                            ),
+                            GetStringArg(
+                                args,
+                                "newName"
+                            ),
+                            GetStringArg(
+                                args,
+                                "parentPath"
+                            )
+                        );
+                }
+
+
+                // ====================================================
+                // COMPONENTS
+                // ====================================================
+
+                if (
+                    functionName ==
+                    "add_component"
+                )
+                {
+                    return
+                        unityTools.AddComponent(
+                            GetStringArg(
+                                args,
+                                "objectPath"
+                            ),
+                            GetStringArg(
+                                args,
+                                "componentType"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "attach_script"
+                )
+                {
+                    return
+                        unityTools.AttachScript(
+                            GetStringArg(
+                                args,
+                                "objectPath"
+                            ),
+                            GetStringArg(
+                                args,
+                                "scriptType"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "configure_rigidbody"
+                )
+                {
+                    return
+                        unityTools.ConfigureRigidbody(
+                            GetStringArg(
+                                args,
+                                "objectPath"
+                            ),
+                            GetFloatArg(
+                                args,
+                                "mass"
+                            ),
+                            GetBoolArg(
+                                args,
+                                "useGravity"
+                            ),
+                            GetBoolArg(
+                                args,
+                                "isKinematic"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "configure_collider"
+                )
+                {
+                    return
+                        unityTools.ConfigureCollider(
+                            GetStringArg(
+                                args,
+                                "objectPath"
+                            ),
+                            GetBoolArg(
+                                args,
+                                "enabled"
+                            ),
+                            GetBoolArg(
+                                args,
+                                "isTrigger"
+                            )
+                        );
+                }
+
+
+                // ====================================================
+                // ASSETS
+                // ====================================================
+
+                if (
+                    functionName ==
+                    "find_assets"
+                )
+                {
+                    return
+                        unityTools.FindAssets(
+                            GetStringArg(
+                                args,
+                                "filter"
+                            ),
+                            GetStringArg(
+                                args,
+                                "searchFolder"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "get_asset_info"
+                )
+                {
+                    return
+                        unityTools.GetAssetInfo(
+                            GetStringArg(
+                                args,
+                                "assetPath"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "create_material"
+                )
+                {
+                    return
+                        unityTools.CreateMaterial(
+                            GetStringArg(
+                                args,
+                                "assetPath"
+                            ),
+                            GetStringArg(
+                                args,
+                                "shaderName"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "set_material_color"
+                )
+                {
+                    return
+                        unityTools.SetMaterialColor(
+                            GetStringArg(
+                                args,
+                                "materialPath"
+                            ),
+                            GetFloatArg(
+                                args,
+                                "red"
+                            ),
+                            GetFloatArg(
+                                args,
+                                "green"
+                            ),
+                            GetFloatArg(
+                                args,
+                                "blue"
+                            ),
+                            GetFloatArg(
+                                args,
+                                "alpha"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "assign_material"
+                )
+                {
+                    return
+                        unityTools.AssignMaterial(
+                            GetStringArg(
+                                args,
+                                "objectPath"
+                            ),
+                            GetStringArg(
+                                args,
+                                "materialPath"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "import_asset"
+                )
+                {
+                    return
+                        unityTools.ImportAsset(
+                            GetStringArg(
+                                args,
+                                "assetPath"
+                            )
+                        );
+                }
+
+
+                // ====================================================
+                // PREFABS
+                // ====================================================
+
+                if (
+                    functionName ==
+                    "create_prefab"
+                )
+                {
+                    return
+                        unityTools.CreatePrefab(
+                            GetStringArg(
+                                args,
+                                "objectPath"
+                            ),
+                            GetStringArg(
+                                args,
+                                "assetPath"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "instantiate_prefab"
+                )
+                {
+                    return
+                        unityTools.InstantiatePrefab(
+                            GetStringArg(
+                                args,
+                                "assetPath"
+                            ),
+                            GetStringArg(
+                                args,
+                                "name"
+                            ),
+                            GetStringArg(
+                                args,
+                                "parentPath"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "save_scene"
+                )
+                {
+                    return
+                        unityTools.SaveScene();
+                }
+
+
+                // ====================================================
+                // FILESYSTEM
+                // ====================================================
 
                 if (
                     functionName ==
@@ -1133,7 +2468,7 @@ namespace AI_Assistant.AI
                     "create_file"
                 )
                 {
-                    string filePath =
+                    string path =
                         GetStringArg(
                             args,
                             "filePath"
@@ -1142,18 +2477,18 @@ namespace AI_Assistant.AI
 
                     if (
                         selfTools.IsSelfPath(
-                            filePath
+                            path
                         )
                     )
                     {
                         return
-                            "SELF WRITE DENIED: use backup_project + write_self_file/replace_self_text.";
+                            "SELF WRITE DENIED.";
                     }
 
 
                     return
                         fileTools.CreateFile(
-                            filePath,
+                            path,
                             GetStringArg(
                                 args,
                                 "content"
@@ -1162,134 +2497,19 @@ namespace AI_Assistant.AI
                 }
 
 
-                if (
-                    functionName ==
-                    "list_files"
-                )
-                {
-                    return
-                        fileTools.ListFiles(
-                            GetStringArg(
-                                args,
-                                "folderPath"
-                            )
-                        );
-                }
-
-
-                if (
-                    functionName ==
-                    "list_directories"
-                )
-                {
-                    return
-                        fileTools.ListDirectories(
-                            GetStringArg(
-                                args,
-                                "folderPath"
-                            )
-                        );
-                }
-
-
-                if (
-                    functionName ==
-                    "find_file"
-                )
-                {
-                    return
-                        fileTools.FindFile(
-                            GetStringArg(
-                                args,
-                                "rootPath"
-                            ),
-                            GetStringArg(
-                                args,
-                                "fileName"
-                            )
-                        );
-                }
-
-
-                if (
-                    functionName ==
-                    "copy_file"
-                )
-                {
-                    string destination =
-                        GetStringArg(
-                            args,
-                            "destinationPath"
-                        );
-
-
-                    if (
-                        selfTools.IsSelfPath(
-                            destination
-                        )
-                    )
-                    {
-                        return
-                            "SELF WRITE DENIED: copy_file cannot write into AI Assistant source.";
-                    }
-
-
-                    return
-                        fileTools.CopyFile(
-                            GetStringArg(
-                                args,
-                                "sourcePath"
-                            ),
-                            destination,
-                            GetBoolArg(
-                                args,
-                                "overwrite"
-                            )
-                        );
-                }
-
-
-                if (
-                    functionName ==
-                    "move_file"
-                )
-                {
-                    string destination =
-                        GetStringArg(
-                            args,
-                            "destinationPath"
-                        );
-
-
-                    if (
-                        selfTools.IsSelfPath(
-                            destination
-                        )
-                    )
-                    {
-                        return
-                            "SELF WRITE DENIED: move_file cannot write into AI Assistant source.";
-                    }
-
-
-                    return
-                        fileTools.MoveFile(
-                            GetStringArg(
-                                args,
-                                "sourcePath"
-                            ),
-                            destination,
-                            GetBoolArg(
-                                args,
-                                "overwrite"
-                            )
-                        );
-                }
-
-
-                // ====================================
+                // ====================================================
                 // SELF DEVELOPMENT
-                // ====================================
+                // ====================================================
+
+                if (
+                    functionName ==
+                    "backup_project"
+                )
+                {
+                    return
+                        selfTools.BackupProject();
+                }
+
 
                 if (
                     functionName ==
@@ -1318,154 +2538,7 @@ namespace AI_Assistant.AI
                             )
                         );
                 }
-                if (
-                    functionName ==
-                    "set_transform"
-                )
-                {
-                    return
-                        unityTools.SetTransform(
-                            GetStringArg(args, "objectPath"),
 
-                            GetFloatArg(args, "positionX"),
-                            GetFloatArg(args, "positionY"),
-                            GetFloatArg(args, "positionZ"),
-
-                            GetFloatArg(args, "rotationX"),
-                            GetFloatArg(args, "rotationY"),
-                            GetFloatArg(args, "rotationZ"),
-
-                            GetFloatArg(args, "scaleX"),
-                            GetFloatArg(args, "scaleY"),
-                            GetFloatArg(args, "scaleZ")
-                        );
-                }
-
-                if (functionName == "add_component")
-                {
-                    return unityTools.AddComponent(GetStringArg(args, "objectPath"), GetStringArg(args, "componentType"));
-                }
-
-                if (functionName == "attach_script")
-                {
-                    return unityTools.AttachScript(GetStringArg(args, "objectPath"), GetStringArg(args, "scriptType"));
-                }
-
-                if (functionName == "save_scene")
-                {
-                    return unityTools.SaveScene();
-                }
-
-                if (functionName == "create_primitive")
-                {
-                    return unityTools.CreatePrimitive(GetStringArg(args, "primitiveType"), GetStringArg(args, "name"), GetStringArg(args, "parentPath"));
-                }
-
-                if (functionName == "rename_gameobject")
-                {
-                    return unityTools.RenameGameObject(GetStringArg(args, "objectPath"), GetStringArg(args, "newName"));
-                }
-
-                if (functionName == "set_parent")
-                {
-                    return unityTools.SetParent(GetStringArg(args, "objectPath"), GetStringArg(args, "parentPath"));
-                }
-
-                if (functionName == "set_active")
-                {
-                    return unityTools.SetActive(GetStringArg(args, "objectPath"), GetBoolArg(args, "active"));
-                }
-
-                if (functionName == "find_assets")
-                {
-                    return unityTools.FindAssets(GetStringArg(args, "filter"), GetStringArg(args, "searchFolder"));
-                }
-
-                if (functionName == "get_asset_info")
-                {
-                    return unityTools.GetAssetInfo(GetStringArg(args, "assetPath"));
-                }
-
-                if (functionName == "create_material")
-                {
-                    return unityTools.CreateMaterial(GetStringArg(args, "assetPath"), GetStringArg(args, "shaderName"));
-                }
-
-                if (functionName == "set_material_color")
-                {
-                    return unityTools.SetMaterialColor(GetStringArg(args, "materialPath"), GetFloatArg(args, "red"), GetFloatArg(args, "green"), GetFloatArg(args, "blue"), GetFloatArg(args, "alpha"));
-                }
-
-                if (functionName == "assign_material")
-                {
-                    return unityTools.AssignMaterial(GetStringArg(args, "objectPath"), GetStringArg(args, "materialPath"));
-                }
-
-                if (functionName == "import_asset")
-                {
-                    return unityTools.ImportAsset(GetStringArg(args, "assetPath"));
-                }
-
-                if (functionName == "set_position")
-                {
-                    return unityTools.SetPosition(GetStringArg(args, "objectPath"), GetFloatArg(args, "x"), GetFloatArg(args, "y"), GetFloatArg(args, "z"));
-                }
-
-                if (functionName == "set_rotation")
-                {
-                    return unityTools.SetRotation(GetStringArg(args, "objectPath"), GetFloatArg(args, "x"), GetFloatArg(args, "y"), GetFloatArg(args, "z"));
-                }
-
-                if (functionName == "set_scale")
-                {
-                    return unityTools.SetScale(GetStringArg(args, "objectPath"), GetFloatArg(args, "x"), GetFloatArg(args, "y"), GetFloatArg(args, "z"));
-                }
-                // ====================================
-                // UNITY BRIDGE - READ ONLY
-                // ====================================
-                if (
-                    functionName ==
-                    "create_gameobject"
-                )
-                {
-                    return
-                        unityTools.CreateGameObject(
-                            GetStringArg(
-                                args,
-                                "name"
-                            ),
-                            GetStringArg(
-                                args,
-                                "parentPath"
-                            )
-                        );
-                }
-                if (
-                    functionName ==
-                    "get_active_scene"
-                )
-                {
-                    return
-                        unityTools.GetActiveScene();
-                }
-                if (
-                    functionName ==
-                    "get_scene_hierarchy"
-                )
-                {
-                    return
-                        unityTools.GetSceneHierarchy();
-                }
-
-
-                if (
-                    functionName ==
-                    "get_console_errors"
-                )
-                {
-                    return
-                        unityTools.GetConsoleErrors();
-                }
 
                 if (
                     functionName ==
@@ -1485,35 +2558,6 @@ namespace AI_Assistant.AI
                             GetIntArg(
                                 args,
                                 "endLine"
-                            )
-                        );
-                }
-
-
-                if (
-                    functionName ==
-                    "backup_project"
-                )
-                {
-                    return
-                        selfTools.BackupProject();
-                }
-
-
-                if (
-                    functionName ==
-                    "write_self_file"
-                )
-                {
-                    return
-                        selfTools.WriteSelfFile(
-                            GetStringArg(
-                                args,
-                                "relativePath"
-                            ),
-                            GetStringArg(
-                                args,
-                                "content"
                             )
                         );
                 }
@@ -1544,6 +2588,25 @@ namespace AI_Assistant.AI
 
                 if (
                     functionName ==
+                    "write_self_file"
+                )
+                {
+                    return
+                        selfTools.WriteSelfFile(
+                            GetStringArg(
+                                args,
+                                "relativePath"
+                            ),
+                            GetStringArg(
+                                args,
+                                "content"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
                     "build_self"
                 )
                 {
@@ -1566,105 +2629,628 @@ namespace AI_Assistant.AI
                     $"UNKNOWN TOOL: {functionName}";
             }
             catch (
-                UnauthorizedAccessException ex
-            )
-            {
-                return
-                    $"ACCESS DENIED: {ex.Message}";
-            }
-            catch (
                 JsonException ex
             )
             {
                 return
-                    $"TOOL JSON ERROR: {ex.Message}";
+                    "TOOL JSON ERROR: "
+                    +
+                    ex.Message;
             }
             catch (
                 Exception ex
             )
             {
                 return
-                    $"TOOL ERROR: {ex.Message}";
+                    "TOOL ERROR: "
+                    +
+                    ex.GetType().Name
+                    +
+                    ": "
+                    +
+                    ex.Message;
             }
         }
 
 
-        // ============================================
-        // TOOL RESULT LIMIT
-        // ============================================
+        // ============================================================
+        // TEMP CAPABILITY TOOL
+        // ============================================================
 
-        private string TrimToolResult(
-            string result
+        private static object TempCapabilityTool()
+        {
+            return
+                Tool(
+                    "execute_temp_capability",
+
+                    "Creates, Roslyn-compiles, executes, unloads and deletes one temporary C# capability in one call. " +
+                    "Use for complex or missing Unity behavior. " +
+                    "Source must contain exactly one concrete ITempCapability. " +
+                    "For multi-step Unity tasks ALWAYS use context.NewUnityBatch() and one fluent batch ending with Execute(). " +
+                    "Do NOT manually construct batch JSON. " +
+                    "Do NOT use System.IO, System.Net, HttpClient, Process or Environment. " +
+                    "Use CreateScript on the batch builder when a Unity C# script is needed.",
+
+                    new Dictionary<string, object>
+                    {
+                        ["name"] =
+                            StringProperty(
+                                "Short capability name. Must exactly match the generated capability Name property."
+                            ),
+
+                        ["source"] =
+                            StringProperty(
+                                "Complete compact C# source implementing ITempCapability."
+                            ),
+
+                        ["arguments"] =
+                            new
+                            {
+                                type =
+                                    "object",
+
+                                description =
+                                    "Optional compact runtime values for the capability.",
+
+                                additionalProperties =
+                                    true
+                            }
+                    },
+
+                    new[]
+                    {
+                        "name",
+                        "source"
+                    }
+                );
+        }
+
+
+        // ============================================================
+        // OTHER TOOL SCHEMAS
+        // ============================================================
+
+        private static object CreateGameObjectTool()
+        {
+            return
+                Tool(
+                    "create_gameobject",
+                    "Creates Unity GameObject. Empty parentPath means root.",
+
+                    new Dictionary<string, object>
+                    {
+                        ["name"] =
+                            StringProperty(),
+
+                        ["parentPath"] =
+                            StringProperty()
+                    },
+
+                    new[]
+                    {
+                        "name",
+                        "parentPath"
+                    }
+                );
+        }
+
+
+        private static object CreatePrimitiveTool()
+        {
+            return
+                Tool(
+                    "create_primitive",
+                    "Creates Unity primitive.",
+
+                    new Dictionary<string, object>
+                    {
+                        ["primitiveType"] =
+                            StringProperty(
+                                "Cube, Sphere, Capsule, Cylinder, Plane or Quad."
+                            ),
+
+                        ["name"] =
+                            StringProperty(),
+
+                        ["parentPath"] =
+                            StringProperty()
+                    },
+
+                    new[]
+                    {
+                        "primitiveType",
+                        "name",
+                        "parentPath"
+                    }
+                );
+        }
+
+
+        private static object VectorTool(
+            string name,
+            string description
         )
         {
-            if (string.IsNullOrEmpty(result))
-            {
-                return
-                    "Tool returned an empty result.";
-            }
+            return
+                Tool(
+                    name,
+                    description,
+
+                    new Dictionary<string, object>
+                    {
+                        ["objectPath"] =
+                            StringProperty(),
+
+                        ["x"] =
+                            NumberProperty(),
+
+                        ["y"] =
+                            NumberProperty(),
+
+                        ["z"] =
+                            NumberProperty()
+                    },
+
+                    new[]
+                    {
+                        "objectPath",
+                        "x",
+                        "y",
+                        "z"
+                    }
+                );
+        }
 
 
+        private static object SetActiveTool()
+        {
+            return
+                Tool(
+                    "set_active",
+                    "Enables or disables Unity GameObject.",
+
+                    new Dictionary<string, object>
+                    {
+                        ["objectPath"] =
+                            StringProperty(),
+
+                        ["active"] =
+                            BooleanProperty()
+                    },
+
+                    new[]
+                    {
+                        "objectPath",
+                        "active"
+                    }
+                );
+        }
+
+
+        private static object DuplicateTool()
+        {
+            return
+                Tool(
+                    "duplicate_gameobject",
+                    "Duplicates existing Unity GameObject.",
+
+                    new Dictionary<string, object>
+                    {
+                        ["objectPath"] =
+                            StringProperty(),
+
+                        ["newName"] =
+                            StringProperty(),
+
+                        ["parentPath"] =
+                            StringProperty()
+                    },
+
+                    new[]
+                    {
+                        "objectPath",
+                        "newName",
+                        "parentPath"
+                    }
+                );
+        }
+
+
+        private static object ConfigureRigidbodyTool()
+        {
+            return
+                Tool(
+                    "configure_rigidbody",
+                    "Configures Rigidbody.",
+
+                    new Dictionary<string, object>
+                    {
+                        ["objectPath"] =
+                            StringProperty(),
+
+                        ["mass"] =
+                            NumberProperty(),
+
+                        ["useGravity"] =
+                            BooleanProperty(),
+
+                        ["isKinematic"] =
+                            BooleanProperty()
+                    },
+
+                    new[]
+                    {
+                        "objectPath",
+                        "mass",
+                        "useGravity",
+                        "isKinematic"
+                    }
+                );
+        }
+
+
+        private static object ConfigureColliderTool()
+        {
+            return
+                Tool(
+                    "configure_collider",
+                    "Configures Collider.",
+
+                    new Dictionary<string, object>
+                    {
+                        ["objectPath"] =
+                            StringProperty(),
+
+                        ["enabled"] =
+                            BooleanProperty(),
+
+                        ["isTrigger"] =
+                            BooleanProperty()
+                    },
+
+                    new[]
+                    {
+                        "objectPath",
+                        "enabled",
+                        "isTrigger"
+                    }
+                );
+        }
+
+
+        private static object MaterialColorTool()
+        {
+            return
+                Tool(
+                    "set_material_color",
+                    "Sets material RGBA values from 0 to 1.",
+
+                    new Dictionary<string, object>
+                    {
+                        ["materialPath"] =
+                            StringProperty(),
+
+                        ["red"] =
+                            NumberProperty(),
+
+                        ["green"] =
+                            NumberProperty(),
+
+                        ["blue"] =
+                            NumberProperty(),
+
+                        ["alpha"] =
+                            NumberProperty()
+                    },
+
+                    new[]
+                    {
+                        "materialPath",
+                        "red",
+                        "green",
+                        "blue",
+                        "alpha"
+                    }
+                );
+        }
+
+
+        private static object InstantiatePrefabTool()
+        {
+            return
+                Tool(
+                    "instantiate_prefab",
+                    "Instantiates Unity prefab.",
+
+                    new Dictionary<string, object>
+                    {
+                        ["assetPath"] =
+                            StringProperty(),
+
+                        ["name"] =
+                            StringProperty(),
+
+                        ["parentPath"] =
+                            StringProperty()
+                    },
+
+                    new[]
+                    {
+                        "assetPath",
+                        "name",
+                        "parentPath"
+                    }
+                );
+        }
+
+
+        private static object ReadSectionTool()
+        {
+            return
+                Tool(
+                    "read_file_section",
+                    "Reads selected line range.",
+
+                    new Dictionary<string, object>
+                    {
+                        ["filePath"] =
+                            StringProperty(),
+
+                        ["startLine"] =
+                            IntegerProperty(),
+
+                        ["endLine"] =
+                            IntegerProperty()
+                    },
+
+                    new[]
+                    {
+                        "filePath",
+                        "startLine",
+                        "endLine"
+                    }
+                );
+        }
+
+
+        private static object SelfReadSectionTool()
+        {
+            return
+                Tool(
+                    "read_self_file_section",
+                    "Reads selected AI Assistant source lines.",
+
+                    new Dictionary<string, object>
+                    {
+                        ["relativePath"] =
+                            StringProperty(),
+
+                        ["startLine"] =
+                            IntegerProperty(),
+
+                        ["endLine"] =
+                            IntegerProperty()
+                    },
+
+                    new[]
+                    {
+                        "relativePath",
+                        "startLine",
+                        "endLine"
+                    }
+                );
+        }
+
+
+        private static object ToolNoArgs(
+            string name,
+            string description
+        )
+        {
+            return
+                Tool(
+                    name,
+                    description,
+                    new Dictionary<string, object>(),
+                    Array.Empty<string>()
+                );
+        }
+
+
+        private static object OneStringTool(
+            string name,
+            string description,
+            string property
+        )
+        {
+            return
+                Tool(
+                    name,
+                    description,
+
+                    new Dictionary<string, object>
+                    {
+                        [property] =
+                            StringProperty()
+                    },
+
+                    new[]
+                    {
+                        property
+                    }
+                );
+        }
+
+
+        private static object TwoStringTool(
+            string name,
+            string description,
+            string first,
+            string second
+        )
+        {
+            return
+                Tool(
+                    name,
+                    description,
+
+                    new Dictionary<string, object>
+                    {
+                        [first] =
+                            StringProperty(),
+
+                        [second] =
+                            StringProperty()
+                    },
+
+                    new[]
+                    {
+                        first,
+                        second
+                    }
+                );
+        }
+
+
+        private static object ThreeStringTool(
+            string name,
+            string description,
+            string first,
+            string second,
+            string third
+        )
+        {
+            return
+                Tool(
+                    name,
+                    description,
+
+                    new Dictionary<string, object>
+                    {
+                        [first] =
+                            StringProperty(),
+
+                        [second] =
+                            StringProperty(),
+
+                        [third] =
+                            StringProperty()
+                    },
+
+                    new[]
+                    {
+                        first,
+                        second,
+                        third
+                    }
+                );
+        }
+
+
+        private static object Tool(
+            string name,
+            string description,
+            Dictionary<string, object> properties,
+            string[] required
+        )
+        {
+            return
+                new
+                {
+                    type =
+                        "function",
+
+                    function =
+                        new
+                        {
+                            name,
+
+                            description,
+
+                            parameters =
+                                new
+                                {
+                                    type =
+                                        "object",
+
+                                    properties,
+
+                                    required,
+
+                                    additionalProperties =
+                                        false
+                                }
+                        }
+                };
+        }
+
+
+        private static object StringProperty(
+            string? description = null
+        )
+        {
             if (
-                result.Length <=
-                MaxToolResultChars
+                description == null
             )
             {
-                return result;
+                return
+                    new
+                    {
+                        type =
+                            "string"
+                    };
             }
 
 
             return
-                result.Substring(
-                    0,
-                    MaxToolResultChars
-                )
-                +
-                "\n\n[TOOL RESULT TRUNCATED]";
-        }
-
-
-        private string TrimConsoleResult(string result)
-        {
-            string oneLine = result.Replace("\r", " ").Replace("\n", " ").Trim();
-            return oneLine.Length <= 300 ? oneLine : oneLine.Substring(0, 300) + "...";
-        }
-
-
-        private bool TryGetUnityFailure(string toolResult, out string failureMessage)
-        {
-            failureMessage = "";
-
-            try
-            {
-                using JsonDocument document = JsonDocument.Parse(toolResult);
-                JsonElement root = document.RootElement;
-                if (!root.TryGetProperty("success", out JsonElement success)
-                    || success.ValueKind != JsonValueKind.False)
+                new
                 {
-                    return false;
-                }
+                    type =
+                        "string",
 
-                string errorCode = root.TryGetProperty("errorCode", out JsonElement code)
-                    ? code.GetString() ?? "UNITY_FAILURE"
-                    : "UNITY_FAILURE";
-                string message = root.TryGetProperty("message", out JsonElement messageElement)
-                    ? messageElement.GetString() ?? toolResult
-                    : toolResult;
-                failureMessage = $"{errorCode}: {message}";
-                return true;
-            }
-            catch
-            {
-                return false;
-            }
+                    description
+                };
         }
 
 
-        // ============================================
-        // ARG HELPERS
-        // ============================================
+        private static object NumberProperty()
+        {
+            return
+                new
+                {
+                    type =
+                        "number"
+                };
+        }
 
-        private string GetStringArg(
+
+        private static object IntegerProperty()
+        {
+            return
+                new
+                {
+                    type =
+                        "integer"
+                };
+        }
+
+
+        private static object BooleanProperty()
+        {
+            return
+                new
+                {
+                    type =
+                        "boolean"
+                };
+        }
+
+
+        // ============================================================
+        // ARGUMENT HELPERS
+        // ============================================================
+
+        private static string GetStringArg(
             JsonElement args,
             string name
         )
@@ -1672,55 +3258,79 @@ namespace AI_Assistant.AI
             if (
                 args.TryGetProperty(
                     name,
-                    out JsonElement element
+                    out JsonElement value
                 )
                 &&
-                element.ValueKind ==
-                    JsonValueKind.String
+                value.ValueKind ==
+                JsonValueKind.String
             )
             {
                 return
-                    element.GetString()
-                    ?? "";
+                    value.GetString()
+                    ??
+                    "";
             }
 
 
-            return "";
+            return
+                "";
         }
 
-        private float GetFloatArg(
-    JsonElement args,
-    string propertyName
-)
+
+        private static int GetIntArg(
+            JsonElement args,
+            string name
+        )
         {
             if (
-                !args.TryGetProperty(
-                    propertyName,
+                args.TryGetProperty(
+                    name,
                     out JsonElement value
+                )
+                &&
+                value.TryGetInt32(
+                    out int result
                 )
             )
             {
-                throw new JsonException(
-                    $"Missing required number argument: {propertyName}"
-                );
+                return
+                    result;
             }
 
 
+            throw new JsonException(
+                $"Missing/invalid integer argument: {name}"
+            );
+        }
+
+
+        private static float GetFloatArg(
+            JsonElement args,
+            string name
+        )
+        {
             if (
-                value.ValueKind !=
+                args.TryGetProperty(
+                    name,
+                    out JsonElement value
+                )
+                &&
+                value.ValueKind ==
                 JsonValueKind.Number
             )
             {
-                throw new JsonException(
-                    $"Argument {propertyName} must be a number."
-                );
+                return
+                    value.GetSingle();
             }
 
 
-            return
-                value.GetSingle();
+            throw new JsonException(
+                $"Missing/invalid number argument: {name}"
+            );
         }
-        private int GetIntArg(
+
+
+        private static bool GetBoolArg(
             JsonElement args,
             string name
         )
@@ -1728,142 +3338,135 @@ namespace AI_Assistant.AI
             if (
                 args.TryGetProperty(
                     name,
-                    out JsonElement element
-                )
-                &&
-                element.TryGetInt32(
-                    out int value
-                )
-            )
-            {
-                return value;
-            }
-
-
-            return 0;
-        }
-
-
-        private bool GetBoolArg(
-            JsonElement args,
-            string name
-        )
-        {
-            if (
-                args.TryGetProperty(
-                    name,
-                    out JsonElement element
+                    out JsonElement value
                 )
                 &&
                 (
-                    element.ValueKind ==
+                    value.ValueKind ==
                     JsonValueKind.True
                     ||
-                    element.ValueKind ==
+                    value.ValueKind ==
                     JsonValueKind.False
                 )
             )
             {
                 return
-                    element.GetBoolean();
+                    value.GetBoolean();
             }
 
 
-            return false;
+            throw new JsonException(
+                $"Missing/invalid boolean argument: {name}"
+            );
         }
 
 
-        // ============================================
-        // REGISTERED TOOL NAMES
-        // ============================================
+        // ============================================================
+        // TOOL UTILITIES
+        // ============================================================
 
-        private object[] BuildToolDefinitionsForTask(string prompt)
-        {
-            string context = prompt + "\n" + string.Join("\n", conversationHistory.TakeLast(5).Select(message => message.Message));
-            bool isUnityTask = ContainsAny(context, "unity", "scene", "scena", "gameobject", "hierarchy", "materijal", "material", "shader", "asset", "component", "komponent", "transform", "rigidbody", "collider", "renderer", "primitive", "physicscube", "prefab");
-            bool isSelfTask = ContainsAny(context, "self-development", "self development", "backup_project", "build_self", "restart_self", "replace_self_text", "write_self_file", "vlastiti source", "svoj source", "svoj kod");
-
-            HashSet<string> selected = new HashSet<string>(StringComparer.Ordinal) { "get_agent_version" };
-
-            if (isUnityTask)
-            {
-                selected.UnionWith(new[]
-                {
-                    "get_active_scene", "get_scene_hierarchy", "get_console_errors",
-                    "create_gameobject", "set_position", "set_rotation", "set_scale", "add_component", "attach_script",
-                    "save_scene", "create_primitive", "rename_gameobject", "set_parent",
-                    "set_active", "find_assets", "get_asset_info", "create_material",
-                    "set_material_color", "assign_material", "import_asset"
-                });
-            }
-
-            if (isSelfTask)
-            {
-                selected.UnionWith(new[]
-                {
-                    "inspect_self_structure", "find_self_text", "read_self_file_section",
-                    "backup_project", "write_self_file", "replace_self_text",
-                    "build_self", "restart_self"
-                });
-            }
-
-            if (!isUnityTask && !isSelfTask)
-            {
-                selected.UnionWith(new[]
-                {
-                    "list_allowed_roots", "search_and_read_file", "read_file",
-                    "read_file_section", "create_folder", "create_file", "list_files",
-                    "list_directories", "find_file", "copy_file", "move_file"
-                });
-            }
-
-            return BuildToolDefinitions()
-                .Where(definition => selected.Contains(GetToolDefinitionName(definition)))
-                .ToArray();
-        }
-
-
-        private bool ContainsAny(string text, params string[] values)
-        {
-            return values.Any(value => text.Contains(value, StringComparison.OrdinalIgnoreCase));
-        }
-
-
-        private string GetToolDefinitionName(object definition)
-        {
-            string json = JsonSerializer.Serialize(definition);
-            using JsonDocument document = JsonDocument.Parse(json);
-            return document.RootElement.GetProperty("function").GetProperty("name").GetString() ?? "";
-        }
-
-
-        private string GetRegisteredToolNames(
-            object[] toolDefinitions
+        private static bool IsNoArgTool(
+            string toolName
         )
         {
-            string json =
-                JsonSerializer.Serialize(
-                    toolDefinitions
-                );
+            return
+                toolName ==
+                "get_agent_version"
+                ||
+                toolName ==
+                "get_active_scene"
+                ||
+                toolName ==
+                "get_scene_hierarchy"
+                ||
+                toolName ==
+                "get_console_errors"
+                ||
+                toolName ==
+                "save_scene"
+                ||
+                toolName ==
+                "list_allowed_roots"
+                ||
+                toolName ==
+                "backup_project"
+                ||
+                toolName ==
+                "inspect_self_structure"
+                ||
+                toolName ==
+                "build_self"
+                ||
+                toolName ==
+                "restart_self";
+        }
 
 
-            using JsonDocument document =
-                JsonDocument.Parse(
-                    json
-                );
-
-
-            IEnumerable<string> names =
-                document
-                    .RootElement
-                    .EnumerateArray()
-                    .Select(item =>
-                        item
-                            .GetProperty("function")
-                            .GetProperty("name")
-                            .GetString()
-                        ?? ""
+        private static string NormalizeJson(
+            string json
+        )
+        {
+            try
+            {
+                using JsonDocument document =
+                    JsonDocument.Parse(
+                        json
                     );
+
+
+                return
+                    JsonSerializer.Serialize(
+                        document.RootElement
+                    );
+            }
+            catch
+            {
+                return
+                    json;
+            }
+        }
+
+
+        private static string GetRegisteredToolNames(
+            object[] definitions
+        )
+        {
+            if (
+                definitions.Length ==
+                0
+            )
+            {
+                return
+                    "";
+            }
+
+
+            List<string> names =
+                new List<string>();
+
+
+            foreach (
+                object definition
+                in definitions
+            )
+            {
+                string name =
+                    GetToolName(
+                        definition
+                    );
+
+
+                if (
+                    !string.IsNullOrWhiteSpace(
+                        name
+                    )
+                )
+                {
+                    names.Add(
+                        name
+                    );
+                }
+            }
 
 
             return
@@ -1874,958 +3477,386 @@ namespace AI_Assistant.AI
         }
 
 
-        // ============================================
-        // TOOL DEFINITIONS
-        // ============================================
-
-        private object[] BuildToolDefinitions()
+        private static string GetToolName(
+            object definition
+        )
         {
-            return new object[]
+            string json =
+                JsonSerializer.Serialize(
+                    definition
+                );
+
+
+            using JsonDocument document =
+                JsonDocument.Parse(
+                    json
+                );
+
+
+            return
+                document
+                    .RootElement
+                    .GetProperty("function")
+                    .GetProperty("name")
+                    .GetString()
+                ??
+                "";
+        }
+
+
+        private static bool ContainsAny(
+            string text,
+            params string[] terms
+        )
+        {
+            foreach (
+                string term
+                in terms
+            )
             {
-                ToolNoArgs(
-                    "get_agent_version",
-                    "Returns the current AI Assistant version. Takes no arguments."
-                ),
-
-                ToolNoArgs(
-                    "save_scene",
-                    "Saves the active Unity scene. Call only after requested changes succeed. Takes no arguments."
-                ),
-
-                UnityTwoStringTool("add_component", "Adds a built-in or package Unity Component with Undo support.", "objectPath", "Exact hierarchy path.", "componentType", "Component class name, for example Rigidbody or BoxCollider."),
-                UnityTwoStringTool("attach_script", "Attaches an existing compiled MonoBehaviour script with Undo support.", "objectPath", "Exact hierarchy path.", "scriptType", "Compiled MonoBehaviour class name."),
-                UnityThreeStringTool("create_primitive", "Creates a Unity primitive with Undo support.", "primitiveType", "Cube, Sphere, Capsule, Cylinder, Plane or Quad.", "name", "New GameObject name.", "parentPath", "Exact parent path or empty string for root."),
-                UnityTwoStringTool("rename_gameobject", "Renames an existing Unity GameObject with Undo support.", "objectPath", "Exact hierarchy path.", "newName", "New GameObject name."),
-                UnityTwoStringTool("set_parent", "Moves a GameObject under a different parent with Undo support.", "objectPath", "Exact hierarchy path.", "parentPath", "Exact new parent path or empty string for root."),
-                UnityTwoStringTool("find_assets", "Finds up to 50 Unity assets inside a safe Assets folder.", "filter", "Unity AssetDatabase search filter, for example t:Material.", "searchFolder", "Assets folder path, for example Assets or Assets/Materials."),
-                UnityOneStringTool("get_asset_info", "Returns name and type information for one Unity asset.", "assetPath", "Exact path inside Assets/."),
-                UnityTwoStringTool("create_material", "Creates a new Unity material inside Assets. Fails if the asset already exists.", "assetPath", "New .mat path inside Assets/.", "shaderName", "Shader name, for example Universal Render Pipeline/Lit."),
-                UnityTwoStringTool("assign_material", "Assigns an existing material to the Renderer on a GameObject.", "objectPath", "Exact hierarchy path.", "materialPath", "Exact .mat path inside Assets/."),
-                UnityOneStringTool("import_asset", "Forces Unity to import or reimport an existing file already located inside Assets/.", "assetPath", "Exact existing path inside Assets/."),
-                UnityVectorTool("set_position", "Sets world position on an existing Unity GameObject."),
-                UnityVectorTool("set_rotation", "Sets world Euler rotation on an existing Unity GameObject."),
-                UnityVectorTool("set_scale", "Sets local scale on an existing Unity GameObject."),
-
-                new
-                {
-                    type = "function",
-                    function = new
-                    {
-                        name = "set_material_color",
-                        description = "Sets the main color of an existing Unity material. Color channels use numbers from 0 to 1.",
-                        parameters = new
-                        {
-                            type = "object",
-                            properties = new
-                            {
-                                materialPath = new { type = "string" },
-                                red = new { type = "number" },
-                                green = new { type = "number" },
-                                blue = new { type = "number" },
-                                alpha = new { type = "number" }
-                            },
-                            required = new[] { "materialPath", "red", "green", "blue", "alpha" }
-                        }
-                    }
-                },
-
-                new
-                {
-                    type = "function",
-                    function = new
-                    {
-                        name = "set_active",
-                        description = "Sets an existing Unity GameObject active or inactive with Undo support.",
-                        parameters = new
-                        {
-                            type = "object",
-                            properties = new
-                            {
-                                objectPath = new { type = "string", description = "Exact hierarchy path." },
-                                active = new { type = "boolean", description = "Desired active state." }
-                            },
-                            required = new[] { "objectPath", "active" }
-                        }
-                    }
-                },
-                ToolNoArgs(
-                    "get_active_scene",
-                    "Returns read-only information about the active scene in the currently open Unity Editor. Takes no arguments."
-                ),
-
-                ToolNoArgs(
-                    "list_allowed_roots",
-                    "Returns the absolute filesystem roots that normal filesystem tools may access. Takes no arguments."
+                if (
+                    text.Contains(
+                        term,
+                        StringComparison.OrdinalIgnoreCase
+                    )
                 )
-                ,ToolNoArgs(
-                        "get_scene_hierarchy",
-                        "Returns the read-only hierarchy of the active Unity scene, including GameObjects, transforms, components and children. Takes no arguments."
-                ),
-
-
-                ToolNoArgs(
-                        "get_console_errors",
-                        "Returns Unity errors, exceptions and assertions captured since the Unity bridge loaded. Takes no arguments."
-                ),
-
-                new
-{
-    type = "function",
-
-    function = new
-    {
-        name =
-            "set_transform",
-
-        description =
-            "Immediately changes the transform of an existing Unity GameObject. " +
-            "Call this tool directly when the user asks to move, rotate or scale an object. " +
-            "Never display this call as JSON text. " +
-            "objectPath must exactly match a hierarchyPath returned by get_scene_hierarchy. " +
-            "All position, rotation and scale arguments must be JSON numbers without quotes.",
-
-        parameters = new
-        {
-            type = "object",
-
-            properties = new
-            {
-                objectPath = new
                 {
-                    type = "string"
-                },
-
-                positionX = new
-                {
-                    type = "number"
-                },
-
-                positionY = new
-                {
-                    type = "number"
-                },
-
-                positionZ = new
-                {
-                    type = "number"
-                },
-
-                rotationX = new
-                {
-                    type = "number"
-                },
-
-                rotationY = new
-                {
-                    type = "number"
-                },
-
-                rotationZ = new
-                {
-                    type = "number"
-                },
-
-                scaleX = new
-                {
-                    type = "number"
-                },
-
-                scaleY = new
-                {
-                    type = "number"
-                },
-
-                scaleZ = new
-                {
-                    type = "number"
+                    return
+                        true;
                 }
-            },
+            }
 
-            required = new[]
+
+            return
+                false;
+        }
+
+
+        // ============================================================
+        // TOOL RESULT LIMITS
+        // ============================================================
+
+        private static string TrimToolResult(
+            string result
+        )
+        {
+            if (
+                string.IsNullOrWhiteSpace(
+                    result
+                )
+            )
             {
-                "objectPath",
+                return
+                    "Tool completed with empty result.";
+            }
 
-                "positionX",
-                "positionY",
-                "positionZ",
 
-                "rotationX",
-                "rotationY",
-                "rotationZ",
+            if (
+                result.Length <=
+                MaxToolResultChars
+            )
+            {
+                return
+                    result;
+            }
 
-                "scaleX",
-                "scaleY",
-                "scaleZ"
+
+            return
+                result.Substring(
+                    0,
+                    MaxToolResultChars
+                )
+                +
+                "\n[RESULT TRUNCATED]";
+        }
+
+
+        private static string TrimConsoleResult(
+            string result
+        )
+        {
+            const int max =
+                500;
+
+
+            string oneLine =
+                result
+                    .Replace(
+                        "\r",
+                        " "
+                    )
+                    .Replace(
+                        "\n",
+                        " "
+                    );
+
+
+            if (
+                oneLine.Length <=
+                max
+            )
+            {
+                return
+                    oneLine;
+            }
+
+
+            return
+                oneLine.Substring(
+                    0,
+                    max
+                )
+                +
+                "...";
+        }
+
+
+        private static string FormatArgumentsForConsole(
+            string arguments
+        )
+        {
+            // Generated C# may be thousands of chars.
+            // Do not spam terminal.
+            if (
+                arguments.Length >
+                800
+            )
+            {
+                return
+                    $"[arguments {arguments.Length} chars]";
+            }
+
+
+            return
+                arguments;
+        }
+
+
+        // ============================================================
+        // RATE LIMIT
+        // ============================================================
+
+        private async Task<HttpResponseMessage>
+            SendWithRateLimitRetry(
+                string url,
+                string json
+            )
+        {
+            int retry =
+                0;
+
+
+            while (true)
+            {
+                using StringContent content =
+                    new StringContent(
+                        json,
+                        Encoding.UTF8,
+                        "application/json"
+                    );
+
+
+                HttpResponseMessage response =
+                    await client.PostAsync(
+                        url,
+                        content
+                    );
+
+
+                if (
+                    response.StatusCode !=
+                    HttpStatusCode.TooManyRequests
+                )
+                {
+                    return
+                        response;
+                }
+
+
+                string responseBody =
+                    await response.Content
+                        .ReadAsStringAsync();
+
+
+                if (
+                    responseBody.Contains(
+                        "Request too large",
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    response.Content =
+                        new StringContent(
+                            responseBody,
+                            Encoding.UTF8,
+                            "application/json"
+                        );
+
+
+                    return
+                        response;
+                }
+
+
+                retry++;
+
+
+                if (
+                    retry >
+                    MaxRateLimitRetries
+                )
+                {
+                    response.Content =
+                        new StringContent(
+                            responseBody,
+                            Encoding.UTF8,
+                            "application/json"
+                        );
+
+
+                    return
+                        response;
+                }
+
+
+                double seconds =
+                    GetRetryAfterSeconds(
+                        response,
+                        retry
+                    );
+
+
+                Console.WriteLine(
+                    $"[RATE LIMIT] Čekam {Math.Ceiling(seconds)} sekundi... ({retry}/{MaxRateLimitRetries})"
+                );
+
+
+                response.Dispose();
+
+
+                await Task.Delay(
+                    TimeSpan.FromSeconds(
+                        seconds
+                    )
+                );
             }
         }
-    }
-},
-                new
-                {
-                    type = "function",
 
-                    function = new
-                    {
-                        name =
-                            "search_and_read_file",
 
-                        description =
-                            "Searches allowed roots for a filename. Reads it if small, otherwise returns path/size/line count. fileName must be a filename or pattern, not a full path.",
-
-                        parameters = new
-                        {
-                            type = "object",
-
-                            properties = new
-                            {
-                                fileName = new
-                                {
-                                    type = "string"
-                                }
-                            },
-
-                            required = new[]
-                            {
-                                "fileName"
-                            }
-                        }
-                    }
-                },
-
-
-                new
-                {
-                    type = "function",
-
-                    function = new
-                    {
-                        name =
-                            "read_file",
-
-                        description =
-                            "Reads a small normal file using an ABSOLUTE allowed path.",
-
-                        parameters = new
-                        {
-                            type = "object",
-
-                            properties = new
-                            {
-                                filePath = new
-                                {
-                                    type = "string"
-                                }
-                            },
-
-                            required = new[]
-                            {
-                                "filePath"
-                            }
-                        }
-                    }
-                },
-
-                new
-                    {
-                        type = "function",
-
-                        function = new
-                        {
-                            name =
-                                "create_gameobject",
-
-                            description =
-                                "Creates a new GameObject in the active Unity scene. " +
-                                "Use an empty parentPath to create it at scene root. " +
-                                "To create it as a child, parentPath must be an exact hierarchy path returned by get_scene_hierarchy.",
-
-                            parameters = new
-                            {
-                                type = "object",
-
-                                properties = new
-                                {
-                                    name = new
-                                    {
-                                        type = "string",
-
-                                        description =
-                                            "Name of the new GameObject."
-                                    },
-
-                                    parentPath = new
-                                    {
-                                        type = "string",
-
-                                        description =
-                                            "Exact parent hierarchy path, for example Environment/Trees. Use an empty string for scene root."
-                                    }
-                                },
-
-                                required = new[]
-                                {
-                                    "name",
-                                    "parentPath"
-                                }
-                            }
-                        }
-                    },
-                new
-                {
-                    type = "function",
-
-                    function = new
-                    {
-                        name =
-                            "read_file_section",
-
-                        description =
-                            "Reads a limited line range from a normal file using an ABSOLUTE allowed path.",
-
-                        parameters = new
-                        {
-                            type = "object",
-
-                            properties = new
-                            {
-                                filePath = new
-                                {
-                                    type = "string"
-                                },
-
-                                startLine = new
-                                {
-                                    type = "integer"
-                                },
-
-                                endLine = new
-                                {
-                                    type = "integer"
-                                }
-                            },
-
-                            required = new[]
-                            {
-                                "filePath",
-                                "startLine",
-                                "endLine"
-                            }
-                        }
-                    }
-                },
-
-
-                new
-                {
-                    type = "function",
-
-                    function = new
-                    {
-                        name =
-                            "create_folder",
-
-                        description =
-                            "Creates a folder using an ABSOLUTE path inside an allowed root.",
-
-                        parameters = new
-                        {
-                            type = "object",
-
-                            properties = new
-                            {
-                                folderPath = new
-                                {
-                                    type = "string"
-                                }
-                            },
-
-                            required = new[]
-                            {
-                                "folderPath"
-                            }
-                        }
-                    }
-                },
-
-
-                new
-                {
-                    type = "function",
-
-                    function = new
-                    {
-                        name =
-                            "create_file",
-
-                        description =
-                            "Creates or overwrites a normal file using an ABSOLUTE allowed path. Cannot modify AI Assistant source.",
-
-                        parameters = new
-                        {
-                            type = "object",
-
-                            properties = new
-                            {
-                                filePath = new
-                                {
-                                    type = "string"
-                                },
-
-                                content = new
-                                {
-                                    type = "string"
-                                }
-                            },
-
-                            required = new[]
-                            {
-                                "filePath",
-                                "content"
-                            }
-                        }
-                    }
-                },
-
-
-                new
-                {
-                    type = "function",
-
-                    function = new
-                    {
-                        name =
-                            "list_files",
-
-                        description =
-                            "Lists files directly inside an ABSOLUTE allowed directory.",
-
-                        parameters = new
-                        {
-                            type = "object",
-
-                            properties = new
-                            {
-                                folderPath = new
-                                {
-                                    type = "string"
-                                }
-                            },
-
-                            required = new[]
-                            {
-                                "folderPath"
-                            }
-                        }
-                    }
-                },
-
-
-                new
-                {
-                    type = "function",
-
-                    function = new
-                    {
-                        name =
-                            "list_directories",
-
-                        description =
-                            "Lists direct child directories of an ABSOLUTE allowed folder.",
-
-                        parameters = new
-                        {
-                            type = "object",
-
-                            properties = new
-                            {
-                                folderPath = new
-                                {
-                                    type = "string"
-                                }
-                            },
-
-                            required = new[]
-                            {
-                                "folderPath"
-                            }
-                        }
-                    }
-                },
-
-
-                new
-                {
-                    type = "function",
-
-                    function = new
-                    {
-                        name =
-                            "find_file",
-
-                        description =
-                            "Recursively finds files inside one ABSOLUTE allowed root.",
-
-                        parameters = new
-                        {
-                            type = "object",
-
-                            properties = new
-                            {
-                                rootPath = new
-                                {
-                                    type = "string"
-                                },
-
-                                fileName = new
-                                {
-                                    type = "string"
-                                }
-                            },
-
-                            required = new[]
-                            {
-                                "rootPath",
-                                "fileName"
-                            }
-                        }
-                    }
-                },
-
-
-                new
-                {
-                    type = "function",
-
-                    function = new
-                    {
-                        name =
-                            "copy_file",
-
-                        description =
-                            "Copies a normal file between ABSOLUTE allowed paths. Cannot write into AI Assistant source.",
-
-                        parameters = new
-                        {
-                            type = "object",
-
-                            properties = new
-                            {
-                                sourcePath = new
-                                {
-                                    type = "string"
-                                },
-
-                                destinationPath = new
-                                {
-                                    type = "string"
-                                },
-
-                                overwrite = new
-                                {
-                                    type = "boolean"
-                                }
-                            },
-
-                            required = new[]
-                            {
-                                "sourcePath",
-                                "destinationPath",
-                                "overwrite"
-                            }
-                        }
-                    }
-                },
-
-
-                new
-                {
-                    type = "function",
-
-                    function = new
-                    {
-                        name =
-                            "move_file",
-
-                        description =
-                            "Moves a normal file between ABSOLUTE allowed paths. Cannot write into AI Assistant source.",
-
-                        parameters = new
-                        {
-                            type = "object",
-
-                            properties = new
-                            {
-                                sourcePath = new
-                                {
-                                    type = "string"
-                                },
-
-                                destinationPath = new
-                                {
-                                    type = "string"
-                                },
-
-                                overwrite = new
-                                {
-                                    type = "boolean"
-                                }
-                            },
-
-                            required = new[]
-                            {
-                                "sourcePath",
-                                "destinationPath",
-                                "overwrite"
-                            }
-                        }
-                    }
-                },
-
-
-                ToolNoArgs(
-                    "inspect_self_structure",
-                    "Returns AI Assistant C# source structure and current self-development state. Takes no arguments."
-                ),
-
-
-                new
-                {
-                    type = "function",
-
-                    function = new
-                    {
-                        name =
-                            "find_self_text",
-
-                        description =
-                            "Finds source text inside one AI Assistant file and returns matching line numbers plus a recommended read range. Use this to locate methods like ExecuteTool or BuildToolDefinitions.",
-
-                        parameters = new
-                        {
-                            type = "object",
-
-                            properties = new
-                            {
-                                relativePath = new
-                                {
-                                    type = "string"
-                                },
-
-                                searchText = new
-                                {
-                                    type = "string"
-                                }
-                            },
-
-                            required = new[]
-                            {
-                                "relativePath",
-                                "searchText"
-                            }
-                        }
-                    }
-                },
-
-
-                new
-                {
-                    type = "function",
-
-                    function = new
-                    {
-                        name =
-                            "read_self_file_section",
-
-                        description =
-                            "Reads a limited line range from an AI Assistant source file. relativePath is relative to the source root.",
-
-                        parameters = new
-                        {
-                            type = "object",
-
-                            properties = new
-                            {
-                                relativePath = new
-                                {
-                                    type = "string"
-                                },
-
-                                startLine = new
-                                {
-                                    type = "integer"
-                                },
-
-                                endLine = new
-                                {
-                                    type = "integer"
-                                }
-                            },
-
-                            required = new[]
-                            {
-                                "relativePath",
-                                "startLine",
-                                "endLine"
-                            }
-                        }
-                    }
-                },
-
-
-                ToolNoArgs(
-                    "backup_project",
-                    "Creates a source backup. Must be called before self-modification. Takes no arguments."
-                ),
-
-
-                new
-                {
-                    type = "function",
-
-                    function = new
-                    {
-                        name =
-                            "write_self_file",
-
-                        description =
-                            "Creates or completely overwrites an AI Assistant source file. Use primarily for NEW files. Requires backup_project first.",
-
-                        parameters = new
-                        {
-                            type = "object",
-
-                            properties = new
-                            {
-                                relativePath = new
-                                {
-                                    type = "string"
-                                },
-
-                                content = new
-                                {
-                                    type = "string"
-                                }
-                            },
-
-                            required = new[]
-                            {
-                                "relativePath",
-                                "content"
-                            }
-                        }
-                    }
-                },
-
-
-                new
-                {
-                    type = "function",
-
-                    function = new
-                    {
-                        name =
-                            "replace_self_text",
-
-                        description =
-                            "Safely replaces one unique exact text block inside an existing AI Assistant source file. Prefer for targeted self-edits. Requires backup_project first.",
-
-                        parameters = new
-                        {
-                            type = "object",
-
-                            properties = new
-                            {
-                                relativePath = new
-                                {
-                                    type = "string"
-                                },
-
-                                oldText = new
-                                {
-                                    type = "string"
-                                },
-
-                                newText = new
-                                {
-                                    type = "string"
-                                }
-                            },
-
-                            required = new[]
-                            {
-                                "relativePath",
-                                "oldText",
-                                "newText"
-                            }
-                        }
-                    }
-                },
-
-
-                ToolNoArgs(
-                    "build_self",
-                    "Builds AI Assistant into a Release staging directory. Takes no arguments."
-                ),
-
-
-                ToolNoArgs(
-                    "restart_self",
-                    "Deploys and restarts the last successful build. Requires backup, source modification and an unchanged successful build. Takes no arguments."
+        private static double GetRetryAfterSeconds(
+            HttpResponseMessage response,
+            int retry
+        )
+        {
+            if (
+                response
+                    .Headers
+                    .RetryAfter?
+                    .Delta
+                is TimeSpan delta
+            )
+            {
+                return
+                    Math.Max(
+                        1,
+                        delta.TotalSeconds + 1
+                    );
+            }
+
+
+            if (
+                response.Headers.TryGetValues(
+                    "retry-after",
+                    out IEnumerable<string>? values
                 )
-            };
-        }
-
-
-        // ============================================
-        // SIMPLE NO-ARG TOOL FACTORY
-        // ============================================
-
-        private object UnityVectorTool(string name, string description)
-        {
-            return new
+            )
             {
-                type = "function",
-                function = new
+                string? value =
+                    values.FirstOrDefault();
+
+
+                if (
+                    double.TryParse(
+                        value,
+                        NumberStyles.Any,
+                        CultureInfo.InvariantCulture,
+                        out double parsed
+                    )
+                )
                 {
-                    name,
-                    description,
-                    parameters = new
-                    {
-                        type = "object",
-                        properties = new
-                        {
-                            objectPath = new { type = "string", description = "Exact hierarchy path." },
-                            x = new { type = "number" },
-                            y = new { type = "number" },
-                            z = new { type = "number" }
-                        },
-                        required = new[] { "objectPath", "x", "y", "z" }
-                    }
+                    return
+                        Math.Max(
+                            1,
+                            parsed + 1
+                        );
                 }
-            };
-        }
+            }
 
 
-        private object UnityOneStringTool(
-            string name,
-            string description,
-            string argumentName,
-            string argumentDescription
-        )
-        {
-            return new
-            {
-                type = "function",
-                function = new
-                {
-                    name,
-                    description,
-                    parameters = new
-                    {
-                        type = "object",
-                        properties = new Dictionary<string, object>
-                        {
-                            [argumentName] = new { type = "string", description = argumentDescription }
-                        },
-                        required = new[] { argumentName }
-                    }
-                }
-            };
-        }
-
-
-        private object UnityTwoStringTool(
-            string name,
-            string description,
-            string firstName,
-            string firstDescription,
-            string secondName,
-            string secondDescription
-        )
-        {
-            return new
-            {
-                type = "function",
-                function = new
-                {
-                    name,
-                    description,
-                    parameters = new
-                    {
-                        type = "object",
-                        properties = new Dictionary<string, object>
-                        {
-                            [firstName] = new { type = "string", description = firstDescription },
-                            [secondName] = new { type = "string", description = secondDescription }
-                        },
-                        required = new[] { firstName, secondName }
-                    }
-                }
-            };
-        }
-
-
-        private object UnityThreeStringTool(
-            string name,
-            string description,
-            string firstName,
-            string firstDescription,
-            string secondName,
-            string secondDescription,
-            string thirdName,
-            string thirdDescription
-        )
-        {
-            return new
-            {
-                type = "function",
-                function = new
-                {
-                    name,
-                    description,
-                    parameters = new
-                    {
-                        type = "object",
-                        properties = new Dictionary<string, object>
-                        {
-                            [firstName] = new { type = "string", description = firstDescription },
-                            [secondName] = new { type = "string", description = secondDescription },
-                            [thirdName] = new { type = "string", description = thirdDescription }
-                        },
-                        required = new[] { firstName, secondName, thirdName }
-                    }
-                }
-            };
-        }
-
-
-        private object ToolNoArgs(
-            string name,
-            string description
-        )
-        {
             return
-                new
+                6
+                +
+                retry * 4;
+        }
+
+
+        // ============================================================
+        // TOOL-USE RECOVERY
+        // ============================================================
+
+        private static bool IsRecoverableToolUseError(
+            string responseText
+        )
+        {
+            try
+            {
+                using JsonDocument document =
+                    JsonDocument.Parse(
+                        responseText
+                    );
+
+
+                if (
+                    !document
+                        .RootElement
+                        .TryGetProperty(
+                            "error",
+                            out JsonElement error
+                        )
+                )
                 {
-                    type = "function",
+                    return
+                        false;
+                }
 
-                    function = new
-                    {
-                        name =
-                            name,
 
-                        description =
-                            description,
+                if (
+                    error.TryGetProperty(
+                        "code",
+                        out JsonElement code
+                    )
+                    &&
+                    code.ValueKind ==
+                    JsonValueKind.String
+                )
+                {
+                    return
+                        string.Equals(
+                            code.GetString(),
+                            "tool_use_failed",
+                            StringComparison.OrdinalIgnoreCase
+                        );
+                }
 
-                        parameters = new
-                        {
-                            type = "object",
 
-                            properties =
-                                new { }
-                        }
-                    }
-                };
+                return
+                    false;
+            }
+            catch
+            {
+                return
+                    false;
+            }
         }
     }
 }
