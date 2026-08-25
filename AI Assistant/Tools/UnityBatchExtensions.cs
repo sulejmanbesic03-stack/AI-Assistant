@@ -120,7 +120,7 @@ namespace AI_Assistant.Tools
             // can reasonably take longer than tiny bridge actions.
             result.Timeout =
                 TimeSpan.FromSeconds(
-                    15
+                    60
                 );
 
 

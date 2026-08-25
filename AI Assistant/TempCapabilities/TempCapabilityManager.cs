@@ -2,6 +2,7 @@
 
 using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
+using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Emit;
 
 using System.Reflection;
@@ -321,9 +322,14 @@ namespace AI_Assistant.TempCapabilities
             }
 
 
+            string preparedSource =
+    AddRequiredUsings(
+        sourceCode
+    );
+
             string? sourceError =
                 ValidateSource(
-                    sourceCode
+                    preparedSource
                 );
 
 
@@ -372,7 +378,7 @@ namespace AI_Assistant.TempCapabilities
 
                 File.WriteAllText(
                     sourcePath,
-                    sourceCode,
+                    preparedSource,
                     new UTF8Encoding(
                         encoderShouldEmitUTF8Identifier: false
                     )
@@ -385,7 +391,7 @@ namespace AI_Assistant.TempCapabilities
 
                 SyntaxTree syntaxTree =
                     CSharpSyntaxTree.ParseText(
-                        sourceCode,
+                        preparedSource,
 
                         new CSharpParseOptions(
                             LanguageVersion.Latest
@@ -455,10 +461,11 @@ namespace AI_Assistant.TempCapabilities
                 )
                 {
                     return
-                        FormatCompilerErrors(
-                            emitResult.Diagnostics
+                      FormatCompilerErrors(
+                        emitResult.Diagnostics,
+                          preparedSource
                         );
-                }
+                               }
 
 
                 // =================================================
@@ -761,11 +768,146 @@ namespace AI_Assistant.TempCapabilities
         // ========================================================
         // GENERATED SOURCE VALIDATION
         // ========================================================
+        private static string AddRequiredUsings(
+            string sourceCode
+        )
+        {
+            CompilationUnitSyntax root =
+                CSharpSyntaxTree.ParseText(
+                    sourceCode,
+                    new CSharpParseOptions(
+                        LanguageVersion.Latest
+                    )
+                )
+                .GetCompilationUnitRoot();
+
+            HashSet<string> existingUsings =
+                root
+                    .DescendantNodes()
+                    .OfType<UsingDirectiveSyntax>()
+                    .Select(usingDirective =>
+                        usingDirective.Name?.ToString()
+                        ??
+                        ""
+                    )
+                    .ToHashSet(
+                        StringComparer.Ordinal
+                    );
+
+            StringBuilder header =
+                new StringBuilder();
+
+            AddUsingIfMissing(
+                header,
+                existingUsings,
+                "AI_Assistant.TempCapabilities"
+            );
+
+            AddUsingIfMissing(
+                header,
+                existingUsings,
+                "System.Text.Json"
+            );
+
+            AddUsingIfMissing(
+                header,
+                existingUsings,
+                "System.Threading.Tasks"
+            );
+
+            if (header.Length == 0)
+            {
+                return sourceCode;
+            }
+
+            header.AppendLine();
+            header.Append(sourceCode);
+
+            return header.ToString();
+        }
+
+
+        private static void AddUsingIfMissing(
+            StringBuilder header,
+            HashSet<string> existingUsings,
+            string namespaceName
+        )
+        {
+            if (
+                !existingUsings.Contains(
+                    namespaceName
+                )
+            )
+            {
+                header.AppendLine(
+                    "using "
+                    +
+                    namespaceName
+                    +
+                    ";"
+                );
+            }
+        }
+
 
         private static string? ValidateSource(
             string sourceCode
         )
         {
+            SyntaxTree syntaxTree =
+                CSharpSyntaxTree.ParseText(
+                    sourceCode,
+                    new CSharpParseOptions(
+                        LanguageVersion.Latest
+                    )
+                );
+
+            CompilationUnitSyntax root =
+                syntaxTree.GetCompilationUnitRoot();
+
+            foreach (
+                UsingDirectiveSyntax usingDirective
+                in root
+                    .DescendantNodes()
+                    .OfType<UsingDirectiveSyntax>()
+            )
+            {
+                string namespaceName =
+                    usingDirective.Name?.ToString()
+                    ??
+                    "";
+
+                bool directUnityReference =
+                    namespaceName.Equals(
+                        "UnityEngine",
+                        StringComparison.Ordinal
+                    )
+                    ||
+                    namespaceName.StartsWith(
+                        "UnityEngine.",
+                        StringComparison.Ordinal
+                    )
+                    ||
+                    namespaceName.Equals(
+                        "UnityEditor",
+                        StringComparison.Ordinal
+                    )
+                    ||
+                    namespaceName.StartsWith(
+                        "UnityEditor.",
+                        StringComparison.Ordinal
+                    );
+
+                if (directUnityReference)
+                {
+                    return
+                        "TEMP CAPABILITY DENIED: " +
+                        "host capability must not reference UnityEngine or UnityEditor directly. " +
+                        "Use context.NewUnityBatch(). " +
+                        "Unity C# script text is allowed only inside CreateScript(...).";
+                }
+            }
+
             foreach (
                 string blockedFragment
                 in BlockedSourceFragments
@@ -785,7 +927,6 @@ namespace AI_Assistant.TempCapabilities
                 }
             }
 
-
             if (
                 !sourceCode.Contains(
                     "ITempCapability",
@@ -798,10 +939,8 @@ namespace AI_Assistant.TempCapabilities
                     "generated source must implement ITempCapability.";
             }
 
-
             return null;
         }
-
 
         // ========================================================
         // ROSLYN REFERENCES
@@ -900,13 +1039,15 @@ namespace AI_Assistant.TempCapabilities
         // ========================================================
 
         private static string FormatCompilerErrors(
-            IEnumerable<Diagnostic> diagnostics
-        )
+      IEnumerable<Diagnostic> diagnostics,
+      string sourceCode
+  )
         {
             Diagnostic[] compilerErrors =
                 diagnostics
                     .Where(diagnostic =>
-                        diagnostic.Severity ==
+                        diagnostic.Severity
+                        ==
                         DiagnosticSeverity.Error
                     )
                     .Take(
@@ -914,30 +1055,22 @@ namespace AI_Assistant.TempCapabilities
                     )
                     .ToArray();
 
-
-            if (
-                compilerErrors.Length ==
-                0
-            )
+            if (compilerErrors.Length == 0)
             {
                 return
                     "TEMP COMPILE FAILED: compiler returned no useful diagnostics.";
             }
 
-
             StringBuilder result =
                 new StringBuilder();
-
 
             result.AppendLine(
                 "TEMP COMPILE FAILED"
             );
 
-
             result.AppendLine(
-                "Fix ALL errors below in ONE rewrite:"
+                "Fix ALL errors below in ONE complete rewrite:"
             );
-
 
             foreach (
                 Diagnostic compilerError
@@ -949,14 +1082,12 @@ namespace AI_Assistant.TempCapabilities
                         .Location
                         .GetLineSpan();
 
-
                 int line =
                     location
                         .StartLinePosition
                         .Line
                     +
                     1;
-
 
                 int column =
                     location
@@ -965,49 +1096,120 @@ namespace AI_Assistant.TempCapabilities
                     +
                     1;
 
-
                 result.Append(
                     compilerError.Id
                 );
-
 
                 result.Append(
                     " L"
                 );
 
-
                 result.Append(
                     line
                 );
-
 
                 result.Append(
                     ":"
                 );
 
-
                 result.Append(
                     column
                 );
 
-
                 result.Append(
                     " "
                 );
-
 
                 result.AppendLine(
                     compilerError.GetMessage()
                 );
             }
 
+            AppendRelevantSourceLines(
+                result,
+                sourceCode,
+                compilerErrors
+            );
 
-            return
-                result
-                    .ToString()
-                    .TrimEnd();
+            return result
+                .ToString()
+                .TrimEnd();
         }
 
+
+        private static void AppendRelevantSourceLines(
+            StringBuilder result,
+            string sourceCode,
+            IEnumerable<Diagnostic> diagnostics
+        )
+        {
+            string[] lines =
+                sourceCode
+                    .Replace(
+                        "\r\n",
+                        "\n"
+                    )
+                    .Split('\n');
+
+            int[] relevantLines =
+                diagnostics
+                    .Where(diagnostic =>
+                        diagnostic.Location.IsInSource
+                    )
+                    .Select(diagnostic =>
+                        diagnostic.Location
+                            .GetLineSpan()
+                            .StartLinePosition
+                            .Line
+                    )
+                    .SelectMany(line =>
+                        new[]
+                        {
+                    line - 1,
+                    line,
+                    line + 1
+                        }
+                    )
+                    .Where(line =>
+                        line >= 0
+                        &&
+                        line < lines.Length
+                    )
+                    .Distinct()
+                    .OrderBy(line =>
+                        line
+                    )
+                    .Take(24)
+                    .ToArray();
+
+            if (relevantLines.Length == 0)
+            {
+                return;
+            }
+
+            result.AppendLine();
+            result.AppendLine(
+                "RELEVANT SOURCE LINES:"
+            );
+
+            foreach (
+                int line
+                in relevantLines
+            )
+            {
+                result.Append(
+                    line + 1
+                );
+
+                result.Append(
+                    ": "
+                );
+
+                result.AppendLine(
+                    lines[line]
+                );
+            }
+        }
 
         // ========================================================
         // RESULT LIMIT

@@ -1,7 +1,7 @@
 ﻿using AI_Assistant.Tools;
-
+using System;
+using System.Collections.Generic;
 using System.Text.Json;
-
 
 namespace AI_Assistant.TempCapabilities
 {
@@ -12,22 +12,25 @@ namespace AI_Assistant.TempCapabilities
         private readonly List<Dictionary<string, object?>> operations =
             new List<Dictionary<string, object?>>();
 
+        // Pamti pune putanje objekata napravljenih u trenutnom batchu.
+        // Primjer: TempDllCube -> TempDllRoot/TempDllCube
+        private readonly Dictionary<string, string> createdObjectPaths =
+            new Dictionary<string, string>(StringComparer.Ordinal);
 
-        private bool stopOnFailure =
-            true;
+        // Ako dva novonapravljena objekta imaju isto kratko ime,
+        // ne pokušavamo pogoditi koji je pravi.
+        private readonly HashSet<string> ambiguousCreatedNames =
+            new HashSet<string>(StringComparer.Ordinal);
 
-
+        private bool stopOnFailure = true;
         private bool saveScene;
-
 
         public UnityBatchBuilder(
             UnityBridgeTools unity
         )
         {
-            this.unity =
-                unity;
+            this.unity = unity;
         }
-
 
         // ============================================================
         // SETTINGS
@@ -37,25 +40,17 @@ namespace AI_Assistant.TempCapabilities
             bool value = true
         )
         {
-            stopOnFailure =
-                value;
-
-
+            stopOnFailure = value;
             return this;
         }
-
 
         public UnityBatchBuilder SaveScene(
             bool value = true
         )
         {
-            saveScene =
-                value;
-
-
+            saveScene = value;
             return this;
         }
-
 
         // ============================================================
         // GAMEOBJECT
@@ -66,24 +61,25 @@ namespace AI_Assistant.TempCapabilities
             string parentPath = ""
         )
         {
+            string resolvedParentPath =
+                ResolveObjectPath(parentPath);
+
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "create_gameobject",
-
-                    ["name"] =
-                        name,
-
-                    ["parentPath"] =
-                        parentPath
+                    ["operation"] = "create_gameobject",
+                    ["name"] = name,
+                    ["parentPath"] = resolvedParentPath
                 }
             );
 
+            RememberCreatedObject(
+                name,
+                resolvedParentPath
+            );
 
             return this;
         }
-
 
         public UnityBatchBuilder CreatePrimitive(
             string primitiveType,
@@ -91,27 +87,26 @@ namespace AI_Assistant.TempCapabilities
             string parentPath = ""
         )
         {
+            string resolvedParentPath =
+                ResolveObjectPath(parentPath);
+
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "create_primitive",
-
-                    ["primitiveType"] =
-                        primitiveType,
-
-                    ["name"] =
-                        name,
-
-                    ["parentPath"] =
-                        parentPath
+                    ["operation"] = "create_primitive",
+                    ["primitiveType"] = primitiveType,
+                    ["name"] = name,
+                    ["parentPath"] = resolvedParentPath
                 }
             );
 
+            RememberCreatedObject(
+                name,
+                resolvedParentPath
+            );
 
             return this;
         }
-
 
         public UnityBatchBuilder DeleteGameObject(
             string objectPath
@@ -120,18 +115,13 @@ namespace AI_Assistant.TempCapabilities
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "delete_gameobject",
-
-                    ["objectPath"] =
-                        objectPath
+                    ["operation"] = "delete_gameobject",
+                    ["objectPath"] = ResolveObjectPath(objectPath)
                 }
             );
 
-
             return this;
         }
-
 
         public UnityBatchBuilder RenameGameObject(
             string objectPath,
@@ -141,21 +131,14 @@ namespace AI_Assistant.TempCapabilities
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "rename_gameobject",
-
-                    ["objectPath"] =
-                        objectPath,
-
-                    ["newName"] =
-                        newName
+                    ["operation"] = "rename_gameobject",
+                    ["objectPath"] = ResolveObjectPath(objectPath),
+                    ["newName"] = newName
                 }
             );
 
-
             return this;
         }
-
 
         public UnityBatchBuilder SetParent(
             string objectPath,
@@ -165,21 +148,14 @@ namespace AI_Assistant.TempCapabilities
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "set_parent",
-
-                    ["objectPath"] =
-                        objectPath,
-
-                    ["parentPath"] =
-                        parentPath
+                    ["operation"] = "set_parent",
+                    ["objectPath"] = ResolveObjectPath(objectPath),
+                    ["parentPath"] = ResolveObjectPath(parentPath)
                 }
             );
 
-
             return this;
         }
-
 
         public UnityBatchBuilder SetActive(
             string objectPath,
@@ -189,21 +165,14 @@ namespace AI_Assistant.TempCapabilities
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "set_active",
-
-                    ["objectPath"] =
-                        objectPath,
-
-                    ["boolValue"] =
-                        active
+                    ["operation"] = "set_active",
+                    ["objectPath"] = ResolveObjectPath(objectPath),
+                    ["boolValue"] = active
                 }
             );
 
-
             return this;
         }
-
 
         // ============================================================
         // TRANSFORM
@@ -219,27 +188,16 @@ namespace AI_Assistant.TempCapabilities
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "set_position",
-
-                    ["objectPath"] =
-                        objectPath,
-
-                    ["x"] =
-                        x,
-
-                    ["y"] =
-                        y,
-
-                    ["z"] =
-                        z
+                    ["operation"] = "set_position",
+                    ["objectPath"] = ResolveObjectPath(objectPath),
+                    ["x"] = x,
+                    ["y"] = y,
+                    ["z"] = z
                 }
             );
 
-
             return this;
         }
-
 
         public UnityBatchBuilder SetRotation(
             string objectPath,
@@ -251,27 +209,16 @@ namespace AI_Assistant.TempCapabilities
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "set_rotation",
-
-                    ["objectPath"] =
-                        objectPath,
-
-                    ["x"] =
-                        x,
-
-                    ["y"] =
-                        y,
-
-                    ["z"] =
-                        z
+                    ["operation"] = "set_rotation",
+                    ["objectPath"] = ResolveObjectPath(objectPath),
+                    ["x"] = x,
+                    ["y"] = y,
+                    ["z"] = z
                 }
             );
 
-
             return this;
         }
-
 
         public UnityBatchBuilder SetScale(
             string objectPath,
@@ -283,27 +230,16 @@ namespace AI_Assistant.TempCapabilities
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "set_scale",
-
-                    ["objectPath"] =
-                        objectPath,
-
-                    ["x"] =
-                        x,
-
-                    ["y"] =
-                        y,
-
-                    ["z"] =
-                        z
+                    ["operation"] = "set_scale",
+                    ["objectPath"] = ResolveObjectPath(objectPath),
+                    ["x"] = x,
+                    ["y"] = y,
+                    ["z"] = z
                 }
             );
 
-
             return this;
         }
-
 
         // ============================================================
         // COMPONENTS
@@ -317,21 +253,14 @@ namespace AI_Assistant.TempCapabilities
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "add_component",
-
-                    ["objectPath"] =
-                        objectPath,
-
-                    ["componentType"] =
-                        componentType
+                    ["operation"] = "add_component",
+                    ["objectPath"] = ResolveObjectPath(objectPath),
+                    ["componentType"] = componentType
                 }
             );
 
-
             return this;
         }
-
 
         public UnityBatchBuilder RemoveComponent(
             string objectPath,
@@ -341,21 +270,14 @@ namespace AI_Assistant.TempCapabilities
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "remove_component",
-
-                    ["objectPath"] =
-                        objectPath,
-
-                    ["componentType"] =
-                        componentType
+                    ["operation"] = "remove_component",
+                    ["objectPath"] = ResolveObjectPath(objectPath),
+                    ["componentType"] = componentType
                 }
             );
 
-
             return this;
         }
-
 
         // ============================================================
         // SERIALIZED PROPERTIES
@@ -378,7 +300,6 @@ namespace AI_Assistant.TempCapabilities
             );
         }
 
-
         public UnityBatchBuilder SetFloat(
             string objectPath,
             string componentType,
@@ -395,7 +316,6 @@ namespace AI_Assistant.TempCapabilities
                 value
             );
         }
-
 
         public UnityBatchBuilder SetBool(
             string objectPath,
@@ -414,7 +334,6 @@ namespace AI_Assistant.TempCapabilities
             );
         }
 
-
         public UnityBatchBuilder SetString(
             string objectPath,
             string componentType,
@@ -432,7 +351,6 @@ namespace AI_Assistant.TempCapabilities
             );
         }
 
-
         public UnityBatchBuilder SetVector2(
             string objectPath,
             string componentType,
@@ -444,33 +362,18 @@ namespace AI_Assistant.TempCapabilities
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "set_component_property",
-
-                    ["objectPath"] =
-                        objectPath,
-
-                    ["componentType"] =
-                        componentType,
-
-                    ["propertyName"] =
-                        propertyName,
-
-                    ["valueType"] =
-                        "vector2",
-
-                    ["x"] =
-                        x,
-
-                    ["y"] =
-                        y
+                    ["operation"] = "set_component_property",
+                    ["objectPath"] = ResolveObjectPath(objectPath),
+                    ["componentType"] = componentType,
+                    ["propertyName"] = propertyName,
+                    ["valueType"] = "vector2",
+                    ["x"] = x,
+                    ["y"] = y
                 }
             );
 
-
             return this;
         }
-
 
         public UnityBatchBuilder SetVector3(
             string objectPath,
@@ -484,36 +387,19 @@ namespace AI_Assistant.TempCapabilities
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "set_component_property",
-
-                    ["objectPath"] =
-                        objectPath,
-
-                    ["componentType"] =
-                        componentType,
-
-                    ["propertyName"] =
-                        propertyName,
-
-                    ["valueType"] =
-                        "vector3",
-
-                    ["x"] =
-                        x,
-
-                    ["y"] =
-                        y,
-
-                    ["z"] =
-                        z
+                    ["operation"] = "set_component_property",
+                    ["objectPath"] = ResolveObjectPath(objectPath),
+                    ["componentType"] = componentType,
+                    ["propertyName"] = propertyName,
+                    ["valueType"] = "vector3",
+                    ["x"] = x,
+                    ["y"] = y,
+                    ["z"] = z
                 }
             );
 
-
             return this;
         }
-
 
         public UnityBatchBuilder SetColor(
             string objectPath,
@@ -528,39 +414,20 @@ namespace AI_Assistant.TempCapabilities
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "set_component_property",
-
-                    ["objectPath"] =
-                        objectPath,
-
-                    ["componentType"] =
-                        componentType,
-
-                    ["propertyName"] =
-                        propertyName,
-
-                    ["valueType"] =
-                        "color",
-
-                    ["r"] =
-                        red,
-
-                    ["g"] =
-                        green,
-
-                    ["b"] =
-                        blue,
-
-                    ["a"] =
-                        alpha
+                    ["operation"] = "set_component_property",
+                    ["objectPath"] = ResolveObjectPath(objectPath),
+                    ["componentType"] = componentType,
+                    ["propertyName"] = propertyName,
+                    ["valueType"] = "color",
+                    ["r"] = red,
+                    ["g"] = green,
+                    ["b"] = blue,
+                    ["a"] = alpha
                 }
             );
 
-
             return this;
         }
-
 
         private UnityBatchBuilder AddProperty(
             string objectPath,
@@ -574,30 +441,81 @@ namespace AI_Assistant.TempCapabilities
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "set_component_property",
-
-                    ["objectPath"] =
-                        objectPath,
-
-                    ["componentType"] =
-                        componentType,
-
-                    ["propertyName"] =
-                        propertyName,
-
-                    ["valueType"] =
-                        valueType,
-
-                    [valueKey] =
-                        value
+                    ["operation"] = "set_component_property",
+                    ["objectPath"] = ResolveObjectPath(objectPath),
+                    ["componentType"] = componentType,
+                    ["propertyName"] = propertyName,
+                    ["valueType"] = valueType,
+                    [valueKey] = value
                 }
             );
-
 
             return this;
         }
 
+        // ============================================================
+        // BATCH PATH RESOLUTION
+        // ============================================================
+
+        private string ResolveObjectPath(
+            string objectPath
+        )
+        {
+            if (
+                string.IsNullOrWhiteSpace(objectPath) ||
+                objectPath.Contains('/') ||
+                ambiguousCreatedNames.Contains(objectPath)
+            )
+            {
+                return objectPath;
+            }
+
+            return
+                createdObjectPaths.TryGetValue(
+                    objectPath,
+                    out string? fullPath
+                )
+                    ? fullPath
+                    : objectPath;
+        }
+
+        private void RememberCreatedObject(
+            string name,
+            string parentPath
+        )
+        {
+            if (
+                string.IsNullOrWhiteSpace(name) ||
+                ambiguousCreatedNames.Contains(name)
+            )
+            {
+                return;
+            }
+
+            string fullPath =
+                string.IsNullOrWhiteSpace(parentPath)
+                    ? name
+                    : parentPath.TrimEnd('/') + "/" + name;
+
+            if (
+                createdObjectPaths.TryGetValue(
+                    name,
+                    out string? existingPath
+                ) &&
+                !string.Equals(
+                    existingPath,
+                    fullPath,
+                    StringComparison.Ordinal
+                )
+            )
+            {
+                createdObjectPaths.Remove(name);
+                ambiguousCreatedNames.Add(name);
+                return;
+            }
+
+            createdObjectPaths[name] = fullPath;
+        }
 
         // ============================================================
         // SCRIPT
@@ -611,21 +529,14 @@ namespace AI_Assistant.TempCapabilities
             operations.Add(
                 new Dictionary<string, object?>
                 {
-                    ["operation"] =
-                        "create_script",
-
-                    ["assetPath"] =
-                        assetPath,
-
-                    ["content"] =
-                        content
+                    ["operation"] = "create_script",
+                    ["assetPath"] = assetPath,
+                    ["content"] = content
                 }
             );
 
-
             return this;
         }
-
 
         // ============================================================
         // EXECUTE
@@ -633,33 +544,23 @@ namespace AI_Assistant.TempCapabilities
 
         public string Execute()
         {
-            if (
-                operations.Count ==
-                0
-            )
+            if (operations.Count == 0)
             {
                 return
                     "{\"success\":false,\"message\":\"Batch contains no operations.\"}";
             }
-
 
             string json =
                 JsonSerializer.Serialize(
                     new
                     {
                         stopOnFailure,
-
                         saveScene,
-
                         operations
                     }
                 );
 
-
-            return
-                unity.ExecuteBatch(
-                    json
-                );
+            return unity.ExecuteBatch(json);
         }
     }
 }

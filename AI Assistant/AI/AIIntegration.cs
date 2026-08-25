@@ -427,7 +427,29 @@ namespace AI_Assistant.AI
                         Console.WriteLine(
                             $"[RESULT {iteration}] {TrimConsoleResult(toolResult)}"
                         );
+                        if (
+                                    functionName ==
+                                    "execute_temp_capability"
+                                    &&
+                                    IsTerminalTempCapabilityFailure(
+                                        toolResult
+                                    )
+                                )
+                         {
+                            string answer =
+                                "Temporary capability stopped after a runtime or Unity batch failure. " +
+                                "It was not retried because a timeout may occur after Unity already performed part of the batch.\n" +
+                                toolResult;
 
+                            conversationHistory.Add(
+                                new ChatMessage(
+                                    "assistant",
+                                    answer
+                                )
+                            );
+
+                            return answer;
+                        }
 
                         currentCycle.Add(
                             new
@@ -530,6 +552,14 @@ namespace AI_Assistant.AI
                         messages,
 
                     ["reasoning_effort"] =
+                    tools.Any(definition =>
+                        GetToolName(definition)
+                        ==
+                        "execute_temp_capability"
+                    )
+                        ?
+                        "medium"
+                        :
                         "low"
                 };
 
@@ -636,7 +666,50 @@ Generated temporary capability source must:
 - implement ExecuteAsync,
 - remain compact,
 - use only the controlled TempCapabilityContext.
+The host automatically injects these required using directives:
 
+using AI_Assistant.TempCapabilities;
+using System.Text.Json;
+using System.Threading.Tasks;
+
+Never add using UnityEngine or using UnityEditor to the temporary capability itself.
+The temporary DLL does not reference Unity assemblies.
+Interact with Unity only through context.NewUnityBatch().
+UnityEngine code is allowed only as script TEXT passed to CreateScript(...).
+
+Use this exact capability structure:
+
+public sealed class ExampleCapability : ITempCapability
+{
+    public string Name => "ExampleCapability";
+
+    public Task<string> ExecuteAsync(
+        TempCapabilityContext context,
+        JsonElement arguments
+    )
+    {
+        string result =
+            context
+                .NewUnityBatch()
+                .CreateGameObject(
+                    "ExampleObject",
+                    ""
+                )
+                .SaveScene()
+                .Execute();
+
+        return Task.FromResult(
+            result
+        );
+    }
+}
+
+Before calling execute_temp_capability, silently check:
+- every statement that requires a semicolon has one,
+- parentheses and braces are balanced,
+- Name exactly matches the tool argument name,
+- ExecuteAsync returns Task<string>,
+- there are no UnityEngine or UnityEditor references in the host capability.
 Do NOT use:
 - System.IO
 - System.Net
@@ -653,7 +726,10 @@ If compilation fails:
 - then retry.
 - Do not repair only one compiler error per retry.
 
-
+If a compiled capability returns a runtime, Unity batch, offline or timeout failure:
+- do not generate another capability,
+- do not repeat the batch,
+- report the exact failure because Unity may already have executed part of it.
 UNITY TEMP CAPABILITY RULES:
 
 For multi-step Unity work, ALWAYS prefer:
@@ -732,13 +808,13 @@ Use three double-quote characters to open and close the script string.
 
 Example structure:
 
-string script = <RAW_STRING_START>
+string script = """
 using UnityEngine;
 
 public class Example : MonoBehaviour
 {
 }
-<RAW_STRING_END>;
+""";
 
 Then pass the string to:
 
@@ -3569,7 +3645,76 @@ When something fails, report the useful error instead of pretending success.
                 +
                 "\n[RESULT TRUNCATED]";
         }
+        private static bool IsTerminalTempCapabilityFailure(
+    string result
+)
+        {
+            if (
+                result.StartsWith(
+                    "TEMP COMPILE FAILED",
+                    StringComparison.Ordinal
+                )
+                ||
+                result.StartsWith(
+                    "TEMP CAPABILITY DENIED",
+                    StringComparison.Ordinal
+                )
+                ||
+                result.StartsWith(
+                    "TEMP CAPABILITY ERROR",
+                    StringComparison.Ordinal
+                )
+            )
+            {
+                // Ove greške model može popraviti pisanjem
+                // jedne kompletne nove capability verzije.
+                return false;
+            }
 
+            if (
+                result.StartsWith(
+                    "TEMP RUNTIME ERROR",
+                    StringComparison.Ordinal
+                )
+                ||
+                result.StartsWith(
+                    "TEMP LOAD ERROR",
+                    StringComparison.Ordinal
+                )
+                ||
+                result.StartsWith(
+                    "TEMP ARGUMENT ERROR",
+                    StringComparison.Ordinal
+                )
+            )
+            {
+                return true;
+            }
+
+            try
+            {
+                using JsonDocument document =
+                    JsonDocument.Parse(
+                        result
+                    );
+
+                JsonElement root =
+                    document.RootElement;
+
+                return
+                    root.TryGetProperty(
+                        "success",
+                        out JsonElement success
+                    )
+                    &&
+                    success.ValueKind ==
+                    JsonValueKind.False;
+            }
+            catch
+            {
+                return false;
+            }
+        }
 
         private static string TrimConsoleResult(
             string result
