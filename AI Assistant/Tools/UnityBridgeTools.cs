@@ -2,6 +2,7 @@
 using System.Net.Http;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace AI_Assistant.Tools
@@ -16,6 +17,9 @@ namespace AI_Assistant.Tools
 
         private const string SafeActionBaseUrl =
             "http://127.0.0.1:47823";
+
+        private const string PersistentScriptBaseUrl =
+            "http://127.0.0.1:47826";
 
         private const string BridgeHeaderValue =
             "AI-Assistant-Local";
@@ -158,6 +162,103 @@ namespace AI_Assistant.Tools
                         componentType = scriptType
                     }
                 )
+            );
+        }
+
+
+        public string CreatePersistentScript(
+            string assetPath,
+            string className,
+            string source,
+            bool overwrite
+        )
+        {
+            return SendPersistentPostRequest(
+                "/create-script",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        assetPath,
+                        className,
+                        source,
+                        overwrite
+                    }
+                )
+            );
+        }
+
+
+        public string WaitForPersistentScript(
+            string jobId
+        )
+        {
+            if (string.IsNullOrWhiteSpace(jobId))
+            {
+                return CreateFailure(
+                    "VALIDATION_FAILED",
+                    "jobId is required."
+                );
+            }
+
+            DateTime deadline =
+                DateTime.UtcNow.AddSeconds(90);
+
+            string lastResult =
+                "";
+
+            while (DateTime.UtcNow < deadline)
+            {
+                lastResult =
+                    SendPersistentGetRequest(
+                        "/script-status?jobId="
+                        + Uri.EscapeDataString(jobId)
+                    );
+
+                try
+                {
+                    using JsonDocument document =
+                        JsonDocument.Parse(lastResult);
+
+                    JsonElement root =
+                        document.RootElement;
+
+                    string state =
+                        root.TryGetProperty(
+                            "state",
+                            out JsonElement stateElement
+                        )
+                        && stateElement.ValueKind ==
+                            JsonValueKind.String
+                            ? stateElement.GetString() ?? ""
+                            : "";
+
+                    if (
+                        state == "compiled"
+                        || state == "failed"
+                    )
+                    {
+                        return lastResult;
+                    }
+                }
+                catch
+                {
+                    // Unity may be briefly offline during domain reload.
+                }
+
+                Thread.Sleep(500);
+            }
+
+            return JsonSerializer.Serialize(
+                new
+                {
+                    success = false,
+                    phase = "timeout",
+                    state = "failed",
+                    jobId,
+                    message =
+                        "Timed out waiting for Unity persistent-script compilation.",
+                    lastResult
+                }
             );
         }
 
@@ -614,6 +715,61 @@ namespace AI_Assistant.Tools
                 return FormatConnectionError(
                     ex
                 );
+            }
+        }
+
+
+        private string SendPersistentPostRequest(
+            string endpoint,
+            string json
+        )
+        {
+            try
+            {
+                using StringContent content =
+                    new StringContent(
+                        json,
+                        Encoding.UTF8,
+                        "application/json"
+                    );
+
+                using HttpResponseMessage response =
+                    client
+                        .PostAsync(
+                            PersistentScriptBaseUrl + endpoint,
+                            content
+                        )
+                        .GetAwaiter()
+                        .GetResult();
+
+                return ReadResponse(response);
+            }
+            catch (Exception ex)
+            {
+                return FormatConnectionError(ex);
+            }
+        }
+
+
+        private string SendPersistentGetRequest(
+            string endpoint
+        )
+        {
+            try
+            {
+                using HttpResponseMessage response =
+                    client
+                        .GetAsync(
+                            PersistentScriptBaseUrl + endpoint
+                        )
+                        .GetAwaiter()
+                        .GetResult();
+
+                return ReadResponse(response);
+            }
+            catch (Exception ex)
+            {
+                return FormatConnectionError(ex);
             }
         }
 

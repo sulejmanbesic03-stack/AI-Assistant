@@ -23,6 +23,8 @@
 	<ItemGroup>
 		<Compile Remove="TempTools\**\*.cs" />
 		<None Include="TempTools\**\*.cs" />
+		<Compile Remove="CapabilityLibrary\source\**\*.cs" />
+		<None Include="CapabilityLibrary\source\**\*.cs" />
 	</ItemGroup>
 
 </Project>

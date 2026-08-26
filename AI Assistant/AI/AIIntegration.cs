@@ -437,8 +437,8 @@ namespace AI_Assistant.AI
                                 )
                         {
                             string answer =
-                                "Temporary capability stopped after a runtime or Unity batch failure. " +
-                                "It was not retried because a timeout may occur after Unity already performed part of the batch.\n" +
+                                "Unity-side capability stopped after a runtime or transport failure. " +
+                                "It was not retried because Unity may already have performed part of the operation.\n" +
                                 toolResult;
 
                             conversationHistory.Add(
@@ -631,76 +631,57 @@ Do NOT use execute_temp_capability when one simple existing tool can efficiently
 Use execute_temp_capability when:
 - existing tools cannot perform the requested behavior,
 - one generated capability can replace many individual tool calls,
-- or a complex Unity task can be executed locally as one batch.
+- or direct Unity component APIs are more reliable than many generic bridge operations.
 
 Prefer ONE broad task-specific temporary capability.
-
-Good:
-- SetupFpsController
-- BuildEnemySystem
-- CreateInteractionSetup
-
-Bad:
-- CreatePlayer
-- AddCamera
-- AddController
-- SetSpeed
-- SetJump
-
 Do not create many small temporary capabilities for one task.
 
-Temporary capability lifecycle is automatic:
+The capability source is sent to the Unity Editor. Unity compiles it as a temporary DLL and executes it on the Unity main thread:
 
 generate
 -> validate
--> compile
+-> compile inside Unity
 -> execute
--> unload
--> delete
-
-Do not manually create TempTools files.
+-> delete temporary source and DLL files
 
 Generated temporary capability source must:
-- contain exactly one concrete ITempCapability implementation,
+- contain exactly one concrete IUnityDynamicCapability implementation,
 - have a Name property exactly matching the requested capability name,
-- implement ExecuteAsync,
-- remain compact,
-- use only the controlled TempCapabilityContext.
-The host automatically injects these required using directives:
+- implement string Execute(UnityDynamicCapabilityContext context, string argumentsJson),
+- remain compact and task-specific,
+- use UnityEngine directly for scene objects and component properties,
+- use the supplied context for hierarchy lookup, Undo-aware creation, dirty marking and scene saving.
 
-using AI_Assistant.TempCapabilities;
-using System.Text.Json;
-using System.Threading.Tasks;
+using UnityEngine is allowed and expected.
+using UnityEditor is forbidden. The context performs allowed editor-only operations.
 
-Never add using UnityEngine or using UnityEditor to the temporary capability itself.
-The temporary DLL does not reference Unity assemblies.
-Interact with Unity only through context.NewUnityBatch().
-UnityEngine code is allowed only as script TEXT passed to CreateScript(...).
+Never use direct OS filesystem, network, process, reflection, threading, unsafe, build, package-manager or destructive deletion APIs.
 
 Use this exact capability structure:
 
-public sealed class ExampleCapability : ITempCapability
+using UnityEngine;
+
+public sealed class ExampleCapability : IUnityDynamicCapability
 {
     public string Name => "ExampleCapability";
 
-    public Task<string> ExecuteAsync(
-        TempCapabilityContext context,
-        JsonElement arguments
+    public string Execute(
+        UnityDynamicCapabilityContext context,
+        string argumentsJson
     )
     {
-        string result =
-            context
-                .NewUnityBatch()
-                .CreateGameObject(
-                    "ExampleObject",
-                    ""
-                )
-                .SaveScene()
-                .Execute();
+        GameObject target =
+            context.FindRequired("ExampleObject");
 
-        return Task.FromResult(
-            result
-        );
+        Rigidbody body =
+            context.GetOrAddComponent<Rigidbody>(target);
+
+        context.Record(body, "AI set Rigidbody mass");
+        body.mass = 3f;
+        context.MarkDirty(body);
+        context.SaveActiveScene();
+
+        return "Updated ExampleObject Rigidbody mass to 3.";
     }
 }
 
@@ -708,17 +689,24 @@ Before calling execute_temp_capability, silently check:
 - every statement that requires a semicolon has one,
 - parentheses and braces are balanced,
 - Name exactly matches the tool argument name,
-- ExecuteAsync returns Task<string>,
-- there are no UnityEngine or UnityEditor references in the host capability.
+- Execute returns string,
+- the source implements IUnityDynamicCapability,
+- UnityEngine is used only for the requested scene/component work,
+- UnityEditor is not referenced.
+
 Do NOT use:
 - System.IO
 - System.Net
 - HttpClient
 - Process
 - Environment
-- reflection loading
+- reflection or dynamic assembly loading
+- threads or Task.Run
 - operating-system filesystem APIs
 - unsafe code
+- UnityEditor
+- Destroy or DestroyImmediate
+- build, package-manager or project-settings APIs
 
 If compilation fails:
 - read ALL returned compiler diagnostics,
@@ -726,105 +714,28 @@ If compilation fails:
 - then retry.
 - Do not repair only one compiler error per retry.
 
-If a compiled capability returns a runtime, Unity batch, offline or timeout failure:
+If a compiled capability returns a runtime, offline or timeout failure:
 - do not generate another capability,
-- do not repeat the batch,
-- report the exact failure because Unity may already have executed part of it.
-UNITY TEMP CAPABILITY RULES:
+- do not repeat execution,
+- report the exact failure because Unity may already have executed some direct API calls.
 
-For multi-step Unity work, ALWAYS prefer:
+UNITY DYNAMIC CAPABILITY CONTEXT:
 
-context.NewUnityBatch()
+Available context helpers include:
+- FindRequired(hierarchyPath)
+- GetRequiredComponent<T>(gameObject)
+- GetOrAddComponent<T>(gameObject)
+- CreateGameObject(name, optionalParent)
+- CreatePrimitive(primitiveType, name, optionalParent)
+- Record(unityObject, actionName)
+- MarkDirty(unityObject)
+- SaveActiveScene()
 
-Do NOT manually construct Unity batch JSON.
-
-Do NOT manually call context.Unity.ExecuteBatch with a hand-written JSON string.
-
-Use the fluent UnityBatchBuilder API.
-
-Available Unity batch methods include:
-
-CreateGameObject(name, parentPath)
-CreatePrimitive(primitiveType, name, parentPath)
-
-DeleteGameObject(objectPath)
-RenameGameObject(objectPath, newName)
-SetParent(objectPath, parentPath)
-SetActive(objectPath, active)
-
-SetPosition(objectPath, x, y, z)
-SetRotation(objectPath, x, y, z)
-SetScale(objectPath, x, y, z)
-
-AddComponent(objectPath, componentType)
-RemoveComponent(objectPath, componentType)
-
-SetInt(objectPath, componentType, propertyName, value)
-SetFloat(objectPath, componentType, propertyName, value)
-SetBool(objectPath, componentType, propertyName, value)
-SetString(objectPath, componentType, propertyName, value)
-
-SetVector2(objectPath, componentType, propertyName, x, y)
-
-SetVector3(objectPath, componentType, propertyName, x, y, z)
-
-SetColor(objectPath, componentType, propertyName, red, green, blue, alpha)
-
-CreateScript(assetPath, content)
-
-SaveScene()
-
-Execute()
-
-Build ONE Unity batch whenever possible.
-
-Call Execute() ONCE at the end of the batch.
-
-Example pattern:
-
-string result =
-    context
-        .NewUnityBatch()
-        .CreateGameObject("Player")
-        .AddComponent(
-            "Player",
-            "UnityEngine.CharacterController"
-        )
-        .SetPosition(
-            "Player",
-            0f,
-            1f,
-            0f
-        )
-        .SaveScene()
-        .Execute();
-
-return Task.FromResult(result);
-
-
-For multiline Unity script content, use a C# raw string literal.
-
-Use three double-quote characters to open and close the script string.
-
-Example structure:
-
-string script = """
-using UnityEngine;
-
-public class Example : MonoBehaviour
-{
-}
-""";
-
-Then pass the string to:
-
-.CreateScript(
-    "Assets/Scripts/Example.cs",
-    script
-)
-
-The local batch builder serializes all JSON.
-The generated capability must NOT perform JSON escaping manually.
+For existing objects, use exact hierarchy paths with context.FindRequired.
+Before changing an existing Unity object or component, call context.Record.
+After changing a component or asset, call context.MarkDirty.
+Use context creation helpers so Undo is registered.
+Call context.SaveActiveScene only after all required steps succeed.
 
 
 UNITY WORKFLOW:
@@ -834,8 +745,8 @@ For a simple Unity action, use the simple registered action tool.
 For a complex Unity setup:
 - avoid many direct action tool calls,
 - prefer one execute_temp_capability call,
-- build one NewUnityBatch(),
-- execute one local Unity batch.
+- generate one IUnityDynamicCapability,
+- execute all related direct Unity API operations in that single capability.
 
 Read get_scene_hierarchy only when object identity or current hierarchy is actually needed.
 
@@ -856,11 +767,9 @@ UNITY SCRIPT CREATION:
 
 Creating a .cs script causes Unity compilation.
 
-Therefore a complex task that creates a script should normally:
-
-1. execute one temporary capability / Unity batch,
-2. allow Unity to import/compile the generated script,
-3. then use get_console_errors once if verification was requested.
+Dynamic capabilities must not write project files.
+Use the registered attach_script or script-creation bridge tool for persistent project scripts.
+After Unity imports a persistent script, use get_console_errors once if verification was requested.
 
 Do not repeatedly poll console errors unless necessary.
 
@@ -1243,26 +1152,21 @@ When something fails, report the useful error instead of pretending success.
 
 
             // ========================================================
-            // ESCAPE HATCH + PROMOTED CAPABILITY LIBRARY
+            // UNITY-SIDE DYNAMIC CAPABILITY ESCAPE HATCH
             //
             // execute_temp_capability must NEVER be gated behind the
             // complexTask keyword heuristic: the system prompt always
             // describes it as available, so hiding it here caused the
             // model to call a tool that wasn't in `tools` at all.
             //
-            // Every already-promoted capability (see CapabilityLibrary)
-            // is also always offered, so previously-built tools are
-            // directly callable instead of being rewritten from scratch.
+            // Old host-side promoted capability DLLs are intentionally
+            // not exposed: they run outside Unity and cannot safely use
+            // direct UnityEngine scene APIs.
             // ========================================================
 
             tools.Add(
                 TempCapabilityTool()
             );
-
-            tools.AddRange(
-                tempCapabilities.Library.GetToolDefinitions()
-            );
-
 
             // ========================================================
             // COMPLEX UNITY TASK
@@ -2803,13 +2707,11 @@ When something fails, report the useful error instead of pretending success.
                 Tool(
                     "execute_temp_capability",
 
-                    "Creates, Roslyn-compiles, executes, unloads and deletes one temporary C# capability in one call. " +
+                    "Sends one temporary C# capability to the Unity Editor, where Unity compiles it into a DLL and executes it on the main thread. " +
                     "Use for complex or missing Unity behavior. " +
-                    "Source must contain exactly one concrete ITempCapability. " +
-                    "For multi-step Unity tasks ALWAYS use context.NewUnityBatch() and one fluent batch ending with Execute(). " +
-                    "Do NOT manually construct batch JSON. " +
-                    "Do NOT use System.IO, System.Net, HttpClient, Process or Environment. " +
-                    "Use CreateScript on the batch builder when a Unity C# script is needed.",
+                    "Source must contain exactly one concrete IUnityDynamicCapability and may use UnityEngine directly. " +
+                    "Do not use UnityEditor, System.IO, System.Net, reflection, processes, threads, unsafe code or destructive APIs. " +
+                    "Use UnityDynamicCapabilityContext for exact hierarchy lookup, Undo-aware creation, dirty marking and scene saving.",
 
                     new Dictionary<string, object>
                     {
@@ -2820,7 +2722,7 @@ When something fails, report the useful error instead of pretending success.
 
                         ["source"] =
                             StringProperty(
-                                "Complete compact C# source implementing ITempCapability."
+                                "Complete compact C# source implementing IUnityDynamicCapability."
                             ),
 
                         ["arguments"] =
@@ -3765,7 +3667,7 @@ When something fails, report the useful error instead of pretending success.
                 JsonElement root =
                     document.RootElement;
 
-                return
+                bool failed =
                     root.TryGetProperty(
                         "success",
                         out JsonElement success
@@ -3773,6 +3675,41 @@ When something fails, report the useful error instead of pretending success.
                     &&
                     success.ValueKind ==
                     JsonValueKind.False;
+
+
+                if (!failed)
+                {
+                    return false;
+                }
+
+
+                string phase =
+                    root.TryGetProperty(
+                        "phase",
+                        out JsonElement phaseElement
+                    )
+                    &&
+                    phaseElement.ValueKind ==
+                    JsonValueKind.String
+                        ? phaseElement.GetString() ?? ""
+                        : "";
+
+
+                // These failures are safe to repair with one complete
+                // rewritten source because Unity did not execute it.
+                if (
+                    phase == "compile"
+                    || phase == "validation"
+                    || phase == "contract"
+                )
+                {
+                    return false;
+                }
+
+
+                // Execute/timeout/offline/load/busy failures must not
+                // be replayed automatically.
+                return true;
             }
             catch
             {
