@@ -435,7 +435,7 @@ namespace AI_Assistant.AI
                                         toolResult
                                     )
                                 )
-                         {
+                        {
                             string answer =
                                 "Temporary capability stopped after a runtime or Unity batch failure. " +
                                 "It was not retried because a timeout may occur after Unity already performed part of the batch.\n" +
@@ -1243,6 +1243,28 @@ When something fails, report the useful error instead of pretending success.
 
 
             // ========================================================
+            // ESCAPE HATCH + PROMOTED CAPABILITY LIBRARY
+            //
+            // execute_temp_capability must NEVER be gated behind the
+            // complexTask keyword heuristic: the system prompt always
+            // describes it as available, so hiding it here caused the
+            // model to call a tool that wasn't in `tools` at all.
+            //
+            // Every already-promoted capability (see CapabilityLibrary)
+            // is also always offered, so previously-built tools are
+            // directly callable instead of being rewritten from scratch.
+            // ========================================================
+
+            tools.Add(
+                TempCapabilityTool()
+            );
+
+            tools.AddRange(
+                tempCapabilities.Library.GetToolDefinitions()
+            );
+
+
+            // ========================================================
             // COMPLEX UNITY TASK
             //
             // Important:
@@ -1253,11 +1275,6 @@ When something fails, report the useful error instead of pretending success.
                 complexTask
             )
             {
-                tools.Add(
-                    TempCapabilityTool()
-                );
-
-
                 return;
             }
 
@@ -1902,6 +1919,53 @@ When something fails, report the useful error instead of pretending success.
                 {
                     return
                         AgentVersion.Version;
+                }
+
+
+                // ====================================================
+                // PROMOTED CAPABILITY LIBRARY
+                //
+                // Tools named "run_<Name>" come from CapabilityLibrary:
+                // capabilities originally written via
+                // execute_temp_capability and promoted after a
+                // successful run. Executed directly from their
+                // persisted DLL — no recompiling from source.
+                // ====================================================
+
+                if (
+                    functionName.StartsWith(
+                        "run_",
+                        StringComparison.Ordinal
+                    )
+                )
+                {
+                    string libraryArguments =
+                        "{}";
+
+
+                    if (
+                        args.TryGetProperty(
+                            "arguments",
+                            out JsonElement libraryArgumentElement
+                        )
+                    )
+                    {
+                        libraryArguments =
+                            libraryArgumentElement.GetRawText();
+                    }
+
+
+                    if (
+                        tempCapabilities.TryExecuteLibraryCapability(
+                            functionName,
+                            libraryArguments,
+                            out string libraryResult
+                        )
+                    )
+                    {
+                        return
+                            libraryResult;
+                    }
                 }
 
 

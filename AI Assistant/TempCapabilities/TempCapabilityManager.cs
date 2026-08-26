@@ -183,6 +183,12 @@ namespace AI_Assistant.TempCapabilities
         private readonly MetadataReference[]
             compilationReferences;
 
+        // Persistent registry of capabilities that were promoted
+        // after a successful compile + run. See CapabilityLibrary.cs.
+        private readonly CapabilityLibrary library;
+
+        public CapabilityLibrary Library => library;
+
 
         // ========================================================
         // BASIC SOURCE GUARD
@@ -274,6 +280,57 @@ namespace AI_Assistant.TempCapabilities
             // generated capability execution.
             compilationReferences =
                 BuildCompilationReferences();
+
+
+            library =
+                new CapabilityLibrary(
+                    Path.Combine(
+                        sourceRoot,
+                        "CapabilityLibrary"
+                    )
+                );
+        }
+
+
+        // ========================================================
+        // LIBRARY ENTRY
+        //
+        // Executes an already-promoted capability ("run_<Name>")
+        // directly from its persisted DLL. No compilation involved.
+        // Returns false if the tool name doesn't match any promoted
+        // capability, so the caller can fall through to other tools.
+        // ========================================================
+
+        public bool TryExecuteLibraryCapability(
+            string toolName,
+            string argumentsJson,
+            out string result
+        )
+        {
+            if (
+                !library.TryGetEntry(
+                    toolName,
+                    out CapabilityManifestEntry? entry
+                )
+                ||
+                entry == null
+            )
+            {
+                result = string.Empty;
+                return false;
+            }
+
+            result =
+                library
+                    .ExecuteAsync(
+                        entry,
+                        context,
+                        argumentsJson
+                    )
+                    .GetAwaiter()
+                    .GetResult();
+
+            return true;
         }
 
 
@@ -465,7 +522,7 @@ namespace AI_Assistant.TempCapabilities
                         emitResult.Diagnostics,
                           preparedSource
                         );
-                               }
+                }
 
 
                 // =================================================
@@ -474,6 +531,14 @@ namespace AI_Assistant.TempCapabilities
 
                 assemblyStream.Position =
                     0;
+
+
+                // Capture the raw bytes BEFORE the collectible load
+                // context is created/unloaded, so a successful run
+                // can be promoted into the persistent CapabilityLibrary
+                // without needing to recompile from source.
+                byte[] assemblyBytes =
+                    assemblyStream.ToArray();
 
 
                 loadContext =
@@ -496,6 +561,48 @@ namespace AI_Assistant.TempCapabilities
                         capabilityName,
                         argumentsJson
                     );
+
+
+                // =================================================
+                // PROMOTE ON SUCCESS
+                //
+                // A run counts as promotable if ExecuteAssembly did
+                // not report a compile/runtime/name-mismatch error.
+                // All of ExecuteAssembly's own error strings start
+                // with "TEMP CAPABILITY ERROR:", so anything else
+                // (including "TEMP CAPABILITY SUCCESS" and normal
+                // tool output) is treated as a successful run.
+                // =================================================
+
+                if (
+                    !result.StartsWith(
+                        "TEMP CAPABILITY ERROR:",
+                        StringComparison.Ordinal
+                    )
+                )
+                {
+                    try
+                    {
+                        string description =
+                            ExtractDescription(
+                                preparedSource,
+                                capabilityName
+                            );
+
+                        library.Promote(
+                            capabilityName,
+                            preparedSource,
+                            assemblyBytes,
+                            description
+                        );
+                    }
+                    catch
+                    {
+                        // Promotion is a bonus, not a requirement.
+                        // A failure here must never make an otherwise
+                        // successful Unity operation appear failed.
+                    }
+                }
 
 
                 return
@@ -702,6 +809,32 @@ namespace AI_Assistant.TempCapabilities
 
             return
                 result;
+        }
+
+
+        // ========================================================
+        // DESCRIPTION EXTRACTION (for CapabilityLibrary promotion)
+        //
+        // Looks for a /// <summary> doc comment above the class.
+        // Falls back to the capability name so promotion never
+        // fails just because the model didn't add a doc comment.
+        // ========================================================
+
+        private static string ExtractDescription(
+            string sourceCode,
+            string fallbackName
+        )
+        {
+            Match match =
+                Regex.Match(
+                    sourceCode,
+                    @"///\s*<summary>\s*([^\r\n]+)"
+                );
+
+            return
+                match.Success
+                    ? match.Groups[1].Value.Trim()
+                    : fallbackName;
         }
 
 
