@@ -1,0 +1,194 @@
+<Window x:Class="AI_Assistant.MainWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="AI Assistant"
+        Width="1120"
+        Height="760"
+        MinWidth="760"
+        MinHeight="560"
+        WindowStartupLocation="CenterScreen"
+        Background="{StaticResource WindowBrush}"
+        Foreground="{StaticResource TextBrush}">
+    <Grid>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="72" />
+            <RowDefinition Height="*" />
+            <RowDefinition Height="Auto" />
+        </Grid.RowDefinitions>
+
+        <Border Grid.Row="0"
+                Background="#10172A"
+                BorderBrush="{StaticResource PanelBorderBrush}"
+                BorderThickness="0,0,0,1">
+            <Grid Margin="24,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <StackPanel VerticalAlignment="Center">
+                    <TextBlock Text="AI Assistant"
+                               FontSize="22"
+                               FontWeight="Bold" />
+                    <TextBlock Text="C# / .NET 8 · Groq · Unity Bridge"
+                               Margin="0,4,0,0"
+                               FontSize="12"
+                               Foreground="{StaticResource MutedTextBrush}" />
+                </StackPanel>
+
+                <StackPanel Grid.Column="1"
+                            Orientation="Horizontal"
+                            VerticalAlignment="Center">
+                    <Ellipse x:Name="StatusDot"
+                             Width="9"
+                             Height="9"
+                             Margin="0,0,8,0"
+                             Fill="#F0B429" />
+                    <TextBlock x:Name="StatusText"
+                               Text="Pokretanje..."
+                               VerticalAlignment="Center"
+                               Foreground="{StaticResource MutedTextBrush}" />
+                    <Button Margin="18,0,0,0"
+                            Padding="12,7"
+                            Background="#263149"
+                            Click="ClearButton_Click"
+                            Content="Očisti chat" />
+                </StackPanel>
+            </Grid>
+        </Border>
+
+        <ScrollViewer x:Name="MessagesScroll"
+                      Grid.Row="1"
+                      Padding="24,20"
+                      VerticalScrollBarVisibility="Auto">
+            <ItemsControl x:Name="MessagesList">
+                <ItemsControl.ItemTemplate>
+                    <DataTemplate>
+                        <Border x:Name="Bubble"
+                                MaxWidth="780"
+                                Margin="0,0,0,14"
+                                Padding="14,11"
+                                HorizontalAlignment="Left"
+                                Background="#182238"
+                                BorderBrush="#2B3956"
+                                BorderThickness="1"
+                                CornerRadius="12">
+                            <StackPanel>
+                                <TextBlock x:Name="RoleLabel"
+                                           Text="{Binding DisplayRole}"
+                                           Margin="0,0,0,5"
+                                           FontSize="11"
+                                           FontWeight="Bold"
+                                           Foreground="#9EAAFF" />
+                                <TextBlock x:Name="MessageText"
+                                           Text="{Binding Text}"
+                                           FontSize="14"
+                                           LineHeight="21"
+                                           TextWrapping="Wrap"
+                                           Foreground="{StaticResource TextBrush}" />
+                            </StackPanel>
+                        </Border>
+
+                        <DataTemplate.Triggers>
+                            <DataTrigger Binding="{Binding Role}" Value="User">
+                                <Setter TargetName="Bubble"
+                                        Property="HorizontalAlignment"
+                                        Value="Right" />
+                                <Setter TargetName="Bubble"
+                                        Property="Background"
+                                        Value="#322C75" />
+                                <Setter TargetName="Bubble"
+                                        Property="BorderBrush"
+                                        Value="#665BE1" />
+                                <Setter TargetName="RoleLabel"
+                                        Property="Text"
+                                        Value="TI" />
+                            </DataTrigger>
+
+                            <DataTrigger Binding="{Binding Role}" Value="Activity">
+                                <Setter TargetName="Bubble"
+                                        Property="MaxWidth"
+                                        Value="920" />
+                                <Setter TargetName="Bubble"
+                                        Property="Padding"
+                                        Value="10,7" />
+                                <Setter TargetName="Bubble"
+                                        Property="Background"
+                                        Value="#0E1525" />
+                                <Setter TargetName="Bubble"
+                                        Property="BorderBrush"
+                                        Value="#202A40" />
+                                <Setter TargetName="RoleLabel"
+                                        Property="Text"
+                                        Value="TOOL" />
+                                <Setter TargetName="RoleLabel"
+                                        Property="Foreground"
+                                        Value="#58C9A8" />
+                                <Setter TargetName="MessageText"
+                                        Property="FontFamily"
+                                        Value="Consolas" />
+                                <Setter TargetName="MessageText"
+                                        Property="FontSize"
+                                        Value="12" />
+                                <Setter TargetName="MessageText"
+                                        Property="Foreground"
+                                        Value="#A9B5C9" />
+                            </DataTrigger>
+
+                            <DataTrigger Binding="{Binding Role}" Value="System">
+                                <Setter TargetName="Bubble"
+                                        Property="Background"
+                                        Value="#30251A" />
+                                <Setter TargetName="Bubble"
+                                        Property="BorderBrush"
+                                        Value="#665036" />
+                                <Setter TargetName="RoleLabel"
+                                        Property="Text"
+                                        Value="SISTEM" />
+                                <Setter TargetName="RoleLabel"
+                                        Property="Foreground"
+                                        Value="#F0B429" />
+                            </DataTrigger>
+                        </DataTemplate.Triggers>
+                    </DataTemplate>
+                </ItemsControl.ItemTemplate>
+            </ItemsControl>
+        </ScrollViewer>
+
+        <Border Grid.Row="2"
+                Margin="20,8,20,20"
+                Padding="12"
+                Background="{StaticResource PanelBrush}"
+                BorderBrush="{StaticResource PanelBorderBrush}"
+                BorderThickness="1"
+                CornerRadius="14">
+            <Grid>
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="*" />
+                    <ColumnDefinition Width="Auto" />
+                </Grid.ColumnDefinitions>
+
+                <TextBox x:Name="PromptTextBox"
+                         MinHeight="54"
+                         MaxHeight="150"
+                         Padding="4"
+                         AcceptsReturn="True"
+                         Background="Transparent"
+                         BorderThickness="0"
+                         CaretBrush="White"
+                         FontSize="14"
+                         Foreground="{StaticResource TextBrush}"
+                         TextWrapping="Wrap"
+                         VerticalScrollBarVisibility="Auto"
+                         PreviewKeyDown="PromptTextBox_PreviewKeyDown" />
+
+                <Button x:Name="SendButton"
+                        Grid.Column="1"
+                        MinWidth="105"
+                        Margin="12,0,0,0"
+                        Click="SendButton_Click"
+                        Content="Pošalji" />
+            </Grid>
+        </Border>
+    </Grid>
+</Window>

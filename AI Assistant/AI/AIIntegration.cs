@@ -3,14 +3,22 @@ using AI_Assistant.Tools;
 
 using System.Globalization;
 using System.Net;
+using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
+using System;
+using System.Collections.Generic;
+using System.Linq;
+using System.Net.Http;
+using System.Threading.Tasks;
 
 namespace AI_Assistant.AI
 {
     public sealed class AIIntegration
     {
+        public event Action<string>? Activity;
+
         // ============================================================
         // SERVICES
         // ============================================================
@@ -161,7 +169,7 @@ namespace AI_Assistant.AI
                 );
 
 
-            Console.WriteLine(
+            ReportActivity(
                 "[TOOLS] "
                 +
                 (
@@ -368,7 +376,7 @@ namespace AI_Assistant.AI
                         }
 
 
-                        Console.WriteLine(
+                        ReportActivity(
                             $"[TOOL {iteration}] {functionName} | {FormatArgumentsForConsole(argumentsJson)}"
                         );
 
@@ -398,7 +406,7 @@ namespace AI_Assistant.AI
                                 cachedResult;
 
 
-                            Console.WriteLine(
+                            ReportActivity(
                                 $"[CACHE {iteration}] reused"
                             );
                         }
@@ -424,7 +432,7 @@ namespace AI_Assistant.AI
                             );
 
 
-                        Console.WriteLine(
+                        ReportActivity(
                             $"[RESULT {iteration}] {TrimConsoleResult(toolResult)}"
                         );
                         if (
@@ -624,6 +632,26 @@ GENERAL COST RULES:
 
 TEMPORARY CAPABILITIES:
 
+FIRST CLASSIFY THE REQUESTED CODE:
+
+- Temporary capability = one-shot Editor automation that creates, finds or configures Unity objects/assets/components and then may disappear.
+- Persistent runtime script = gameplay code that must remain attached, run in Play Mode or survive editor/domain reload.
+
+Controllers, movement, mouse look, cursor locking, camera follow, enemy AI, weapons, inventory, interactions and runtime managers MUST be persistent Assets/Scripts/*.cs MonoBehaviour scripts.
+
+Never define MonoBehaviour or ScriptableObject inside execute_temp_capability.
+Never claim that a persistent script was created, updated, compiled or attached unless the corresponding create_unity_script, wait_for_unity_script_compile and attach_script tool results succeeded.
+
+Persistent script workflow:
+1. Inspect hierarchy when the target object/path is not already certain.
+2. Call create_unity_script with the complete source and safe Assets/Scripts/... path.
+3. Call wait_for_unity_script_compile with the returned jobId.
+4. If compilation failed, rewrite the COMPLETE persistent source once and create it again with overwrite=true.
+5. Only after compilation succeeds, call attach_script with the exact MonoBehaviour type.
+6. Save the scene and verify hierarchy/components or Console when requested.
+
+Creating or updating a persistent script is intentionally a multi-stage task. Do not replace it with a temporary DLL merely to reduce tool calls.
+
 execute_temp_capability is an escape hatch for complex, missing or inefficient behavior.
 
 Do NOT use execute_temp_capability when one simple existing tool can efficiently complete the task.
@@ -656,6 +684,7 @@ using UnityEngine is allowed and expected.
 using UnityEditor is forbidden. The context performs allowed editor-only operations.
 
 Never use direct OS filesystem, network, process, reflection, threading, unsafe, build, package-manager or destructive deletion APIs.
+Temporary capability source must never declare MonoBehaviour or ScriptableObject types.
 
 Use this exact capability structure:
 
@@ -799,6 +828,9 @@ RESPONSE:
 When a requested task succeeds, respond briefly with what was completed.
 
 When something fails, report the useful error instead of pretending success.
+
+Never say that you added, changed, updated, compiled, attached or verified something when the current request had no successful tool result proving that action.
+When no tools are available, answer only with known information or explicitly say that the state was not verified.
 """"
 
                     }
@@ -989,7 +1021,9 @@ When something fails, report the useful error instead of pretending success.
                     "objekat",
                     "enemy",
                     "weapon",
-                    "inventory"
+                    "inventory",
+                    "script",
+                    "skript"
                 );
 
 
@@ -1065,6 +1099,26 @@ When something fails, report the useful error instead of pretending success.
                     "cijeli",
                     "čitav",
                     "citav"
+                );
+
+
+            bool persistentRuntimeScript =
+                ContainsAny(
+                    text,
+                    "script",
+                    "skript",
+                    "controller",
+                    "movement",
+                    "kretanj",
+                    "mouse look",
+                    "mouselook",
+                    "cursor lock",
+                    "camera follow",
+                    "enemy ai",
+                    "weapon system",
+                    "inventory",
+                    "interaction",
+                    "runtime manager"
                 );
 
 
@@ -1167,6 +1221,52 @@ When something fails, report the useful error instead of pretending success.
             tools.Add(
                 TempCapabilityTool()
             );
+
+
+            if (persistentRuntimeScript)
+            {
+                tools.Add(
+                    ToolNoArgs(
+                        "get_scene_hierarchy",
+                        "Returns Unity hierarchy and attached component names for exact verification."
+                    )
+                );
+
+                tools.Add(
+                    CreateUnityScriptTool()
+                );
+
+                tools.Add(
+                    OneStringTool(
+                        "wait_for_unity_script_compile",
+                        "Waits locally for a persistent Unity script compilation job to finish and returns compiler diagnostics.",
+                        "jobId"
+                    )
+                );
+
+                tools.Add(
+                    TwoStringTool(
+                        "attach_script",
+                        "Attaches an already-compiled persistent MonoBehaviour type to an existing GameObject.",
+                        "objectPath",
+                        "scriptType"
+                    )
+                );
+
+                tools.Add(
+                    ToolNoArgs(
+                        "save_scene",
+                        "Saves the active Unity scene after the persistent script is attached."
+                    )
+                );
+
+                tools.Add(
+                    ToolNoArgs(
+                        "get_console_errors",
+                        "Returns Unity compiler/runtime errors for final verification."
+                    )
+                );
+            }
 
             // ========================================================
             // COMPLEX UNITY TASK
@@ -2180,6 +2280,48 @@ When something fails, report the useful error instead of pretending success.
 
                 if (
                     functionName ==
+                    "create_unity_script"
+                )
+                {
+                    return
+                        unityTools.CreatePersistentScript(
+                            GetStringArg(
+                                args,
+                                "assetPath"
+                            ),
+                            GetStringArg(
+                                args,
+                                "className"
+                            ),
+                            GetStringArg(
+                                args,
+                                "source"
+                            ),
+                            GetBoolArg(
+                                args,
+                                "overwrite"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "wait_for_unity_script_compile"
+                )
+                {
+                    return
+                        unityTools.WaitForPersistentScript(
+                            GetStringArg(
+                                args,
+                                "jobId"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
                     "attach_script"
                 )
                 {
@@ -2743,6 +2885,50 @@ When something fails, report the useful error instead of pretending success.
                     {
                         "name",
                         "source"
+                    }
+                );
+        }
+
+
+        private static object CreateUnityScriptTool()
+        {
+            return
+                Tool(
+                    "create_unity_script",
+
+                    "Creates or deliberately updates one persistent Unity MonoBehaviour source file inside Assets/Scripts. " +
+                    "Use for gameplay/runtime behavior that must survive domain reload and run in Play Mode. " +
+                    "The filename must exactly match className. Source may use UnityEngine but not UnityEditor, filesystem, network, process, reflection, threading, unsafe or editor automation APIs. " +
+                    "Set overwrite=false for a new script. Set overwrite=true only when the user requested an update or a compiler-error repair. " +
+                    "After this tool succeeds, always call wait_for_unity_script_compile with its jobId before attach_script.",
+
+                    new Dictionary<string, object>
+                    {
+                        ["assetPath"] =
+                            StringProperty(
+                                "Safe path inside Assets/Scripts ending in ClassName.cs, for example Assets/Scripts/Player/FpsPlayerController.cs."
+                            ),
+
+                        ["className"] =
+                            StringProperty(
+                                "Exact public MonoBehaviour class name and filename without .cs."
+                            ),
+
+                        ["source"] =
+                            StringProperty(
+                                "Complete persistent C# MonoBehaviour source."
+                            ),
+
+                        ["overwrite"] =
+                            BooleanProperty()
+                    },
+
+                    new[]
+                    {
+                        "assetPath",
+                        "className",
+                        "source",
+                        "overwrite"
                     }
                 );
         }
@@ -3782,6 +3968,13 @@ When something fails, report the useful error instead of pretending success.
         // RATE LIMIT
         // ============================================================
 
+        private void ReportActivity(string message)
+        {
+            Console.WriteLine(message);
+            Activity?.Invoke(message);
+        }
+
+
         private async Task<HttpResponseMessage>
             SendWithRateLimitRetry(
                 string url,
@@ -3872,7 +4065,7 @@ When something fails, report the useful error instead of pretending success.
                     );
 
 
-                Console.WriteLine(
+                ReportActivity(
                     $"[RATE LIMIT] Čekam {Math.Ceiling(seconds)} sekundi... ({retry}/{MaxRateLimitRetries})"
                 );
 

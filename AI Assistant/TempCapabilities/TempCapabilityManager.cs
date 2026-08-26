@@ -4,7 +4,11 @@ using Microsoft.CodeAnalysis;
 using Microsoft.CodeAnalysis.CSharp;
 using Microsoft.CodeAnalysis.CSharp.Syntax;
 using Microsoft.CodeAnalysis.Emit;
-
+using System;
+using System.Collections.Generic;
+using System.IO;
+using System.Linq;
+using System.Threading.Tasks;
 using System.Reflection;
 using System.Runtime.Loader;
 using System.Text;
@@ -187,6 +191,15 @@ namespace AI_Assistant.TempCapabilities
         // after a successful compile + run. See CapabilityLibrary.cs.
         private readonly CapabilityLibrary library;
 
+        private readonly UnityDynamicCapabilityClient
+            unityDynamicCapabilities;
+
+        // Keep the previous host-side Roslyn implementation in this
+        // file temporarily as a rollback path, but route new work to
+        // Unity where UnityEngine objects actually exist.
+        private readonly bool useUnitySideCapabilities =
+            true;
+
         public CapabilityLibrary Library => library;
 
 
@@ -272,6 +285,10 @@ namespace AI_Assistant.TempCapabilities
                 new TempCapabilityContext(
                     unityTools
                 );
+
+
+            unityDynamicCapabilities =
+                new UnityDynamicCapabilityClient();
 
 
             // References are discovered once when the manager starts.
@@ -363,6 +380,16 @@ namespace AI_Assistant.TempCapabilities
             string argumentsJson
         )
         {
+            if (useUnitySideCapabilities)
+            {
+                return
+                    unityDynamicCapabilities.Execute(
+                        capabilityName,
+                        sourceCode,
+                        argumentsJson
+                    );
+            }
+
             string? inputError =
                 ValidateInput(
                     capabilityName,

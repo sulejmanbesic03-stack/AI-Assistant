@@ -37,6 +37,14 @@
 
 	<ItemGroup>
 
+		<!-- WPF App.xaml generates the application entry point. -->
+		<!-- Keep the old console bootstrap as reference, but do not compile it. -->
+		<Compile Remove="Program.cs" />
+
+		<None Include="Program.cs" />
+
+
+
 		<Compile Remove="TempTools\**\*.cs" />
 
 		<None Include="TempTools\**\*.cs" />
@@ -48,10 +56,7 @@
 
 	</ItemGroup>
 
-
-
-	<!-- WPF -->
-
-
-
+	<ItemGroup>
+	  <Page Include="App.xaml" />
+	</ItemGroup>
 </Project>

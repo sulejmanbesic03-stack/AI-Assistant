@@ -2,7 +2,9 @@ using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
-
+using System;
+using System.Net.Http;
+using System.Threading.Tasks;
 
 namespace AI_Assistant.TempCapabilities
 {
