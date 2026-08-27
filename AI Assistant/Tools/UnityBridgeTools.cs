@@ -21,6 +21,9 @@ namespace AI_Assistant.Tools
         private const string PersistentScriptBaseUrl =
             "http://127.0.0.1:47826";
 
+        private const string CodeIntelligenceBaseUrl =
+            "http://127.0.0.1:47827";
+
         private const string BridgeHeaderValue =
             "AI-Assistant-Local";
 
@@ -258,6 +261,198 @@ namespace AI_Assistant.Tools
                     message =
                         "Timed out waiting for Unity persistent-script compilation.",
                     lastResult
+                }
+            );
+        }
+
+
+        // ============================================
+        // UNITY CODE INTELLIGENCE
+        // ============================================
+
+        public string GetUnityProjectSettings()
+        {
+            return SendCodeIntelligenceGetRequest(
+                "/project-settings"
+            );
+        }
+
+
+        public string FindUnityScripts(
+            string searchText
+        )
+        {
+            return SendCodeIntelligenceGetRequest(
+                "/list-scripts?searchText="
+                + Uri.EscapeDataString(
+                    searchText ?? ""
+                )
+            );
+        }
+
+
+        public string ReadUnityScript(
+            string assetPath,
+            int startLine,
+            int endLine
+        )
+        {
+            return SendCodeIntelligenceGetRequest(
+                "/read-script?assetPath="
+                + Uri.EscapeDataString(assetPath ?? "")
+                + "&startLine="
+                + startLine
+                + "&endLine="
+                + endLine
+            );
+        }
+
+
+        public string ReviewUnityScript(
+            string assetPath
+        )
+        {
+            return SendCodeIntelligencePostRequest(
+                "/review-script",
+                JsonSerializer.Serialize(
+                    new
+                    {
+                        assetPath
+                    }
+                )
+            );
+        }
+
+
+        public string GetUnityRuntimeState(
+            string objectPath
+        )
+        {
+            return SendCodeIntelligenceGetRequest(
+                "/runtime-state?objectPath="
+                + Uri.EscapeDataString(objectPath ?? "")
+            );
+        }
+
+
+        public string SetUnityPlayMode(
+            string action
+        )
+        {
+            string result =
+                SendCodeIntelligencePostRequest(
+                    "/play-mode",
+                    JsonSerializer.Serialize(
+                        new
+                        {
+                            action
+                        }
+                    )
+                );
+
+            bool expectedPlaying =
+                string.Equals(
+                    action,
+                    "enter",
+                    StringComparison.OrdinalIgnoreCase
+                );
+
+            if (
+                !expectedPlaying
+                && !string.Equals(
+                    action,
+                    "exit",
+                    StringComparison.OrdinalIgnoreCase
+                )
+            )
+            {
+                return result;
+            }
+
+            try
+            {
+                using JsonDocument initial =
+                    JsonDocument.Parse(result);
+
+                if (
+                    initial.RootElement.TryGetProperty(
+                        "success",
+                        out JsonElement success
+                    )
+                    && !success.GetBoolean()
+                )
+                {
+                    return result;
+                }
+            }
+            catch
+            {
+                return result;
+            }
+
+            DateTime deadline =
+                DateTime.UtcNow.AddSeconds(20);
+
+            string lastState =
+                result;
+
+            while (DateTime.UtcNow < deadline)
+            {
+                Thread.Sleep(300);
+
+                lastState =
+                    GetUnityProjectSettings();
+
+                try
+                {
+                    using JsonDocument state =
+                        JsonDocument.Parse(lastState);
+
+                    JsonElement root =
+                        state.RootElement;
+
+                    if (
+                        root.TryGetProperty(
+                            "success",
+                            out JsonElement stateSuccess
+                        )
+                        && stateSuccess.GetBoolean()
+                        && root.TryGetProperty(
+                            "isPlaying",
+                            out JsonElement isPlaying
+                        )
+                        && isPlaying.GetBoolean() == expectedPlaying
+                    )
+                    {
+                        return JsonSerializer.Serialize(
+                            new
+                            {
+                                success = true,
+                                phase = "play-mode",
+                                action,
+                                isPlaying = expectedPlaying,
+                                message = expectedPlaying
+                                    ? "Unity entered Play Mode."
+                                    : "Unity exited Play Mode."
+                            }
+                        );
+                    }
+                }
+                catch
+                {
+                    // Domain reload may briefly restart the bridge.
+                }
+            }
+
+            return JsonSerializer.Serialize(
+                new
+                {
+                    success = false,
+                    phase = "play-mode-timeout",
+                    action,
+                    message =
+                        "Unity did not confirm the requested Play Mode state within 20 seconds. Do not repeat automatically.",
+                    lastState
                 }
             );
         }
@@ -761,6 +956,61 @@ namespace AI_Assistant.Tools
                     client
                         .GetAsync(
                             PersistentScriptBaseUrl + endpoint
+                        )
+                        .GetAwaiter()
+                        .GetResult();
+
+                return ReadResponse(response);
+            }
+            catch (Exception ex)
+            {
+                return FormatConnectionError(ex);
+            }
+        }
+
+
+        private string SendCodeIntelligenceGetRequest(
+            string endpoint
+        )
+        {
+            try
+            {
+                using HttpResponseMessage response =
+                    client
+                        .GetAsync(
+                            CodeIntelligenceBaseUrl + endpoint
+                        )
+                        .GetAwaiter()
+                        .GetResult();
+
+                return ReadResponse(response);
+            }
+            catch (Exception ex)
+            {
+                return FormatConnectionError(ex);
+            }
+        }
+
+
+        private string SendCodeIntelligencePostRequest(
+            string endpoint,
+            string json
+        )
+        {
+            try
+            {
+                using StringContent content =
+                    new StringContent(
+                        json,
+                        Encoding.UTF8,
+                        "application/json"
+                    );
+
+                using HttpResponseMessage response =
+                    client
+                        .PostAsync(
+                            CodeIntelligenceBaseUrl + endpoint,
+                            content
                         )
                         .GetAwaiter()
                         .GetResult();

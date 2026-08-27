@@ -1,16 +1,15 @@
 ﻿using AI_Assistant.TempCapabilities;
 using AI_Assistant.Tools;
 
+using System;
+using System.Collections.Generic;
 using System.Globalization;
+using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
 using System.Text;
 using System.Text.Json;
-using System;
-using System.Collections.Generic;
-using System.Linq;
-using System.Net.Http;
 using System.Threading.Tasks;
 
 namespace AI_Assistant.AI
@@ -53,6 +52,9 @@ namespace AI_Assistant.AI
         // Keep them compact.
         private const int MaxToolResultChars =
             4500;
+
+        private const int MaxUnityScriptReadResultChars =
+            16000;
 
 
         private const int MaxChatHistoryMessages =
@@ -428,7 +430,8 @@ namespace AI_Assistant.AI
 
                         toolResult =
                             TrimToolResult(
-                                toolResult
+                                toolResult,
+                                functionName
                             );
 
 
@@ -644,11 +647,29 @@ Never claim that a persistent script was created, updated, compiled or attached 
 
 Persistent script workflow:
 1. Inspect hierarchy when the target object/path is not already certain.
-2. Call create_unity_script with the complete source and safe Assets/Scripts/... path.
-3. Call wait_for_unity_script_compile with the returned jobId.
-4. If compilation failed, rewrite the COMPLETE persistent source once and create it again with overwrite=true.
-5. Only after compilation succeeds, call attach_script with the exact MonoBehaviour type.
-6. Save the scene and verify hierarchy/components or Console when requested.
+2. Inspect get_unity_project_settings before generating input, physics or camera code.
+3. For an update, locate the exact asset with find_unity_scripts, read the existing source with read_unity_script and review it with review_unity_script before rewriting it.
+4. Call create_unity_script with the COMPLETE source and safe Assets/Scripts/... path. Use overwrite=true only for a requested update or compiler repair.
+5. Call wait_for_unity_script_compile with the returned jobId.
+6. If compilation failed, rewrite the COMPLETE persistent source once and create it again with overwrite=true.
+7. Only after compilation succeeds, call attach_script when the component is not already attached.
+8. Review the updated script and check Console when verification was requested.
+9. Save the scene after a successful attachment or scene change.
+
+Code review rules:
+- Compilation proves syntax and type correctness, not gameplay correctness.
+- For Rigidbody characters, read input in Update, cache it, and apply physics in FixedUpdate.
+- Do not rotate or move a Rigidbody-controlled player through Transform; prefer MoveRotation, MovePosition or velocity in FixedUpdate.
+- Match generated input code to the project's actual inputHandling value.
+- Do not assume a Head child or camera exists without inspecting hierarchy or providing a safe fallback.
+- Ground checks must account for Collider bounds or use an explicit ground-check Transform.
+- Preserve the existing class name and asset path during updates so Unity keeps the component reference.
+
+Play Mode observation:
+- Enter Play Mode only when the user explicitly asks to run, test or observe runtime behavior.
+- After entering, use get_unity_runtime_state for the exact object path.
+- Runtime state can prove components, transforms and Rigidbody state, but it cannot prove human input feel by itself.
+- Exit Play Mode after observation unless the user explicitly asks to leave it running.
 
 Creating or updating a persistent script is intentionally a multi-stage task. Do not replace it with a temporary DLL merely to reduce tool calls.
 
@@ -1016,6 +1037,9 @@ When no tools are available, answer only with known information or explicitly sa
                     "component",
                     "fps",
                     "controller",
+                    "input system",
+                    "input manager",
+                    "player settings",
                     "terrain",
                     "object",
                     "objekat",
@@ -1023,7 +1047,9 @@ When no tools are available, answer only with known information or explicitly sa
                     "weapon",
                     "inventory",
                     "script",
-                    "skript"
+                    "skript",
+                    "play mode",
+                    "runtime"
                 );
 
 
@@ -1107,12 +1133,17 @@ When no tools are available, answer only with known information or explicitly sa
                     text,
                     "script",
                     "skript",
+                    "player",
+                    "fps",
                     "controller",
                     "movement",
                     "kretanj",
+                    "input system",
+                    "input manager",
                     "mouse look",
                     "mouselook",
                     "cursor lock",
+                    "camera",
                     "camera follow",
                     "enemy ai",
                     "weapon system",
@@ -1192,6 +1223,19 @@ When no tools are available, answer only with known information or explicitly sa
                 );
 
 
+            bool runtimeObservationRequested =
+                ContainsAny(
+                    text,
+                    "play mode",
+                    "run it",
+                    "pokreni",
+                    "testiraj",
+                    "runtime",
+                    "observe",
+                    "posmatraj"
+                );
+
+
             if (
                 verificationRequested
             )
@@ -1225,6 +1269,33 @@ When no tools are available, answer only with known information or explicitly sa
 
             if (persistentRuntimeScript)
             {
+                tools.Add(
+                    ToolNoArgs(
+                        "get_unity_project_settings",
+                        "Returns Unity version, active input backend, Play Mode state, compilation state and active scene. Call before generating input, physics or camera code."
+                    )
+                );
+
+                tools.Add(
+                    OneStringTool(
+                        "find_unity_scripts",
+                        "Lists persistent C# scripts under Assets/Scripts whose paths contain searchText. Use when the exact existing asset path is uncertain.",
+                        "searchText"
+                    )
+                );
+
+                tools.Add(
+                    ReadUnityScriptTool()
+                );
+
+                tools.Add(
+                    OneStringTool(
+                        "review_unity_script",
+                        "Reviews an existing persistent Unity script for input-backend mismatch, Rigidbody/Transform conflicts, Update/FixedUpdate mistakes, fragile camera lookup and ground-check risks.",
+                        "assetPath"
+                    )
+                );
+
                 tools.Add(
                     ToolNoArgs(
                         "get_scene_hierarchy",
@@ -1265,6 +1336,30 @@ When no tools are available, answer only with known information or explicitly sa
                         "get_console_errors",
                         "Returns Unity compiler/runtime errors for final verification."
                     )
+                );
+
+            }
+
+
+            if (runtimeObservationRequested)
+            {
+                tools.Add(
+                    ToolNoArgs(
+                        "get_unity_project_settings",
+                        "Returns current Unity compilation and Play Mode state."
+                    )
+                );
+
+                tools.Add(
+                    OneStringTool(
+                        "get_unity_runtime_state",
+                        "Returns current Play Mode, transform, components, Collider count, camera path and Rigidbody state for an exact GameObject hierarchy path.",
+                        "objectPath"
+                    )
+                );
+
+                tools.Add(
+                    UnityPlayModeTool()
                 );
             }
 
@@ -2045,6 +2140,99 @@ When no tools are available, answer only with known information or explicitly sa
                 {
                     return
                         unityTools.GetConsoleErrors();
+                }
+
+
+                if (
+                    functionName ==
+                    "get_unity_project_settings"
+                )
+                {
+                    return
+                        unityTools.GetUnityProjectSettings();
+                }
+
+
+                if (
+                    functionName ==
+                    "find_unity_scripts"
+                )
+                {
+                    return
+                        unityTools.FindUnityScripts(
+                            GetStringArg(
+                                args,
+                                "searchText"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "read_unity_script"
+                )
+                {
+                    return
+                        unityTools.ReadUnityScript(
+                            GetStringArg(
+                                args,
+                                "assetPath"
+                            ),
+                            GetIntArg(
+                                args,
+                                "startLine"
+                            ),
+                            GetIntArg(
+                                args,
+                                "endLine"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "review_unity_script"
+                )
+                {
+                    return
+                        unityTools.ReviewUnityScript(
+                            GetStringArg(
+                                args,
+                                "assetPath"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "get_unity_runtime_state"
+                )
+                {
+                    return
+                        unityTools.GetUnityRuntimeState(
+                            GetStringArg(
+                                args,
+                                "objectPath"
+                            )
+                        );
+                }
+
+
+                if (
+                    functionName ==
+                    "set_unity_play_mode"
+                )
+                {
+                    return
+                        unityTools.SetUnityPlayMode(
+                            GetStringArg(
+                                args,
+                                "action"
+                            )
+                        );
                 }
 
 
@@ -2934,6 +3122,71 @@ When no tools are available, answer only with known information or explicitly sa
         }
 
 
+        private static object ReadUnityScriptTool()
+        {
+            return
+                Tool(
+                    "read_unity_script",
+
+                    "Reads up to 220 exact lines from an existing persistent C# script inside Assets/Scripts. " +
+                    "Use before updating a script so existing behavior and class identity are preserved. " +
+                    "Use startLine=1 and endLine=0 to read the first section and inspect totalLines/truncated in the result.",
+
+                    new Dictionary<string, object>
+                    {
+                        ["assetPath"] =
+                            StringProperty(
+                                "Exact safe path under Assets/Scripts ending in .cs."
+                            ),
+
+                        ["startLine"] =
+                            IntegerProperty(),
+
+                        ["endLine"] =
+                            IntegerProperty()
+                    },
+
+                    new[]
+                    {
+                        "assetPath",
+                        "startLine",
+                        "endLine"
+                    }
+                );
+        }
+
+
+        private static object UnityPlayModeTool()
+        {
+            return
+                Tool(
+                    "set_unity_play_mode",
+
+                    "Schedules entering or exiting Unity Play Mode. Use only when the user explicitly requested a runtime test or observation. " +
+                    "After enter, inspect the target with get_unity_runtime_state. Exit after observation unless the user requested otherwise.",
+
+                    new Dictionary<string, object>
+                    {
+                        ["action"] =
+                            new
+                            {
+                                type = "string",
+                                @enum = new[]
+                                {
+                                    "enter",
+                                    "exit"
+                                }
+                            }
+                    },
+
+                    new[]
+                    {
+                        "action"
+                    }
+                );
+        }
+
+
         // ============================================================
         // OTHER TOOL SCHEMAS
         // ============================================================
@@ -3611,6 +3864,9 @@ When no tools are available, answer only with known information or explicitly sa
                 "get_console_errors"
                 ||
                 toolName ==
+                "get_unity_project_settings"
+                ||
+                toolName ==
                 "save_scene"
                 ||
                 toolName ==
@@ -3765,7 +4021,8 @@ When no tools are available, answer only with known information or explicitly sa
         // ============================================================
 
         private static string TrimToolResult(
-            string result
+            string result,
+            string toolName
         )
         {
             if (
@@ -3779,10 +4036,13 @@ When no tools are available, answer only with known information or explicitly sa
             }
 
 
-            if (
-                result.Length <=
-                MaxToolResultChars
-            )
+            int maxChars =
+                toolName == "read_unity_script"
+                    ? MaxUnityScriptReadResultChars
+                    : MaxToolResultChars;
+
+
+            if (result.Length <= maxChars)
             {
                 return
                     result;
@@ -3792,7 +4052,7 @@ When no tools are available, answer only with known information or explicitly sa
             return
                 result.Substring(
                     0,
-                    MaxToolResultChars
+                    maxChars
                 )
                 +
                 "\n[RESULT TRUNCATED]";
