@@ -52,7 +52,9 @@ namespace AI_Assistant
 
                 AddMessage(
                     "Assistant",
-                    "AI Assistant je spreman. Unity Editor može ostati otvoren dok radiš sa scenom."
+                    "AI Assistant je spreman. Context router: "
+                    + AgentVersion.RequiredContextRouterBuild
+                    + ". Unity Editor može ostati otvoren dok radiš sa scenom."
                 );
 
                 PromptTextBox.Focus();
@@ -130,7 +132,21 @@ namespace AI_Assistant
                         () => ai.Ask(prompt)
                     );
 
-                AddMessage("Assistant", answer);
+                if (
+                    string.IsNullOrWhiteSpace(
+                        answer
+                    )
+                )
+                {
+                    AddMessage(
+                        "System",
+                        "Agent nije vratio tekstualni odgovor. Zadatak nije potvrđen kao završen."
+                    );
+                }
+                else
+                {
+                    AddMessage("Assistant", answer);
+                }
             }
             catch (Exception ex)
             {
@@ -200,11 +216,19 @@ namespace AI_Assistant
             RoutedEventArgs e
         )
         {
+            if (isBusy)
+            {
+                return;
+            }
+
+
+            ai?.ResetConversationContext();
+
             messages.Clear();
 
             AddMessage(
                 "Assistant",
-                "Prikaz razgovora je očišćen. Agentova ograničena chat historija ostaje aktivna do ponovnog pokretanja aplikacije."
+                "Razgovor i kontekst zadatka su očišćeni."
             );
         }
 

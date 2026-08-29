@@ -56,12 +56,12 @@ namespace AI_Assistant.AI
         // ============================================================
 
         private const string Model =
-            "gemini-3.7-flash";
+            "openai/gpt-oss-120b";
 
 
         // Normal task should finish in only a few cycles.
         private const int MaxIterations =
-            16;
+            8;
 
 
         // Tool results are sent back to the model.
@@ -78,7 +78,7 @@ namespace AI_Assistant.AI
 
 
         private const int MaxToolCyclesInContext =
-            4;
+            3;
 
 
         private const int MaxToolUseRecoveryAttempts =
@@ -311,7 +311,7 @@ namespace AI_Assistant.AI
 
             string? apiKey =
                 Environment.GetEnvironmentVariable(
-                    "GEMINI_API_KEY"
+                    "GROQ_API_KEY"
                 );
 
 
@@ -322,7 +322,7 @@ namespace AI_Assistant.AI
             )
             {
                 return
-                    "GEMINI_API_KEY nije pronađen.";
+                    "GROQ_API_KEY nije pronađen.";
             }
 
 
@@ -400,7 +400,7 @@ namespace AI_Assistant.AI
 
                 using HttpResponseMessage response =
                     await SendWithRateLimitRetry(
-                        "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                        "https://api.groq.com/openai/v1/chat/completions",
                         requestJson
                     );
 
@@ -456,7 +456,7 @@ namespace AI_Assistant.AI
 
 
                     return
-                        $"Gemini API greška:\n{responseText}";
+                        $"Groq API greška:\n{responseText}";
                 }
 
 
