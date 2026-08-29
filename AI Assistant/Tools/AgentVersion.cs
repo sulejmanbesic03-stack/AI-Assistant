@@ -6,7 +6,7 @@ namespace AI_Assistant.Tools
     public static class AgentVersion
     {
         public const string Version =
-            "0.4.6-context-router-v2-preview";
+            "0.4.7-gemini-timeout-preview";
 
 
         // Compile-time handshake. A new version label cannot compile

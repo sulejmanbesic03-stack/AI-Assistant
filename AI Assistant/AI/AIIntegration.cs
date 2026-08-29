@@ -56,7 +56,7 @@ namespace AI_Assistant.AI
         // ============================================================
 
         private const string Model =
-            "gemini-3.7-flash";
+            "gemini-3.6-flash";
 
 
         // Normal task should finish in only a few cycles.
@@ -93,6 +93,10 @@ namespace AI_Assistant.AI
             4;
 
 
+        private const int GeminiRequestTimeoutSeconds =
+            180;
+
+
         private const int MaxDomainContextAge =
             4;
 
@@ -117,7 +121,13 @@ namespace AI_Assistant.AI
         )
         {
             client =
-                new HttpClient();
+                new HttpClient
+                {
+                    Timeout =
+                        TimeSpan.FromSeconds(
+                            GeminiRequestTimeoutSeconds
+                        )
+                };
 
 
             fileTools =
@@ -418,6 +428,20 @@ namespace AI_Assistant.AI
                     !response.IsSuccessStatusCode
                 )
                 {
+                    if (
+                        response.StatusCode ==
+                        HttpStatusCode.RequestTimeout
+                    )
+                    {
+                        return
+                            AddDeterministicAssistantReply(
+                                "Gemini nije vratio odgovor u "
+                                + GeminiRequestTimeoutSeconds
+                                + " sekundi. Unity tool nije pokrenut, pa je sigurno poslati zahtjev ponovo."
+                            );
+                    }
+
+
                     bool recoverableToolError =
                         IsRecoverableToolUseError(
                             responseText
@@ -5051,11 +5075,71 @@ When no tools are available, answer only with known information or explicitly sa
                     );
 
 
-                HttpResponseMessage response =
-                    await client.PostAsync(
-                        url,
-                        content
+                HttpResponseMessage response;
+
+
+                try
+                {
+                    response =
+                        await client.PostAsync(
+                            url,
+                            content
+                        );
+                }
+                catch (TaskCanceledException)
+                {
+                    ReportActivity(
+                        "[MODEL TIMEOUT] Gemini nije vratio odgovor; Unity tool nije pokrenut."
                     );
+
+
+                    return
+                        new HttpResponseMessage(
+                            HttpStatusCode.RequestTimeout
+                        )
+                        {
+                            Content =
+                                new StringContent(
+                                    "{\"error\":{\"code\":\"gemini_timeout\",\"message\":\"Gemini request timed out before a tool call was returned.\"}}",
+                                    Encoding.UTF8,
+                                    "application/json"
+                                )
+                        };
+                }
+                catch (HttpRequestException ex)
+                {
+                    ReportActivity(
+                        "[MODEL OFFLINE] "
+                        + ex.Message
+                    );
+
+
+                    return
+                        new HttpResponseMessage(
+                            HttpStatusCode.ServiceUnavailable
+                        )
+                        {
+                            Content =
+                                new StringContent(
+                                    JsonSerializer.Serialize(
+                                        new
+                                        {
+                                            error =
+                                                new
+                                                {
+                                                    code =
+                                                        "gemini_offline",
+
+                                                    message =
+                                                        ex.Message
+                                                }
+                                        }
+                                    ),
+                                    Encoding.UTF8,
+                                    "application/json"
+                                )
+                        };
+                }
 
 
                 if (
