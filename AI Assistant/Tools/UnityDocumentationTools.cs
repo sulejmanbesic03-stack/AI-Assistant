@@ -3,7 +3,6 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Net;
 using System.Net.Http;
-using System.Text;
 using System.Text.RegularExpressions;
 
 namespace AI_Assistant.Tools
@@ -23,7 +22,13 @@ namespace AI_Assistant.Tools
             };
 
             client.DefaultRequestHeaders.UserAgent.ParseAdd(
-                "AI-Assistant/1.0 UnityDocumentationReader"
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
+                "AppleWebKit/537.36 (KHTML, like Gecko) " +
+                "Chrome/130.0 Safari/537.36"
+            );
+
+            client.DefaultRequestHeaders.Accept.ParseAdd(
+                "text/html,application/xhtml+xml"
             );
         }
 
@@ -34,87 +39,57 @@ namespace AI_Assistant.Tools
                 return "UNITY DOCS ERROR: query is empty.";
             }
 
-            try
+            string searchQuery =
+                "site:docs.unity3d.com " + query.Trim();
+
+            List<string> providerErrors =
+                new List<string>();
+
+            foreach (
+                (string Name, string Url, string Pattern) provider
+                in GetSearchProviders(searchQuery)
+            )
             {
-                string searchQuery =
-                    "site:docs.unity3d.com " + query.Trim();
-
-                string url =
-                    "https://html.duckduckgo.com/html/?q=" +
-                    Uri.EscapeDataString(searchQuery);
-
-                string html =
-                    client.GetStringAsync(url)
-                        .GetAwaiter()
-                        .GetResult();
-
-                MatchCollection matches =
-                    Regex.Matches(
-                        html,
-                        "<a[^>]+class=\"[^\"]*result__a[^\"]*\"[^>]+href=\"(?<url>[^\"]+)\"[^>]*>(?<title>.*?)</a>",
-                        RegexOptions.IgnoreCase | RegexOptions.Singleline
-                    );
-
-                List<string> results =
-                    new List<string>();
-
-                HashSet<string> seen =
-                    new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-
-                foreach (Match match in matches)
+                try
                 {
-                    string candidate =
-                        WebUtility.HtmlDecode(
-                            match.Groups["url"].Value
+                    string html =
+                        client.GetStringAsync(provider.Url)
+                            .GetAwaiter()
+                            .GetResult();
+
+                    List<string> results =
+                        ParseSearchResults(
+                            html,
+                            provider.Pattern
                         );
 
-                    string resolvedUrl =
-                        ResolveDuckDuckGoUrl(candidate);
-
-                    if (!IsAllowedUnityDocsUrl(resolvedUrl))
+                    if (results.Count > 0)
                     {
-                        continue;
+                        return
+                            "UNITY DOCS SEARCH RESULTS\n" +
+                            "Provider: " + provider.Name + "\n\n" +
+                            string.Join("\n\n", results);
                     }
 
-                    if (!seen.Add(resolvedUrl))
-                    {
-                        continue;
-                    }
-
-                    string title =
-                        CleanText(
-                            match.Groups["title"].Value
-                        );
-
-                    results.Add(
-                        $"{results.Count + 1}. {title}\n{resolvedUrl}"
+                    providerErrors.Add(
+                        provider.Name + ": no official Unity results parsed"
                     );
-
-                    if (results.Count >= MaxSearchResults)
-                    {
-                        break;
-                    }
                 }
-
-                if (results.Count == 0)
+                catch (Exception ex)
                 {
-                    return
-                        "UNITY DOCS SEARCH: No official docs.unity3d.com results found for: " +
-                        query;
+                    providerErrors.Add(
+                        provider.Name + ": " +
+                        ex.GetType().Name +
+                        " - " +
+                        ex.Message
+                    );
                 }
+            }
 
-                return
-                    "UNITY DOCS SEARCH RESULTS\n" +
-                    string.Join("\n\n", results);
-            }
-            catch (Exception ex)
-            {
-                return
-                    "UNITY DOCS SEARCH ERROR: " +
-                    ex.GetType().Name +
-                    ": " +
-                    ex.Message;
-            }
+            return
+                "UNITY DOCS SEARCH ERROR: all search providers failed.\n" +
+                string.Join("\n", providerErrors) +
+                "\nYou may still call read_unity_doc with a known official docs.unity3d.com URL.";
         }
 
         public string ReadUnityDoc(string url)
@@ -127,8 +102,22 @@ namespace AI_Assistant.Tools
 
             try
             {
+                using HttpResponseMessage response =
+                    client.GetAsync(url)
+                        .GetAwaiter()
+                        .GetResult();
+
+                if (!response.IsSuccessStatusCode)
+                {
+                    return
+                        "UNITY DOCS READ ERROR: HTTP " +
+                        (int)response.StatusCode +
+                        " " + response.ReasonPhrase +
+                        " for " + url;
+                }
+
                 string html =
-                    client.GetStringAsync(url)
+                    response.Content.ReadAsStringAsync()
                         .GetAwaiter()
                         .GetResult();
 
@@ -161,6 +150,84 @@ namespace AI_Assistant.Tools
             }
         }
 
+        private static IEnumerable<(string Name, string Url, string Pattern)> GetSearchProviders(
+            string searchQuery
+        )
+        {
+            string encoded =
+                Uri.EscapeDataString(searchQuery);
+
+            // Bing is the primary provider. DuckDuckGo Lite is retained only
+            // as a fallback because its HTML endpoint can return HTTP 403.
+            yield return (
+                "Bing",
+                "https://www.bing.com/search?count=10&q=" + encoded,
+                "<li[^>]+class=\"b_algo\"[\\s\\S]*?<h2[^>]*>\\s*<a[^>]+href=\"(?<url>https?://[^\"]+)\"[^>]*>(?<title>[\\s\\S]*?)</a>"
+            );
+
+            yield return (
+                "DuckDuckGo Lite",
+                "https://lite.duckduckgo.com/lite/?q=" + encoded,
+                "<a[^>]+href=\"(?<url>[^\"]+)\"[^>]*>(?<title>[\\s\\S]*?)</a>"
+            );
+        }
+
+        private static List<string> ParseSearchResults(
+            string html,
+            string pattern
+        )
+        {
+            MatchCollection matches =
+                Regex.Matches(
+                    html,
+                    pattern,
+                    RegexOptions.IgnoreCase | RegexOptions.Singleline
+                );
+
+            List<string> results =
+                new List<string>();
+
+            HashSet<string> seen =
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            foreach (Match match in matches)
+            {
+                string candidate =
+                    WebUtility.HtmlDecode(
+                        match.Groups["url"].Value
+                    );
+
+                string resolvedUrl =
+                    ResolveRedirectUrl(candidate);
+
+                if (!IsAllowedUnityDocsUrl(resolvedUrl))
+                {
+                    continue;
+                }
+
+                if (!seen.Add(resolvedUrl))
+                {
+                    continue;
+                }
+
+                string title =
+                    CleanText(
+                        match.Groups["title"].Value
+                    );
+
+                results.Add(
+                    $"{results.Count + 1}. {title}\n{resolvedUrl}"
+                );
+
+                if (results.Count >= MaxSearchResults)
+                {
+                    break;
+                }
+            }
+
+            return results;
+        }
+
         private static bool IsAllowedUnityDocsUrl(string? value)
         {
             if (
@@ -176,19 +243,9 @@ namespace AI_Assistant.Tools
                 uri.Host.Equals("docs.unity3d.com", StringComparison.OrdinalIgnoreCase);
         }
 
-        private static string ResolveDuckDuckGoUrl(string value)
+        private static string ResolveRedirectUrl(string value)
         {
             if (!Uri.TryCreate(value, UriKind.Absolute, out Uri? uri))
-            {
-                return value;
-            }
-
-            if (
-                !uri.Host.Contains(
-                    "duckduckgo.com",
-                    StringComparison.OrdinalIgnoreCase
-                )
-            )
             {
                 return value;
             }
@@ -199,12 +256,24 @@ namespace AI_Assistant.Tools
             {
                 string[] parts = pair.Split('=', 2);
 
+                if (parts.Length != 2)
+                {
+                    continue;
+                }
+
                 if (
-                    parts.Length == 2 &&
-                    parts[0].Equals("uddg", StringComparison.OrdinalIgnoreCase)
+                    parts[0].Equals("uddg", StringComparison.OrdinalIgnoreCase) ||
+                    parts[0].Equals("u", StringComparison.OrdinalIgnoreCase) ||
+                    parts[0].Equals("url", StringComparison.OrdinalIgnoreCase)
                 )
                 {
-                    return Uri.UnescapeDataString(parts[1]);
+                    string decoded =
+                        Uri.UnescapeDataString(parts[1]);
+
+                    if (IsAllowedUnityDocsUrl(decoded))
+                    {
+                        return decoded;
+                    }
                 }
             }
 
