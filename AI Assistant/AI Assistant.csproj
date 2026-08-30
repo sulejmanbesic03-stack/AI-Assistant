@@ -55,10 +55,12 @@
 		<None Include="CapabilityLibrary\source\**\*.cs" />
 
 
-		<!-- Agent V2 fixed executor supersedes the patch-heavy legacy executor. -->
+		<!-- Only UnityCommandExecutorCurrent.cs is authoritative for Agent V2. -->
 		<Compile Remove="AgentV2\UnityCommandExecutor.cs" />
-
 		<None Include="AgentV2\UnityCommandExecutor.cs" />
+
+		<Compile Remove="AgentV2\UnityCommandExecutorFixed.cs" />
+		<None Include="AgentV2\UnityCommandExecutorFixed.cs" />
 
 	</ItemGroup>
 
