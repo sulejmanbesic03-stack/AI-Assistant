@@ -12,11 +12,13 @@ namespace AI_Assistant.AgentV2
 {
     public sealed class AgentOrchestratorV2
     {
-        private const int MaxModelCallsPerTask = 3;
+        private const int MaxModelCallsPerTask = 8;
+        private const int MaxExecutionAttempts = 3;
 
         private readonly UnityContextServiceV2 contextService;
         private readonly ProviderRouterV2 providers;
-        private readonly UnityCommandExecutorV2 executor;
+        private readonly AgentCapabilityRegistryV2 capabilities;
+        private readonly UnityCoworkExecutorV2 executor;
         private readonly Action<string> activity;
 
         private AgentTaskStateV2? activeTask;
@@ -31,23 +33,27 @@ namespace AI_Assistant.AgentV2
         {
             this.activity = activity;
 
-            contextService =
-                new UnityContextServiceV2(
-                    unityTools,
-                    activity
-                );
+            contextService = new UnityContextServiceV2(
+                unityTools,
+                activity
+            );
 
-            providers =
-                new ProviderRouterV2(
-                    activity
-                );
+            providers = new ProviderRouterV2(activity);
+            capabilities = new AgentCapabilityRegistryV2(tempCapabilities);
 
-            executor =
+            UnityCommandExecutorV2 nativeExecutor =
                 new UnityCommandExecutorV2(
                     unityTools,
                     tempCapabilities,
                     activity
                 );
+
+            executor = new UnityCoworkExecutorV2(
+                nativeExecutor,
+                tempCapabilities,
+                capabilities,
+                activity
+            );
         }
 
         public void Reset()
@@ -61,9 +67,7 @@ namespace AI_Assistant.AgentV2
         {
             if (
                 string.Equals(
-                    Environment.GetEnvironmentVariable(
-                        "AI_AGENT_V2"
-                    ),
+                    Environment.GetEnvironmentVariable("AI_AGENT_V2"),
                     "0",
                     StringComparison.OrdinalIgnoreCase
                 )
@@ -72,10 +76,9 @@ namespace AI_Assistant.AgentV2
                 return false;
             }
 
-            string text =
-                (prompt ?? "")
-                    .Trim()
-                    .ToLowerInvariant();
+            string text = (prompt ?? "")
+                .Trim()
+                .ToLowerInvariant();
 
             if (
                 activeTask != null
@@ -86,106 +89,102 @@ namespace AI_Assistant.AgentV2
                 return true;
             }
 
-            bool unitySignal =
-                ContainsAny(
-                    text,
-                    "unity",
-                    "gameobject",
-                    "scene",
-                    "player",
-                    "camera",
-                    "kamera",
-                    "rigidbody",
-                    "collider",
-                    "charactercontroller",
-                    "navmesh",
-                    "enemy",
-                    "neprijatelj",
-                    "monobehaviour",
-                    "prefab",
-                    "material",
-                    "skript",
-                    "script",
-                    "movement",
-                    "controller",
-                    "inventory",
-                    "weapon",
-                    "interaction"
-                );
+            bool unitySignal = ContainsAny(
+                text,
+                "unity",
+                "gameobject",
+                "scene",
+                "player",
+                "camera",
+                "kamera",
+                "rigidbody",
+                "collider",
+                "charactercontroller",
+                "navmesh",
+                "enemy",
+                "neprijatelj",
+                "monobehaviour",
+                "prefab",
+                "material",
+                "skript",
+                "script",
+                "movement",
+                "controller",
+                "inventory",
+                "weapon",
+                "interaction",
+                "terrain",
+                "animator",
+                "animation"
+            );
 
-            bool actionSignal =
-                ContainsAny(
-                    text,
-                    "napravi",
-                    "create",
-                    "build",
-                    "dodaj",
-                    "add",
-                    "popravi",
-                    "fix",
-                    "repair",
-                    "izmijeni",
-                    "promijeni",
-                    "change",
-                    "update",
-                    "attach",
-                    "povezi",
-                    "configure",
-                    "konfigur",
-                    "testiraj",
-                    "test",
-                    "verify",
-                    "provjeri"
-                );
+            bool actionSignal = ContainsAny(
+                text,
+                "napravi",
+                "create",
+                "build",
+                "dodaj",
+                "add",
+                "popravi",
+                "fix",
+                "repair",
+                "izmijeni",
+                "promijeni",
+                "change",
+                "update",
+                "attach",
+                "povezi",
+                "configure",
+                "konfigur",
+                "testiraj",
+                "test",
+                "verify",
+                "provjeri",
+                "setup",
+                "set up",
+                "implement"
+            );
 
             bool explicitMode =
                 text.StartsWith("/agent ")
                 || text.StartsWith("/plan ");
 
-            return
-                explicitMode
-                || (unitySignal && actionSignal);
+            return explicitMode || (unitySignal && actionSignal);
         }
 
         public async Task<string> HandleAsync(string prompt)
         {
-            (AgentModeV2 mode, string cleanedPrompt) =
-                ResolveMode(prompt);
+            (AgentModeV2 mode, string cleanedPrompt) = ResolveMode(prompt);
 
             bool continuation =
                 activeTask != null
                 && !activeTask.Completed
                 && IsContinuation(
-                    cleanedPrompt
-                        .Trim()
-                        .ToLowerInvariant()
+                    cleanedPrompt.Trim().ToLowerInvariant()
                 );
 
             if (!continuation)
             {
-                activeTask =
-                    new AgentTaskStateV2
-                    {
-                        Goal = cleanedPrompt
-                    };
+                activeTask = new AgentTaskStateV2
+                {
+                    Goal = cleanedPrompt
+                };
 
                 activeSnapshot = null;
                 activeImplementation = null;
             }
 
-            AgentTaskStateV2 task =
-                activeTask
+            AgentTaskStateV2 task = activeTask
                 ?? throw new InvalidOperationException(
                     "Agent V2 task state was not initialized."
                 );
 
-            string goal =
-                continuation
-                    ? task.Goal
-                    : cleanedPrompt;
+            string goal = continuation
+                ? task.Goal
+                : cleanedPrompt;
 
             activity(
-                "[V2 TASK] "
+                "[V2 COWORK] "
                 + task.TaskId
                 + " "
                 + mode.ToString().ToUpperInvariant()
@@ -193,38 +192,29 @@ namespace AI_Assistant.AgentV2
 
             try
             {
-                task.Advance(
-                    AgentTaskPhaseV2.Inspecting
-                );
+                task.Advance(AgentTaskPhaseV2.Inspecting);
 
                 if (activeSnapshot == null)
                 {
-                    activeSnapshot =
-                        await contextService.CaptureAsync(
-                            goal
-                        );
-
+                    activeSnapshot = await contextService.CaptureAsync(goal);
                     task.CompletedSteps.Add(
-                        "Captured compact Unity project context"
+                        "Captured live Unity project context"
                     );
                 }
 
                 if (mode == AgentModeV2.Plan)
                 {
-                    return
-                        await BuildPlanOnlyReply(
-                            task,
-                            goal,
-                            activeSnapshot
-                        );
+                    return await BuildPlanOnlyReply(
+                        task,
+                        goal,
+                        activeSnapshot
+                    );
                 }
-
-                task.Advance(
-                    AgentTaskPhaseV2.Designing
-                );
 
                 if (activeImplementation == null)
                 {
+                    task.Advance(AgentTaskPhaseV2.Designing);
+
                     ProviderReplyV2 implementationReply =
                         await providers.CompleteAsync(
                             task,
@@ -238,11 +228,7 @@ namespace AI_Assistant.AgentV2
                     if (!implementationReply.Success)
                     {
                         task.Phase = AgentTaskPhaseV2.Failed;
-
-                        return
-                            FormatProviderFailure(
-                                implementationReply
-                            );
+                        return FormatProviderFailure(implementationReply);
                     }
 
                     if (
@@ -256,179 +242,175 @@ namespace AI_Assistant.AgentV2
                         task.Phase = AgentTaskPhaseV2.Failed;
 
                         return
-                            "Agent V2 received an invalid implementation JSON from "
+                            "Agent V2 received invalid implementation JSON from "
                             + implementationReply.Provider
                             + ": "
                             + parseError
                             + "\n\nRaw response:\n"
                             + AgentJsonV2.Compact(
                                 implementationReply.Content,
-                                2200
+                                2400
                             );
                     }
 
                     activeImplementation = implementation;
                     task.LastSummary = implementation.Summary;
-                }
 
-                if (
-                    activeImplementation.NeedsDocumentation
-                    && string.IsNullOrWhiteSpace(
-                        activeSnapshot.Documentation
-                    )
-                    && task.ModelCalls < MaxModelCallsPerTask
-                )
-                {
-                    activeSnapshot.Documentation =
-                        await contextService.GetDocumentationAsync(
-                            activeImplementation.DocumentationQuery
-                        );
-
-                    if (
-                        !string.IsNullOrWhiteSpace(
-                            activeSnapshot.Documentation
-                        )
-                    )
-                    {
-                        ProviderReplyV2 refinedReply =
-                            await providers.CompleteAsync(
-                                task,
-                                BuildImplementationSystemPrompt(),
-                                BuildDocumentationRefinePrompt(
-                                    goal,
-                                    activeSnapshot,
-                                    activeImplementation
-                                )
-                            );
-
-                        if (
-                            refinedReply.Success
-                            && AgentJsonV2.TryParseImplementation(
-                                refinedReply.Content,
-                                out AgentImplementationV2 refined,
-                                out _
-                            )
-                        )
-                        {
-                            activeImplementation = refined;
-                            task.LastSummary = refined.Summary;
-                        }
-                    }
-                }
-
-                if (
-                    activeImplementation.ScriptChanges.Count == 0
-                    && activeImplementation.SceneActions.Count == 0
-                    && activeImplementation.TemporaryCapability == null
-                )
-                {
-                    task.Completed = true;
-                    task.Phase = AgentTaskPhaseV2.Completed;
-
-                    return
-                        string.IsNullOrWhiteSpace(
-                            activeImplementation.Summary
-                        )
-                            ? "Agent V2 found no safe concrete change to apply."
-                            : activeImplementation.Summary;
-                }
-
-                task.Advance(
-                    AgentTaskPhaseV2.Executing
-                );
-
-                AgentExecutionReportV2 report =
-                    await executor.ExecuteAsync(
-                        activeImplementation,
+                    await RefineWithDocumentationIfNeeded(
+                        task,
                         goal
                     );
-
-                if (
-                    report.CompileFailed
-                    && task.ModelCalls < MaxModelCallsPerTask
-                )
-                {
-                    activity("[V2 REPAIR] one compile repair pass");
-
-                    task.Advance(
-                        AgentTaskPhaseV2.Repairing
-                    );
-
-                    ProviderReplyV2 repairReply =
-                        await providers.CompleteAsync(
-                            task,
-                            BuildImplementationSystemPrompt(),
-                            BuildRepairPrompt(
-                                goal,
-                                activeSnapshot,
-                                activeImplementation,
-                                report.CompileFailureText
-                            )
-                        );
-
-                    if (
-                        repairReply.Success
-                        && AgentJsonV2.TryParseImplementation(
-                            repairReply.Content,
-                            out AgentImplementationV2 repaired,
-                            out _
-                        )
-                    )
-                    {
-                        activeImplementation = repaired;
-
-                        task.Advance(
-                            AgentTaskPhaseV2.Executing
-                        );
-
-                        report =
-                            await executor.ExecuteAsync(
-                                activeImplementation,
-                                goal
-                            );
-                    }
                 }
 
-                task.Advance(
-                    AgentTaskPhaseV2.Verifying
-                );
-
-                foreach (
-                    string changed
-                    in report.FilesChanged
-                )
+                while (task.ExecutionAttempts < MaxExecutionAttempts)
                 {
+                    AgentImplementationV2 implementation =
+                        activeImplementation
+                        ?? throw new InvalidOperationException(
+                            "Agent V2 implementation was not initialized."
+                        );
+
+                    if (!implementation.HasConcreteWork())
+                    {
+                        task.Completed = true;
+                        task.Phase = AgentTaskPhaseV2.Completed;
+
+                        return string.IsNullOrWhiteSpace(implementation.Summary)
+                            ? "Agent V2 found no safe concrete change to apply."
+                            : implementation.Summary;
+                    }
+
+                    string fingerprint =
+                        AgentExecutionPolicyV2.Fingerprint(implementation);
+
                     if (
-                        !task.FilesChanged.Contains(
-                            changed,
+                        task.AttemptFingerprints.Contains(
+                            fingerprint,
                             StringComparer.OrdinalIgnoreCase
                         )
                     )
                     {
-                        task.FilesChanged.Add(changed);
+                        task.Phase = AgentTaskPhaseV2.Failed;
+
+                        return
+                            "Agent V2 zaustavio je ponavljanje istog neuspješnog execution plana ("
+                            + fingerprint
+                            + "). Task state je sačuvan; napiši konkretnu novu instrukciju ili resetuj razgovor.";
                     }
+
+                    task.AttemptFingerprints.Add(fingerprint);
+                    task.ExecutionAttempts++;
+                    task.Advance(AgentTaskPhaseV2.Executing);
+
+                    activity(
+                        "[V2 EXECUTE] attempt "
+                        + task.ExecutionAttempts
+                        + "/"
+                        + MaxExecutionAttempts
+                        + " plan="
+                        + fingerprint
+                    );
+
+                    AgentExecutionReportV2 report =
+                        await executor.ExecuteAsync(
+                            implementation,
+                            goal
+                        );
+
+                    RegisterChangedFiles(task, report);
+
+                    task.Advance(AgentTaskPhaseV2.Observing);
+                    task.LastObservation =
+                        AgentExecutionPolicyV2.BuildObservation(report);
+
+                    activity(
+                        "[V2 OBSERVE] "
+                        + (report.Success ? "success" : "failure")
+                    );
+
+                    if (report.Success)
+                    {
+                        task.Completed = true;
+                        task.Advance(
+                            AgentTaskPhaseV2.Completed,
+                            "Execution and verification completed"
+                        );
+
+                        return FormatExecutionReply(
+                            task,
+                            implementation,
+                            report
+                        );
+                    }
+
+                    bool canCorrect =
+                        task.ExecutionAttempts < MaxExecutionAttempts
+                        && task.ModelCalls < MaxModelCallsPerTask;
+
+                    if (!canCorrect)
+                    {
+                        task.Phase = AgentTaskPhaseV2.Failed;
+
+                        return FormatExecutionReply(
+                            task,
+                            implementation,
+                            report
+                        );
+                    }
+
+                    task.Advance(AgentTaskPhaseV2.Correcting);
+                    activity("[V2 CORRECT] refreshing live state");
+
+                    // A failed attempt may have partially mutated the scene.
+                    // Re-inspect so correction is based on reality rather than
+                    // replaying the original plan blindly.
+                    activeSnapshot =
+                        await contextService.CaptureAsync(goal);
+
+                    ProviderReplyV2 correctionReply =
+                        await providers.CompleteAsync(
+                            task,
+                            BuildImplementationSystemPrompt(),
+                            BuildCorrectionPrompt(
+                                goal,
+                                activeSnapshot,
+                                implementation,
+                                task.LastObservation
+                            )
+                        );
+
+                    if (!correctionReply.Success)
+                    {
+                        task.Phase = AgentTaskPhaseV2.Failed;
+                        return FormatProviderFailure(correctionReply);
+                    }
+
+                    if (
+                        !AgentJsonV2.TryParseImplementation(
+                            correctionReply.Content,
+                            out AgentImplementationV2 corrected,
+                            out string correctionParseError
+                        )
+                    )
+                    {
+                        task.Phase = AgentTaskPhaseV2.Failed;
+
+                        return
+                            "Agent V2 correction JSON was invalid: "
+                            + correctionParseError
+                            + "\n\nRaw response:\n"
+                            + AgentJsonV2.Compact(
+                                correctionReply.Content,
+                                2400
+                            );
+                    }
+
+                    activeImplementation = corrected;
+                    task.LastSummary = corrected.Summary;
                 }
 
-                if (report.Success)
-                {
-                    task.Completed = true;
-                    task.Advance(
-                        AgentTaskPhaseV2.Completed,
-                        "Execution and final verification completed"
-                    );
-                }
-                else
-                {
-                    task.Phase =
-                        AgentTaskPhaseV2.Failed;
-                }
-
-                return
-                    FormatExecutionReply(
-                        task,
-                        activeImplementation,
-                        report
-                    );
+                task.Phase = AgentTaskPhaseV2.Failed;
+                return "Agent V2 reached its execution-attempt limit.";
             }
             catch (Exception ex)
             {
@@ -439,6 +421,57 @@ namespace AI_Assistant.AgentV2
                     + ex.GetType().Name
                     + ": "
                     + ex.Message;
+            }
+        }
+
+        private async Task RefineWithDocumentationIfNeeded(
+            AgentTaskStateV2 task,
+            string goal
+        )
+        {
+            if (
+                activeImplementation == null
+                || activeSnapshot == null
+                || !activeImplementation.NeedsDocumentation
+                || !string.IsNullOrWhiteSpace(activeSnapshot.Documentation)
+                || task.ModelCalls >= MaxModelCallsPerTask
+            )
+            {
+                return;
+            }
+
+            activeSnapshot.Documentation =
+                await contextService.GetDocumentationAsync(
+                    activeImplementation.DocumentationQuery
+                );
+
+            if (string.IsNullOrWhiteSpace(activeSnapshot.Documentation))
+            {
+                return;
+            }
+
+            ProviderReplyV2 refinedReply =
+                await providers.CompleteAsync(
+                    task,
+                    BuildImplementationSystemPrompt(),
+                    BuildDocumentationRefinePrompt(
+                        goal,
+                        activeSnapshot,
+                        activeImplementation
+                    )
+                );
+
+            if (
+                refinedReply.Success
+                && AgentJsonV2.TryParseImplementation(
+                    refinedReply.Content,
+                    out AgentImplementationV2 refined,
+                    out _
+                )
+            )
+            {
+                activeImplementation = refined;
+                task.LastSummary = refined.Summary;
             }
         }
 
@@ -455,16 +488,15 @@ namespace AI_Assistant.AgentV2
                     "USER GOAL:\n"
                     + goal
                     + "\n\nPROJECT CONTEXT:\n"
-                    + UnityContextServiceV2.FormatForModel(
-                        snapshot
-                    )
+                    + UnityContextServiceV2.FormatForModel(snapshot)
+                    + "\n\n"
+                    + capabilities.FormatForModel()
                 );
 
             task.Completed = true;
-            task.Phase =
-                reply.Success
-                    ? AgentTaskPhaseV2.Completed
-                    : AgentTaskPhaseV2.Failed;
+            task.Phase = reply.Success
+                ? AgentTaskPhaseV2.Completed
+                : AgentTaskPhaseV2.Failed;
 
             return reply.Success
                 ? reply.Content.Trim()
@@ -474,41 +506,45 @@ namespace AI_Assistant.AgentV2
         private static string BuildPlanSystemPrompt()
         {
             return
-                "You are the planning stage of a Unity engineering agent. "
+                "You are the planning stage of a Unity engineering Cowork agent. "
                 + "The host already inspected the live project and supplied a compact snapshot. "
                 + "Return a short numbered implementation plan. Do not write code and do not call tools. "
-                + "Prefer repairing existing systems over adding duplicates. Mention the exact existing scripts and GameObjects from the supplied context when known. "
+                + "Prefer existing project systems and deterministic host capabilities. "
+                + "Use a dynamic RunCommand-style temporary capability only as an escape hatch. "
                 + "Keep the plan under 10 steps and include one final verification step.";
         }
 
-        private static string BuildImplementationSystemPrompt()
+        private string BuildImplementationSystemPrompt()
         {
             return
-                "You are the implementation engine inside a Unity Editor agent. The C# host, not you, executes tools. "
-                + "You receive a compact live project snapshot and must return ONE valid JSON object only. No markdown and no prose outside JSON.\n\n"
-                + "Your goal is to finish the requested task in one implementation pass with the smallest safe set of mutations. Inspection has already happened; do not ask to inspect the same data again.\n\n"
+                "You are the implementation engine inside a Unity Editor Cowork-style agent. The C# host, not you, executes mutations. "
+                + "The host follows INSPECT -> DESIGN -> EXECUTE -> OBSERVE -> CORRECT. Return ONE valid JSON object only; no markdown or prose outside JSON.\n\n"
+                + "CAPABILITY POLICY:\n"
+                + capabilities.FormatForModel()
+                + "\n"
+                + "Choose the LOWEST capability level that can safely finish the task. Never emit both capability_call and other mutations. "
+                + "temporary_capability is analogous to a dynamic RunCommand: one-shot, broad, validated, and LAST RESORT.\n\n"
                 + "ENGINEERING RULES:\n"
                 + "- Repair existing gameplay systems instead of stacking PlayerController2/EnemyAI2-style duplicates.\n"
                 + "- Before adding a body collider, respect colliders already visible in the hierarchy/context. Do not create duplicate physical body colliders.\n"
-                + "- Only one system should own player movement and one should own mouse-look/camera pitch. Physics collision must not be able to drive uncontrolled camera rotation.\n"
+                + "- Only one system should own player movement and one should own mouse-look/camera pitch. Physics collision must not drive uncontrolled camera rotation.\n"
                 + "- For Rigidbody players, keep physics movement in FixedUpdate and separate body yaw from camera pitch; freeze unwanted physical rotation when appropriate.\n"
                 + "- Enemy navigation must have explicit Patrol/Chase/Attack/Return transitions. If NavMeshAgent.isStopped becomes true, code must define when it becomes false again.\n"
                 + "- Persistent gameplay logic belongs in normal MonoBehaviour scripts under Assets, never in a temporary capability.\n"
                 + "- Preserve an existing script asset_path and class_name when repairing it so Unity keeps component references.\n"
                 + "- Generated script source must be complete compile-ready C# source, not a patch or excerpt.\n"
-                + "- Do not invent an existing hierarchy path. Use exact paths from the snapshot. You may create a new object only when the user requested one.\n"
-                + "- Set needs_documentation=true only for a genuinely uncertain/version-sensitive Unity API. Most normal C# gameplay repairs should keep it false.\n"
-                + "- Do not enter Play Mode yourself. The host does runtime verification only when the user explicitly asked to test/run/observe.\n\n"
+                + "- Do not invent an existing hierarchy path. Use exact paths from the snapshot. Create new objects only when needed for the requested result.\n"
+                + "- Set needs_documentation=true only for a genuinely uncertain/version-sensitive Unity API.\n"
+                + "- Do not enter Play Mode yourself. Runtime verification is host-controlled.\n\n"
                 + "SUPPORTED scene_actions types:\n"
-                + "add_component, attach_script, create_gameobject, create_primitive, set_position, set_rotation, set_scale, set_active, rename_gameobject, set_parent, duplicate_gameobject, configure_rigidbody, configure_collider, create_material, set_material_color, assign_material, import_asset.\n"
-                + "If a one-shot Editor setup cannot be expressed with those actions, you may return temporary_capability. Use at most ONE broad temporary capability.\n\n"
-                + "TEMP CAPABILITY CONTRACT when needed:\n"
+                + "add_component, attach_script, create_gameobject, create_primitive, set_position, set_rotation, set_scale, set_active, rename_gameobject, set_parent, duplicate_gameobject, configure_rigidbody, configure_collider, create_material, set_material_color, assign_material, import_asset.\n\n"
+                + "TEMP CAPABILITY CONTRACT when the deterministic actions cannot express the operation:\n"
                 + "- exactly one concrete IUnityDynamicCapability implementation\n"
                 + "- Name property exactly matches temporary_capability.name\n"
                 + "- string Execute(UnityDynamicCapabilityContext context, string argumentsJson)\n"
                 + "- using UnityEngine is allowed; using UnityEditor is forbidden\n"
                 + "- no filesystem, network, Process, Environment, reflection, threads, unsafe, Destroy/DestroyImmediate, build or package-manager APIs\n"
-                + "- useful helpers: context.FindRequired(path), context.GetRequiredComponent<T>(go), context.GetOrAddComponent<T>(go), context.CreateGameObject(name,parent), context.CreatePrimitive(type,name,parent), context.Record(obj,action), context.MarkDirty(obj), context.SaveActiveScene()\n\n"
+                + "- helpers include context.FindRequired(path), context.GetRequiredComponent<T>(go), context.GetOrAddComponent<T>(go), context.CreateGameObject(name,parent), context.CreatePrimitive(type,name,parent), context.Record(obj,action), context.MarkDirty(obj), context.SaveActiveScene()\n\n"
                 + "RETURN THIS JSON SHAPE:\n"
                 + "{\n"
                 + "  \"summary\": \"short concrete description\",\n"
@@ -520,14 +556,15 @@ namespace AI_Assistant.AgentV2
                 + "  \"scene_actions\": [\n"
                 + "    {\"type\":\"add_component\",\"object_path\":\"Exact/Path\",\"component_type\":\"UnityEngine.AI.NavMeshAgent\"}\n"
                 + "  ],\n"
+                + "  \"capability_call\": null,\n"
                 + "  \"temporary_capability\": null,\n"
                 + "  \"runtime_object_paths\": [\"Exact/Path\"],\n"
                 + "  \"notes\": []\n"
                 + "}\n"
-                + "Omit unnecessary script changes and scene actions. Do not use unsupported scene action types.";
+                + "For a reusable capability use capability_call={\"tool_name\":\"run_Name\",\"arguments_json\":\"{}\"} and leave script_changes/scene_actions/temporary_capability empty.";
         }
 
-        private static string BuildImplementationUserPrompt(
+        private string BuildImplementationUserPrompt(
             string goal,
             UnityProjectSnapshotV2 snapshot
         )
@@ -536,52 +573,71 @@ namespace AI_Assistant.AgentV2
                 "USER GOAL:\n"
                 + goal
                 + "\n\nLIVE PROJECT SNAPSHOT:\n"
-                + UnityContextServiceV2.FormatForModel(
-                    snapshot
-                )
+                + UnityContextServiceV2.FormatForModel(snapshot)
+                + "\n\n"
+                + capabilities.FormatForModel()
                 + "\nProduce the complete implementation JSON now.";
         }
 
-        private static string BuildDocumentationRefinePrompt(
+        private string BuildDocumentationRefinePrompt(
             string goal,
             UnityProjectSnapshotV2 snapshot,
             AgentImplementationV2 previous
         )
         {
             return
-                "The host fetched official Unity documentation because your previous implementation requested it. Re-evaluate the implementation and return the complete JSON again.\n\n"
+                "The host fetched official Unity documentation because the previous implementation requested it. Re-evaluate the implementation and return the complete JSON again.\n\n"
                 + "USER GOAL:\n"
                 + goal
                 + "\n\nPROJECT + DOCUMENTATION CONTEXT:\n"
-                + UnityContextServiceV2.FormatForModel(
-                    snapshot
-                )
+                + UnityContextServiceV2.FormatForModel(snapshot)
+                + "\n\nCAPABILITIES:\n"
+                + capabilities.FormatForModel()
                 + "\n\nPREVIOUS IMPLEMENTATION:\n"
                 + JsonSerializer.Serialize(previous);
         }
 
-        private static string BuildRepairPrompt(
+        private string BuildCorrectionPrompt(
             string goal,
-            UnityProjectSnapshotV2 snapshot,
+            UnityProjectSnapshotV2 postAttemptSnapshot,
             AgentImplementationV2 previous,
-            string compileFailure
+            string observation
         )
         {
             return
-                "The previous persistent script implementation failed Unity compilation. Fix ALL compiler problems in one pass and return the COMPLETE implementation JSON again. Do not create a second replacement controller/AI script. Preserve existing asset paths and class names.\n\n"
+                "The previous execution attempt did not finish successfully. This is an OBSERVE -> CORRECT pass, not a blind retry. "
+                + "The project snapshot below was captured AFTER the failed attempt and is authoritative. Some earlier steps may already have succeeded. "
+                + "Do not repeat successful mutations unnecessarily and do not return the identical implementation again. Return ONE complete corrected JSON object only.\n\n"
                 + "USER GOAL:\n"
                 + goal
-                + "\n\nPROJECT CONTEXT:\n"
-                + UnityContextServiceV2.FormatForModel(
-                    snapshot
-                )
+                + "\n\nPOST-ATTEMPT LIVE PROJECT SNAPSHOT:\n"
+                + UnityContextServiceV2.FormatForModel(postAttemptSnapshot)
+                + "\n\nEXECUTION OBSERVATION:\n"
+                + observation
                 + "\n\nPREVIOUS IMPLEMENTATION:\n"
                 + JsonSerializer.Serialize(previous)
-                + "\n\nUNITY COMPILATION RESULT:\n"
-                + AgentJsonV2.Compact(
-                    compileFailure,
-                    5000
-                );
+                + "\n\nAVAILABLE CAPABILITIES:\n"
+                + capabilities.FormatForModel()
+                + "\nCorrect the cause of failure. If a deterministic action is insufficient, escalate one level; use temporary_capability only as the final RunCommand-style fallback.";
+        }
+
+        private static void RegisterChangedFiles(
+            AgentTaskStateV2 task,
+            AgentExecutionReportV2 report
+        )
+        {
+            foreach (string changed in report.FilesChanged)
+            {
+                if (
+                    !task.FilesChanged.Contains(
+                        changed,
+                        StringComparer.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    task.FilesChanged.Add(changed);
+                }
+            }
         }
 
         private static string FormatExecutionReply(
@@ -590,8 +646,7 @@ namespace AI_Assistant.AgentV2
             AgentExecutionReportV2 report
         )
         {
-            StringBuilder builder =
-                new StringBuilder();
+            StringBuilder builder = new StringBuilder();
 
             if (report.Success)
             {
@@ -605,34 +660,20 @@ namespace AI_Assistant.AgentV2
 
                 builder.Append('.');
 
-                if (report.FilesChanged.Count > 0)
+                if (task.FilesChanged.Count > 0)
                 {
                     builder.Append(" Skripte: ");
-                    builder.Append(
-                        string.Join(
-                            ", ",
-                            report.FilesChanged
-                        )
-                    );
+                    builder.Append(string.Join(", ", task.FilesChanged));
                     builder.Append('.');
                 }
 
                 builder.Append(
-                    " Izvršeno je "
-                    + report.Steps.Count
-                    + " lokalnih Unity koraka uz "
+                    " Execution pokušaja: "
+                    + task.ExecutionAttempts
+                    + ", AI poziva: "
                     + task.ModelCalls
-                    + " AI poziv(a)."
+                    + "."
                 );
-
-                if (report.RuntimeResults.Count > 0)
-                {
-                    builder.Append(
-                        " Runtime provjera je odrađena za "
-                        + report.RuntimeResults.Count
-                        + " objekt(a)."
-                    );
-                }
 
                 return builder.ToString();
             }
@@ -641,16 +682,15 @@ namespace AI_Assistant.AgentV2
                 "Agent V2 nije označio zadatak kao završen."
             );
 
-            foreach (string error in report.Errors.Take(4))
+            foreach (string error in report.Errors.Take(6))
             {
-                builder.AppendLine(
-                    "- "
-                    + error
-                );
+                builder.AppendLine("- " + error);
             }
 
             builder.Append(
-                "AI pozivi: "
+                "Execution pokušaja: "
+                + task.ExecutionAttempts
+                + ", AI poziva: "
                 + task.ModelCalls
                 + ". Task state je sačuvan; možeš napisati 'nastavi'."
             );
@@ -662,22 +702,23 @@ namespace AI_Assistant.AgentV2
             ProviderReplyV2 reply
         )
         {
-            string status =
-                reply.StatusCode > 0
-                    ? " HTTP " + reply.StatusCode
-                    : "";
+            string status = reply.StatusCode > 0
+                ? " HTTP " + reply.StatusCode
+                : "";
+
+            string model = string.IsNullOrWhiteSpace(reply.Model)
+                ? ""
+                : "/" + reply.Model;
 
             return
                 "Agent V2 provider error ("
                 + (string.IsNullOrWhiteSpace(reply.Provider)
                     ? "no provider"
                     : reply.Provider)
+                + model
                 + status
                 + "): "
-                + AgentJsonV2.Compact(
-                    reply.Error,
-                    2400
-                )
+                + AgentJsonV2.Compact(reply.Error, 2600)
                 + "\nTask state je sačuvan; nakon što provider bude dostupan možeš napisati 'nastavi'.";
         }
 
@@ -685,8 +726,7 @@ namespace AI_Assistant.AgentV2
             string prompt
         )
         {
-            string value =
-                (prompt ?? "").Trim();
+            string value = (prompt ?? "").Trim();
 
             if (
                 value.StartsWith(
@@ -714,16 +754,12 @@ namespace AI_Assistant.AgentV2
                 );
             }
 
-            return (
-                AgentModeV2.Agent,
-                value
-            );
+            return (AgentModeV2.Agent, value);
         }
 
         private static bool IsContinuation(string text)
         {
-            string normalized =
-                text.Trim().ToLowerInvariant();
+            string normalized = text.Trim().ToLowerInvariant();
 
             string[] values =
             {
