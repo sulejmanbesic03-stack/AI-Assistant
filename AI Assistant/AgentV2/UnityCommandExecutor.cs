@@ -46,199 +46,50 @@ namespace AI_Assistant.AgentV2
             AgentExecutionReportV2 report =
                 new AgentExecutionReportV2();
 
-            // Persistent scripts are completed first. Scene mutations are
-            // intentionally delayed until compilation succeeds so a bad
-            // generated script cannot leave a half-configured scene.
+            // 1. Persistent scripts first. Scene mutations wait until every
+            // generated script has compiled so a bad script cannot leave a
+            // half-configured scene behind.
             foreach (
                 ScriptChangeV2 script
                 in implementation.ScriptChanges
             )
             {
-                if (!ValidateScriptChange(script, report))
+                if (!WriteAndCompileScript(script, report))
                 {
                     return report;
                 }
-
-                activity(
-                    "[V2 WRITE] "
-                    + script.AssetPath
-                );
-
-                string createResult =
-                    unity.CreatePersistentScript(
-                        script.AssetPath,
-                        script.ClassName,
-                        script.Source,
-                        script.Overwrite
-                    );
-
-                if (!AgentJsonV2.LooksSuccessful(createResult))
-                {
-                    report.CompileFailed = true;
-                    report.CompileFailureText = createResult;
-                    report.Fail(
-                        "Persistent script creation failed for "
-                        + script.AssetPath
-                        + ": "
-                        + AgentJsonV2.Compact(
-                            createResult,
-                            1800
-                        )
-                    );
-
-                    return report;
-                }
-
-                string? jobId =
-                    AgentJsonV2.FindStringProperty(
-                        createResult,
-                        "jobId"
-                    );
-
-                if (string.IsNullOrWhiteSpace(jobId))
-                {
-                    report.CompileFailed = true;
-                    report.CompileFailureText = createResult;
-                    report.Fail(
-                        "Unity accepted "
-                        + script.AssetPath
-                        + " but no compilation jobId was returned."
-                    );
-
-                    return report;
-                }
-
-                activity(
-                    "[V2 COMPILE] "
-                    + script.ClassName
-                );
-
-                string compileResult =
-                    unity.WaitForPersistentScript(jobId);
-
-                string state =
-                    AgentJsonV2.FindStringProperty(
-                        compileResult,
-                        "state"
-                    )
-                    ?? "";
-
-                bool compiled =
-                    state.Equals(
-                        "compiled",
-                        StringComparison.OrdinalIgnoreCase
-                    )
-                    && AgentJsonV2.LooksSuccessful(
-                        compileResult
-                    );
-
-                if (!compiled)
-                {
-                    report.CompileFailed = true;
-                    report.CompileFailureText = compileResult;
-                    report.Fail(
-                        "Compilation failed for "
-                        + script.AssetPath
-                        + ": "
-                        + AgentJsonV2.Compact(
-                            compileResult,
-                            2800
-                        )
-                    );
-
-                    return report;
-                }
-
-                report.FilesChanged.Add(script.AssetPath);
-                report.Steps.Add(
-                    "Compiled "
-                    + script.AssetPath
-                );
             }
 
-            // Attach scripts only after all generated scripts compiled.
+            // 2. Attach only after ALL scripts compiled.
             foreach (
                 ScriptChangeV2 script
                 in implementation.ScriptChanges
             )
             {
-                if (string.IsNullOrWhiteSpace(script.AttachTo))
+                if (
+                    !string.IsNullOrWhiteSpace(script.AttachTo)
+                    && !AttachScript(script, report)
+                )
                 {
-                    continue;
-                }
-
-                activity(
-                    "[V2 ATTACH] "
-                    + script.ClassName
-                    + " -> "
-                    + script.AttachTo
-                );
-
-                string attachResult =
-                    unity.AttachScript(
-                        script.AttachTo,
-                        script.ClassName
-                    );
-
-                if (!AgentJsonV2.LooksSuccessful(attachResult))
-                {
-                    report.Fail(
-                        "Could not attach "
-                        + script.ClassName
-                        + " to "
-                        + script.AttachTo
-                        + ": "
-                        + AgentJsonV2.Compact(
-                            attachResult,
-                            1600
-                        )
-                    );
-
                     return report;
                 }
-
-                report.Steps.Add(
-                    "Attached "
-                    + script.ClassName
-                    + " to "
-                    + script.AttachTo
-                );
             }
 
-            foreach (
-                SceneActionV2 action
-                in implementation.SceneActions
+            // 3. Most scene operations go through ONE existing Unity batch
+            // request. This removes the old one-model-call/one-HTTP-call style.
+            if (
+                !ExecuteSceneActions(
+                    implementation.SceneActions,
+                    report
+                )
             )
             {
-                activity(
-                    "[V2 ACTION] "
-                    + action.Type
-                );
-
-                string actionResult =
-                    ExecuteSceneAction(action);
-
-                if (!AgentJsonV2.LooksSuccessful(actionResult))
-                {
-                    report.Fail(
-                        "Scene action '"
-                        + action.Type
-                        + "' failed: "
-                        + AgentJsonV2.Compact(
-                            actionResult,
-                            1800
-                        )
-                    );
-
-                    return report;
-                }
-
-                report.Steps.Add(
-                    "Scene action: "
-                    + action.Type
-                );
+                return report;
             }
 
+            // 4. One broad self-generated temp capability is still available
+            // for one-shot Unity API work that the deterministic command layer
+            // cannot express efficiently.
             if (
                 implementation.TemporaryCapability != null
                 && !string.IsNullOrWhiteSpace(
@@ -284,6 +135,7 @@ namespace AI_Assistant.AgentV2
                 );
             }
 
+            // 5. Save once, verify once.
             activity("[V2 SAVE] scene");
 
             string saveResult =
@@ -304,7 +156,6 @@ namespace AI_Assistant.AgentV2
 
             report.Steps.Add("Saved scene");
 
-            // One final verification read. No repeated polling loop.
             activity("[V2 VERIFY] console");
 
             report.ConsoleResult =
@@ -327,7 +178,354 @@ namespace AI_Assistant.AgentV2
             return report;
         }
 
-        private string ExecuteSceneAction(SceneActionV2 action)
+        private bool WriteAndCompileScript(
+            ScriptChangeV2 script,
+            AgentExecutionReportV2 report
+        )
+        {
+            if (!ValidateScriptChange(script, report))
+            {
+                return false;
+            }
+
+            activity(
+                "[V2 WRITE] "
+                + script.AssetPath
+            );
+
+            string createResult =
+                unity.CreatePersistentScript(
+                    script.AssetPath,
+                    script.ClassName,
+                    script.Source,
+                    script.Overwrite
+                );
+
+            if (!AgentJsonV2.LooksSuccessful(createResult))
+            {
+                report.CompileFailed = true;
+                report.CompileFailureText = createResult;
+                report.Fail(
+                    "Persistent script creation failed for "
+                    + script.AssetPath
+                    + ": "
+                    + AgentJsonV2.Compact(
+                        createResult,
+                        1800
+                    )
+                );
+
+                return false;
+            }
+
+            string? jobId =
+                AgentJsonV2.FindStringProperty(
+                    createResult,
+                    "jobId"
+                );
+
+            if (string.IsNullOrWhiteSpace(jobId))
+            {
+                report.CompileFailed = true;
+                report.CompileFailureText = createResult;
+                report.Fail(
+                    "Unity accepted "
+                    + script.AssetPath
+                    + " but no compilation jobId was returned."
+                );
+
+                return false;
+            }
+
+            activity(
+                "[V2 COMPILE] "
+                + script.ClassName
+            );
+
+            string compileResult =
+                unity.WaitForPersistentScript(jobId);
+
+            string state =
+                AgentJsonV2.FindStringProperty(
+                    compileResult,
+                    "state"
+                )
+                ?? "";
+
+            bool compiled =
+                state.Equals(
+                    "compiled",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                && AgentJsonV2.LooksSuccessful(
+                    compileResult
+                );
+
+            if (!compiled)
+            {
+                report.CompileFailed = true;
+                report.CompileFailureText = compileResult;
+                report.Fail(
+                    "Compilation failed for "
+                    + script.AssetPath
+                    + ": "
+                    + AgentJsonV2.Compact(
+                        compileResult,
+                        2800
+                    )
+                );
+
+                return false;
+            }
+
+            report.FilesChanged.Add(script.AssetPath);
+            report.Steps.Add(
+                "Compiled "
+                + script.AssetPath
+            );
+
+            return true;
+        }
+
+        private bool AttachScript(
+            ScriptChangeV2 script,
+            AgentExecutionReportV2 report
+        )
+        {
+            activity(
+                "[V2 ATTACH] "
+                + script.ClassName
+                + " -> "
+                + script.AttachTo
+            );
+
+            string attachResult =
+                unity.AttachScript(
+                    script.AttachTo,
+                    script.ClassName
+                );
+
+            if (!AgentJsonV2.LooksSuccessful(attachResult))
+            {
+                report.Fail(
+                    "Could not attach "
+                    + script.ClassName
+                    + " to "
+                    + script.AttachTo
+                    + ": "
+                    + AgentJsonV2.Compact(
+                        attachResult,
+                        1600
+                    )
+                );
+
+                return false;
+            }
+
+            report.Steps.Add(
+                "Attached "
+                + script.ClassName
+                + " to "
+                + script.AttachTo
+            );
+
+            return true;
+        }
+
+        private bool ExecuteSceneActions(
+            IReadOnlyList<SceneActionV2> actions,
+            AgentExecutionReportV2 report
+        )
+        {
+            if (actions.Count == 0)
+            {
+                return true;
+            }
+
+            List<SceneActionV2> batchable =
+                actions
+                    .Where(IsBatchable)
+                    .ToList();
+
+            List<SceneActionV2> direct =
+                actions
+                    .Where(action => !IsBatchable(action))
+                    .ToList();
+
+            if (batchable.Count > 0)
+            {
+                activity(
+                    "[V2 BATCH] "
+                    + batchable.Count
+                    + " scene actions"
+                );
+
+                UnityBatchBuilder batch =
+                    new UnityBatchBuilder(unity)
+                        .StopOnFailure(true);
+
+                foreach (SceneActionV2 action in batchable)
+                {
+                    AddToBatch(batch, action);
+                }
+
+                string batchResult = batch.Execute();
+
+                if (!AgentJsonV2.LooksSuccessful(batchResult))
+                {
+                    report.Fail(
+                        "Unity scene batch failed: "
+                        + AgentJsonV2.Compact(
+                            batchResult,
+                            2200
+                        )
+                    );
+
+                    return false;
+                }
+
+                report.Steps.Add(
+                    "Unity batch: "
+                    + batchable.Count
+                    + " scene actions"
+                );
+            }
+
+            // A few endpoints are not represented by UnityBatchBuilder yet.
+            // Execute only those directly, locally, without another AI call.
+            foreach (SceneActionV2 action in direct)
+            {
+                activity(
+                    "[V2 ACTION] "
+                    + action.Type
+                );
+
+                string actionResult =
+                    ExecuteDirectSceneAction(action);
+
+                if (!AgentJsonV2.LooksSuccessful(actionResult))
+                {
+                    report.Fail(
+                        "Scene action '"
+                        + action.Type
+                        + "' failed: "
+                        + AgentJsonV2.Compact(
+                            actionResult,
+                            1800
+                        )
+                    );
+
+                    return false;
+                }
+
+                report.Steps.Add(
+                    "Scene action: "
+                    + action.Type
+                );
+            }
+
+            return true;
+        }
+
+        private static bool IsBatchable(SceneActionV2 action)
+        {
+            string type =
+                action.Type.Trim().ToLowerInvariant();
+
+            return type == "add_component"
+                || type == "create_gameobject"
+                || type == "create_primitive"
+                || type == "set_position"
+                || type == "set_rotation"
+                || type == "set_scale"
+                || type == "set_active"
+                || type == "rename_gameobject"
+                || type == "set_parent";
+        }
+
+        private static void AddToBatch(
+            UnityBatchBuilder batch,
+            SceneActionV2 action
+        )
+        {
+            string type =
+                action.Type.Trim().ToLowerInvariant();
+
+            switch (type)
+            {
+                case "add_component":
+                    batch.AddComponent(
+                        action.ObjectPath,
+                        action.ComponentType
+                    );
+                    break;
+
+                case "create_gameobject":
+                    batch.CreateGameObject(
+                        action.Name,
+                        action.ParentPath
+                    );
+                    break;
+
+                case "create_primitive":
+                    batch.CreatePrimitive(
+                        action.PrimitiveType,
+                        action.Name,
+                        action.ParentPath
+                    );
+                    break;
+
+                case "set_position":
+                    batch.SetPosition(
+                        action.ObjectPath,
+                        action.X ?? 0f,
+                        action.Y ?? 0f,
+                        action.Z ?? 0f
+                    );
+                    break;
+
+                case "set_rotation":
+                    batch.SetRotation(
+                        action.ObjectPath,
+                        action.X ?? 0f,
+                        action.Y ?? 0f,
+                        action.Z ?? 0f
+                    );
+                    break;
+
+                case "set_scale":
+                    batch.SetScale(
+                        action.ObjectPath,
+                        action.X ?? 1f,
+                        action.Y ?? 1f,
+                        action.Z ?? 1f
+                    );
+                    break;
+
+                case "set_active":
+                    batch.SetActive(
+                        action.ObjectPath,
+                        action.Active ?? true
+                    );
+                    break;
+
+                case "rename_gameobject":
+                    batch.RenameGameObject(
+                        action.ObjectPath,
+                        action.NewName
+                    );
+                    break;
+
+                case "set_parent":
+                    batch.SetParent(
+                        action.ObjectPath,
+                        action.ParentPath
+                    );
+                    break;
+            }
+        }
+
+        private string ExecuteDirectSceneAction(SceneActionV2 action)
         {
             string type =
                 action.Type
@@ -336,71 +534,10 @@ namespace AI_Assistant.AgentV2
 
             return type switch
             {
-                "add_component" =>
-                    unity.AddComponent(
-                        action.ObjectPath,
-                        action.ComponentType
-                    ),
-
                 "attach_script" =>
                     unity.AttachScript(
                         action.ObjectPath,
                         action.ScriptType
-                    ),
-
-                "create_gameobject" =>
-                    unity.CreateGameObject(
-                        action.Name,
-                        action.ParentPath
-                    ),
-
-                "create_primitive" =>
-                    unity.CreatePrimitive(
-                        action.PrimitiveType,
-                        action.Name,
-                        action.ParentPath
-                    ),
-
-                "set_position" =>
-                    unity.SetPosition(
-                        action.ObjectPath,
-                        action.X ?? 0f,
-                        action.Y ?? 0f,
-                        action.Z ?? 0f
-                    ),
-
-                "set_rotation" =>
-                    unity.SetRotation(
-                        action.ObjectPath,
-                        action.X ?? 0f,
-                        action.Y ?? 0f,
-                        action.Z ?? 0f
-                    ),
-
-                "set_scale" =>
-                    unity.SetScale(
-                        action.ObjectPath,
-                        action.X ?? 1f,
-                        action.Y ?? 1f,
-                        action.Z ?? 1f
-                    ),
-
-                "set_active" =>
-                    unity.SetActive(
-                        action.ObjectPath,
-                        action.Active ?? true
-                    ),
-
-                "rename_gameobject" =>
-                    unity.RenameGameObject(
-                        action.ObjectPath,
-                        action.NewName
-                    ),
-
-                "set_parent" =>
-                    unity.SetParent(
-                        action.ObjectPath,
-                        action.ParentPath
                     ),
 
                 "duplicate_gameobject" =>
