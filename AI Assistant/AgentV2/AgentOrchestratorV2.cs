@@ -183,6 +183,21 @@ namespace AI_Assistant.AgentV2
                 ? task.Goal
                 : cleanedPrompt;
 
+            // "nastavi" after any failed/provider-interrupted pass means:
+            // inspect reality again and produce a fresh delta. Never replay the
+            // stale implementation that may already have partially mutated Unity.
+            if (continuation && task.Phase == AgentTaskPhaseV2.Failed)
+            {
+                activity("[V2 RESUME] fresh inspect after failed pass");
+
+                activeSnapshot = null;
+                activeImplementation = null;
+                task.AttemptFingerprints.Clear();
+                task.ExecutionAttempts = 0;
+                task.ModelCalls = 0;
+                task.ActiveProvider = "";
+            }
+
             activity(
                 "[V2 COWORK] "
                 + task.TaskId
@@ -290,12 +305,70 @@ namespace AI_Assistant.AgentV2
                         )
                     )
                     {
-                        task.Phase = AgentTaskPhaseV2.Failed;
+                        // Do not execute the same failed plan again, but also do
+                        // not dead-end the task. Refresh Unity and ask for a delta.
+                        if (task.ModelCalls >= MaxModelCallsPerTask)
+                        {
+                            task.Phase = AgentTaskPhaseV2.Failed;
+                            return
+                                "Agent V2 zaustavio je identičan neuspješan plan nakon što je potrošen correction budget. "
+                                + "Napiši 'nastavi' za novi live inspect ciklus.";
+                        }
 
-                        return
-                            "Agent V2 zaustavio je ponavljanje istog neuspješnog execution plana ("
+                        task.Advance(AgentTaskPhaseV2.Correcting);
+                        activity(
+                            "[V2 LOOP GUARD] duplicate plan rejected; requesting fresh delta"
+                        );
+
+                        activeSnapshot =
+                            await contextService.CaptureAsync(goal);
+
+                        string duplicateObservation =
+                            "HOST_REJECTED_DUPLICATE_PLAN: "
                             + fingerprint
-                            + "). Task state je sačuvan; napiši konkretnu novu instrukciju ili resetuj razgovor.";
+                            + ". The identical plan was already attempted. Use the post-attempt live snapshot and return only the remaining safe delta.\n"
+                            + task.LastObservation;
+
+                        ProviderReplyV2 duplicateCorrection =
+                            await providers.CompleteAsync(
+                                task,
+                                BuildImplementationSystemPrompt(),
+                                BuildCorrectionPrompt(
+                                    goal,
+                                    activeSnapshot,
+                                    implementation,
+                                    duplicateObservation
+                                )
+                            );
+
+                        if (!duplicateCorrection.Success)
+                        {
+                            task.Phase = AgentTaskPhaseV2.Failed;
+                            return FormatProviderFailure(duplicateCorrection);
+                        }
+
+                        if (
+                            !AgentJsonV2.TryParseImplementation(
+                                duplicateCorrection.Content,
+                                out AgentImplementationV2 duplicateCorrected,
+                                out string duplicateParseError
+                            )
+                        )
+                        {
+                            task.Phase = AgentTaskPhaseV2.Failed;
+                            return
+                                "Agent V2 duplicate-plan correction JSON was invalid: "
+                                + duplicateParseError
+                                + "\n\nRaw response:\n"
+                                + AgentJsonV2.Compact(
+                                    duplicateCorrection.Content,
+                                    2400
+                                );
+                        }
+
+                        activeImplementation = duplicateCorrected;
+                        task.LastSummary = duplicateCorrected.Summary;
+                        continue;
                     }
 
                     task.AttemptFingerprints.Add(fingerprint);
@@ -361,9 +434,6 @@ namespace AI_Assistant.AgentV2
                     task.Advance(AgentTaskPhaseV2.Correcting);
                     activity("[V2 CORRECT] refreshing live state");
 
-                    // A failed attempt may have partially mutated the scene.
-                    // Re-inspect so correction is based on reality rather than
-                    // replaying the original plan blindly.
                     activeSnapshot =
                         await contextService.CaptureAsync(goal);
 
@@ -527,6 +597,8 @@ namespace AI_Assistant.AgentV2
                 + "ENGINEERING RULES:\n"
                 + "- Repair existing gameplay systems instead of stacking PlayerController2/EnemyAI2-style duplicates.\n"
                 + "- Before adding a body collider, respect colliders already visible in the hierarchy/context. Do not create duplicate physical body colliders.\n"
+                + "- Treat create_gameobject/create_primitive as ensure-exists operations: if the requested hierarchy path is already present, configure/reuse it instead of creating a second object with the same path.\n"
+                + "- After a failed attempt, the POST-ATTEMPT snapshot is authoritative. Return only the remaining delta; never replay already-satisfied creation steps.\n"
                 + "- Only one system should own player movement and one should own mouse-look/camera pitch. Physics collision must not drive uncontrolled camera rotation.\n"
                 + "- For Rigidbody players, keep physics movement in FixedUpdate and separate body yaw from camera pitch; freeze unwanted physical rotation when appropriate.\n"
                 + "- Enemy navigation must have explicit Patrol/Chase/Attack/Return transitions. If NavMeshAgent.isStopped becomes true, code must define when it becomes false again.\n"
@@ -719,7 +791,7 @@ namespace AI_Assistant.AgentV2
                 + status
                 + "): "
                 + AgentJsonV2.Compact(reply.Error, 2600)
-                + "\nTask state je sačuvan; nakon što provider bude dostupan možeš napisati 'nastavi'.";
+                + "\nTask state je sačuvan; napiši 'nastavi' za novi live inspect ciklus.";
         }
 
         private static (AgentModeV2 Mode, string Prompt) ResolveMode(
