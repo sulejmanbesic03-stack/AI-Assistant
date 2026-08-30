@@ -353,6 +353,10 @@ namespace AI_Assistant.AgentV2
                     userPrompt
                 );
 
+            // Let GLM use its recommended sampling behavior and control
+            // deliberation through reasoning effort instead of low temperature.
+            body.Remove("temperature");
+
             // GLM 5.3 is the primary project-level coding/reasoning model.
             // OpenRouter first performs provider failover for that same model,
             // then walks this model fallback chain if necessary.
@@ -364,13 +368,6 @@ namespace AI_Assistant.AgentV2
             body["reasoning"] = new
             {
                 effort = reasoningEffort
-            };
-
-            // Agent V2 consumes a strict implementation object rather than
-            // free-form prose. OpenRouter + GLM support structured JSON output.
-            body["response_format"] = new
-            {
-                type = "json_object"
             };
 
             return body;
