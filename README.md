@@ -4,7 +4,7 @@ An autonomous AI development assistant integrating Unity engineering workflows w
 
 ## Unity Cowork Agent V2
 
-Unity engineering requests now use a Cowork-style execution kernel:
+Unity engineering requests use a Cowork-style execution kernel:
 
 1. Inspect the live Unity project.
 2. Design the smallest safe implementation.
@@ -14,39 +14,47 @@ Unity engineering requests now use a Cowork-style execution kernel:
 6. Execute locally through the Unity bridge.
 7. Observe the post-attempt project state and console.
 8. Correct from fresh state instead of blindly retrying the same plan.
-9. Stop duplicate execution plans and keep task state for continuation.
+9. Reject duplicate failed plans and request a fresh delta instead of dead-ending.
+10. Resume failed tasks with a new live inspect cycle so partial Unity state is never assumed away.
+
+The Unity batch bridge is transactional/idempotent: failed deterministic batches roll back through Unity Undo, while create operations reuse an already-existing exact hierarchy path instead of creating duplicate objects.
 
 The previous AIIntegration path is retained for compatibility with non-Unity workflows.
 
-## Free model routing
+## Free-first model routing
 
-Set the OpenRouter key as a user environment variable on Windows:
+Default Unity Agent V2 model/provider routing:
+
+1. **Gemini 3.7 Flash** — `gemini-3.7-flash`, direct Gemini API, `high` reasoning by default.
+2. **GLM 5.2 Free** — `z-ai/glm-5.2:free` through OpenRouter.
+3. **MiniMax M3 Free** — `minimax/minimax-m3:free` through OpenRouter model fallback.
+4. **Nemotron 3 Ultra Free** — `nvidia/nemotron-3-ultra-550b-a55b:free` through OpenRouter model fallback.
+5. **Groq GPT-OSS-120B** — `openai/gpt-oss-120b` as the final direct provider fallback.
+
+The OpenRouter adapter accepts only `:free` model overrides (or `openrouter/free`). A stale paid `OPENROUTER_MODEL`, such as `z-ai/glm-5.3`, is ignored and falls back to `z-ai/glm-5.2:free`.
+
+The provider adapter also detects gateway responses that incorrectly arrive as HTTP 200 with a top-level JSON `error` object. Those are converted into real provider failures so the next free provider is tried automatically.
+
+### Environment keys
 
 ```powershell
+[Environment]::SetEnvironmentVariable("GEMINI_API_KEY","YOUR_KEY","User")
 [Environment]::SetEnvironmentVariable("OPENROUTER_API_KEY","YOUR_KEY","User")
+[Environment]::SetEnvironmentVariable("GROQ_API_KEY","YOUR_KEY","User")
 ```
 
-Default Unity Agent V2 routing is intentionally free-only:
-
-- Main OpenRouter model: `z-ai/glm-5.2:free`
-- OpenRouter model fallback: `nvidia/nemotron-3-ultra-550b-a55b:free`
-- Direct provider fallback: `gemini-3.6-flash` when `GEMINI_API_KEY` is configured
-- Final direct provider fallback: `openai/gpt-oss-120b` on Groq when `GROQ_API_KEY` is configured
-- Default OpenRouter reasoning effort: `high`
-
-The OpenRouter adapter accepts only `:free` model overrides (or `openrouter/free`). If `OPENROUTER_MODEL` still contains an older paid model such as `z-ai/glm-5.3`, Agent V2 ignores it and falls back to `z-ai/glm-5.2:free`.
-
-Optional free-only overrides:
+Optional reasoning/model settings:
 
 ```powershell
+[Environment]::SetEnvironmentVariable("GEMINI_REASONING_EFFORT","high","User")
 [Environment]::SetEnvironmentVariable("OPENROUTER_MODEL","z-ai/glm-5.2:free","User")
 [Environment]::SetEnvironmentVariable("OPENROUTER_REASONING_EFFORT","high","User")
-[Environment]::SetEnvironmentVariable("OPENROUTER_FALLBACK_MODELS","nvidia/nemotron-3-ultra-550b-a55b:free","User")
+[Environment]::SetEnvironmentVariable("OPENROUTER_FALLBACK_MODELS","minimax/minimax-m3:free,nvidia/nemotron-3-ultra-550b-a55b:free","User")
 ```
 
-Restart the AI Assistant after changing user environment variables.
+Restart AI Assistant after changing user environment variables.
 
-Important: Gemini and Groq have free account tiers, but billing/account state is controlled by those providers. The project selects their free-tier-supported models; keep those provider accounts on their free plans if zero spend is required.
+Gemini, OpenRouter and Groq account/billing state is controlled by those providers. The project deliberately selects free-tier/free-endpoint models, but keep the associated provider accounts/projects on their free plans if zero spend is required.
 
 ## Validation
 
