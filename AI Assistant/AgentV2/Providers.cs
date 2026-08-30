@@ -307,6 +307,14 @@ namespace AI_Assistant.AgentV2
     internal sealed class OpenRouterProviderV2
         : OpenAiCompatibleProviderV2
     {
+        private const string DefaultPrimaryModel =
+            "z-ai/glm-5.2:free";
+
+        private static readonly string[] DefaultFallbackModels =
+        {
+            "nvidia/nemotron-3-ultra-550b-a55b:free"
+        };
+
         private readonly string[] fallbackModels;
         private readonly string reasoningEffort;
 
@@ -314,8 +322,10 @@ namespace AI_Assistant.AgentV2
             : base(
                 "OpenRouter",
                 "https://openrouter.ai/api/v1/chat/completions",
-                Environment.GetEnvironmentVariable("OPENROUTER_MODEL")
-                    ?? "z-ai/glm-5.3",
+                ResolveFreeModel(
+                    Environment.GetEnvironmentVariable("OPENROUTER_MODEL"),
+                    DefaultPrimaryModel
+                ),
                 "OPENROUTER_API_KEY",
                 180
             )
@@ -333,13 +343,12 @@ namespace AI_Assistant.AgentV2
                     "OPENROUTER_FALLBACK_MODELS"
                 );
 
-            fallbackModels = string.IsNullOrWhiteSpace(configuredFallbacks)
-                ? new[]
-                {
-                    "z-ai/glm-5.2",
-                    "z-ai/glm-5.3-flash"
-                }
-                : ParseFallbackModels(configuredFallbacks);
+            string[] configuredFreeFallbacks =
+                ParseFallbackModels(configuredFallbacks);
+
+            fallbackModels = configuredFreeFallbacks.Length > 0
+                ? configuredFreeFallbacks
+                : DefaultFallbackModels;
         }
 
         protected override Dictionary<string, object?> BuildRequestBody(
@@ -353,13 +362,10 @@ namespace AI_Assistant.AgentV2
                     userPrompt
                 );
 
-            // Let GLM use its recommended sampling behavior and control
-            // deliberation through reasoning effort instead of low temperature.
             body.Remove("temperature");
 
-            // GLM 5.3 is the primary project-level coding/reasoning model.
-            // OpenRouter first performs provider failover for that same model,
-            // then walks this model fallback chain if necessary.
+            // Free-only model fallback inside OpenRouter. The primary `model`
+            // is tried first, then the `models` entries are tried in order.
             if (fallbackModels.Length > 0)
             {
                 body["models"] = fallbackModels;
@@ -384,6 +390,37 @@ namespace AI_Assistant.AgentV2
                 "X-OpenRouter-Title",
                 "AI Assistant Unity Cowork Agent V2"
             );
+        }
+
+        private static string ResolveFreeModel(
+            string? configuredModel,
+            string fallbackModel
+        )
+        {
+            string value = (configuredModel ?? "").Trim();
+
+            return IsFreeOpenRouterModel(value)
+                ? value
+                : fallbackModel;
+        }
+
+        private static bool IsFreeOpenRouterModel(string? model)
+        {
+            if (string.IsNullOrWhiteSpace(model))
+            {
+                return false;
+            }
+
+            string value = model.Trim();
+
+            return value.EndsWith(
+                    ":free",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                || value.Equals(
+                    "openrouter/free",
+                    StringComparison.OrdinalIgnoreCase
+                );
         }
 
         private static string NormalizeReasoningEffort(string value)
@@ -414,7 +451,7 @@ namespace AI_Assistant.AgentV2
                     StringSplitOptions.RemoveEmptyEntries
                 )
                 .Select(item => item.Trim())
-                .Where(item => item.Length > 0)
+                .Where(IsFreeOpenRouterModel)
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(6)
                 .ToArray();
@@ -434,13 +471,11 @@ namespace AI_Assistant.AgentV2
 
             openRouter = new OpenRouterProviderV2();
 
-            string geminiModel =
-                Environment.GetEnvironmentVariable("GEMINI_MODEL")
-                ?? "gemini-3.6-flash";
-
-            string groqModel =
-                Environment.GetEnvironmentVariable("GROQ_MODEL")
-                ?? "openai/gpt-oss-120b";
+            // Direct provider fallbacks stay on models that currently have
+            // official free tiers. Account/billing state is still controlled
+            // by the provider account itself.
+            string geminiModel = "gemini-3.6-flash";
+            string groqModel = "openai/gpt-oss-120b";
 
             gemini = new OpenAiCompatibleProviderV2(
                 "Gemini",
