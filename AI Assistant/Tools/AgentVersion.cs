@@ -6,7 +6,7 @@ namespace AI_Assistant.Tools
     public static class AgentVersion
     {
         public const string Version =
-            "0.6.3-cowork-gemini37";
+            "0.6.4-cowork-minimax";
 
 
         // Compile-time handshake retained for the legacy compatibility path.
@@ -14,6 +14,6 @@ namespace AI_Assistant.Tools
             AIIntegration.ContextRouterBuild;
 
         public const string CoworkKernelBuild =
-            "unity-cowork-v2-transactional-gemini37-free";
+            "unity-cowork-v2-transactional-minimax-free";
     }
 }
