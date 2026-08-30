@@ -54,6 +54,12 @@
 
 		<None Include="CapabilityLibrary\source\**\*.cs" />
 
+
+		<!-- Agent V2 fixed executor supersedes the patch-heavy legacy executor. -->
+		<Compile Remove="AgentV2\UnityCommandExecutor.cs" />
+
+		<None Include="AgentV2\UnityCommandExecutor.cs" />
+
 	</ItemGroup>
 
 	<ItemGroup>
