@@ -20,7 +20,7 @@ namespace AI_Assistant
             messages =
                 new ObservableCollection<ChatEntry>();
 
-        private AIIntegration? ai;
+        private AssistantRuntime? ai;
         private bool isBusy;
 
 
@@ -52,9 +52,7 @@ namespace AI_Assistant
 
                 AddMessage(
                     "Assistant",
-                    "AI Assistant je spreman. Context router: "
-                    + AgentVersion.RequiredContextRouterBuild
-                    + ". Unity Editor može ostati otvoren dok radiš sa scenom."
+                    "AI Assistant je spreman. Unity zahtjevi koriste Cowork Agent V2; ostali workflow-i ostaju na compatibility routeru."
                 );
 
                 PromptTextBox.Focus();
@@ -221,7 +219,6 @@ namespace AI_Assistant
                 return;
             }
 
-
             ai?.ResetConversationContext();
 
             messages.Clear();
@@ -243,7 +240,7 @@ namespace AI_Assistant
         }
 
 
-        private static AIIntegration CreateAgent()
+        private static AssistantRuntime CreateAgent()
         {
             string projectFile =
                 FindProjectFileUpwards(
@@ -302,7 +299,7 @@ namespace AI_Assistant
             allowedRoots.Add(sourceRoot);
 
             return
-                new AIIntegration(
+                new AssistantRuntime(
                     allowedRoots,
                     projectFile,
                     sourceRoot,
