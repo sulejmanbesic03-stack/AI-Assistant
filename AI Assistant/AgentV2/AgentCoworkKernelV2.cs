@@ -9,12 +9,6 @@ using System.Threading.Tasks;
 
 namespace AI_Assistant.AgentV2
 {
-    /// <summary>
-    /// Small capability catalog inspired by the public Unity AI Assistant
-    /// Editor architecture: known deterministic commands are preferred,
-    /// promoted/reusable commands can be selected directly, and generated
-    /// dynamic code is reserved as the final RunCommand-style escape hatch.
-    /// </summary>
     internal sealed class AgentCapabilityRegistryV2
     {
         private readonly TempCapabilityManager tempCapabilities;
@@ -49,7 +43,7 @@ namespace AI_Assistant.AgentV2
                     in tempCapabilities.Library.Entries
                         .OrderByDescending(item => item.TimesUsed)
                         .ThenBy(item => item.Name)
-                        .Take(24)
+                        .Take(12)
                 )
                 {
                     builder.Append("- run_");
@@ -58,7 +52,7 @@ namespace AI_Assistant.AgentV2
                     builder.AppendLine(
                         string.IsNullOrWhiteSpace(entry.Description)
                             ? entry.Name
-                            : entry.Description
+                            : AgentJsonV2.Compact(entry.Description, 180)
                     );
                 }
             }
@@ -70,13 +64,13 @@ namespace AI_Assistant.AgentV2
             }
 
             builder.AppendLine(
-                "Priority 4: temporary_capability is the dynamic RunCommand escape hatch. Use it only when the operation cannot be represented safely by priorities 1-3."
+                "Priority 4: temporary_capability is the dynamic RunCommand escape hatch. Use it only when priorities 1-3 cannot express the operation safely."
             );
             builder.AppendLine(
                 "Never create a temporary capability for persistent gameplay logic."
             );
 
-            return builder.ToString();
+            return AgentJsonV2.Compact(builder.ToString(), 2600);
         }
 
         public bool IsKnownReusableCapability(string toolName)
@@ -93,12 +87,6 @@ namespace AI_Assistant.AgentV2
         }
     }
 
-    /// <summary>
-    /// Cowork execution facade. Existing UnityCommandExecutorV2 remains the
-    /// authoritative deterministic executor. This layer adds first-class
-    /// reusable capability dispatch without mixing that concern into the
-    /// native executor.
-    /// </summary>
     internal sealed class UnityCoworkExecutorV2
     {
         private readonly UnityCommandExecutorV2 nativeExecutor;
@@ -185,7 +173,7 @@ namespace AI_Assistant.AgentV2
             {
                 report.Fail(
                     "Reusable capability failed: "
-                    + AgentJsonV2.Compact(result, 2400)
+                    + AgentJsonV2.Compact(result, 1400)
                 );
                 return report;
             }
@@ -194,8 +182,6 @@ namespace AI_Assistant.AgentV2
                 "Reusable capability: " + call.ToolName
             );
 
-            // Reuse the native executor's canonical save/console/runtime
-            // verification path without issuing any additional mutation.
             AgentImplementationV2 verificationOnly =
                 new AgentImplementationV2
                 {
@@ -246,7 +232,7 @@ namespace AI_Assistant.AgentV2
                 builder.AppendLine(
                     AgentJsonV2.Compact(
                         report.CompileFailureText,
-                        5000
+                        1800
                     )
                 );
             }
@@ -255,11 +241,11 @@ namespace AI_Assistant.AgentV2
             {
                 builder.AppendLine("ERRORS:");
 
-                foreach (string error in report.Errors.Take(8))
+                foreach (string error in report.Errors.Take(4))
                 {
                     builder.Append("- ");
                     builder.AppendLine(
-                        AgentJsonV2.Compact(error, 1800)
+                        AgentJsonV2.Compact(error, 750)
                     );
                 }
             }
@@ -268,28 +254,50 @@ namespace AI_Assistant.AgentV2
             {
                 builder.AppendLine("COMPLETED_LOCAL_STEPS:");
 
-                foreach (string step in report.Steps.Take(20))
+                foreach (string step in report.Steps.Take(10))
                 {
                     builder.Append("- ");
-                    builder.AppendLine(step);
+                    builder.AppendLine(
+                        AgentJsonV2.Compact(step, 240)
+                    );
                 }
             }
 
-            if (!string.IsNullOrWhiteSpace(report.ConsoleResult))
+            if (
+                !string.IsNullOrWhiteSpace(report.ConsoleResult)
+                && !LooksLikeEmptyConsole(report.ConsoleResult)
+            )
             {
                 builder.AppendLine("UNITY_CONSOLE_AFTER_ATTEMPT:");
                 builder.AppendLine(
                     AgentJsonV2.Compact(
                         report.ConsoleResult,
-                        3500
+                        1200
                     )
                 );
             }
 
             return AgentJsonV2.Compact(
                 builder.ToString(),
-                12000
+                5000
             );
+        }
+
+        private static bool LooksLikeEmptyConsole(string value)
+        {
+            string normalized = value
+                .Replace(" ", "", StringComparison.Ordinal)
+                .Replace("\r", "", StringComparison.Ordinal)
+                .Replace("\n", "", StringComparison.Ordinal)
+                .ToLowerInvariant();
+
+            return
+                normalized.Contains("\"success\":true")
+                && (
+                    normalized.Contains("\"errors\":[]")
+                    || normalized.Contains("\"items\":[]")
+                    || normalized.Contains("\"messages\":[]")
+                );
         }
     }
 }
