@@ -12,12 +12,12 @@ namespace AI_Assistant.AgentV2
 {
     internal sealed class UnityContextServiceV2
     {
-        private const int MaxProjectSettingsChars = 3000;
-        private const int MaxHierarchyChars = 7000;
-        private const int MaxConsoleChars = 2500;
-        private const int MaxScriptIndexChars = 5000;
-        private const int MaxScriptChars = 7000;
-        private const int MaxRelevantScripts = 4;
+        private const int MaxProjectSettingsChars = 1200;
+        private const int MaxHierarchyChars = 3500;
+        private const int MaxConsoleChars = 1000;
+        private const int MaxScriptIndexChars = 2200;
+        private const int MaxScriptChars = 3200;
+        private const int MaxRelevantScripts = 2;
 
         private readonly UnityBridgeTools unity;
         private readonly UnityDocumentationTools docs;
@@ -33,117 +33,80 @@ namespace AI_Assistant.AgentV2
             docs = new UnityDocumentationTools();
         }
 
-        public Task<UnityProjectSnapshotV2> CaptureAsync(
-            string goal
-        )
+        public Task<UnityProjectSnapshotV2> CaptureAsync(string goal)
         {
-            return Task.Run(
-                () => Capture(goal)
-            );
+            return Task.Run(() => Capture(goal));
         }
 
         private UnityProjectSnapshotV2 Capture(string goal)
         {
-            activity("[V2 INSPECT] project snapshot");
+            activity("[V2 INSPECT] compact project snapshot");
 
             UnityProjectSnapshotV2 snapshot =
                 new UnityProjectSnapshotV2
                 {
-                    ProjectSettings =
-                        AgentJsonV2.Compact(
-                            unity.GetUnityProjectSettings(),
-                            MaxProjectSettingsChars
-                        ),
-
-                    SceneHierarchy =
-                        AgentJsonV2.Compact(
-                            unity.GetSceneHierarchy(),
-                            MaxHierarchyChars
-                        ),
-
-                    ConsoleErrors =
-                        AgentJsonV2.Compact(
-                            unity.GetConsoleErrors(),
-                            MaxConsoleChars
-                        )
+                    ProjectSettings = AgentJsonV2.Compact(
+                        unity.GetUnityProjectSettings(),
+                        MaxProjectSettingsChars
+                    ),
+                    SceneHierarchy = AgentJsonV2.Compact(
+                        unity.GetSceneHierarchy(),
+                        MaxHierarchyChars
+                    ),
+                    ConsoleErrors = CompactConsole(
+                        unity.GetConsoleErrors()
+                    )
                 };
 
-            List<string> searchTerms =
-                BuildSearchTerms(goal);
-
-            StringBuilder indexBuilder =
-                new StringBuilder();
-
+            List<string> searchTerms = BuildSearchTerms(goal);
+            StringBuilder indexBuilder = new StringBuilder();
             HashSet<string> scriptPaths =
-                new HashSet<string>(
-                    StringComparer.OrdinalIgnoreCase
-                );
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
-            foreach (string term in searchTerms.Take(4))
+            foreach (string term in searchTerms.Take(3))
             {
-                string result =
-                    unity.FindUnityScripts(term);
+                string result = unity.FindUnityScripts(term);
 
+                indexBuilder.Append("SEARCH: ");
+                indexBuilder.AppendLine(term);
                 indexBuilder.AppendLine(
-                    "SEARCH: " + term
+                    AgentJsonV2.Compact(result, 900)
                 );
 
-                indexBuilder.AppendLine(
-                    AgentJsonV2.Compact(
-                        result,
-                        2200
-                    )
-                );
-
-                foreach (
-                    string path
-                    in ExtractAssetPaths(result)
-                )
+                foreach (string path in ExtractAssetPaths(result))
                 {
                     scriptPaths.Add(path);
                 }
             }
 
-            snapshot.ScriptIndex =
-                AgentJsonV2.Compact(
-                    indexBuilder.ToString(),
-                    MaxScriptIndexChars
-                );
+            snapshot.ScriptIndex = AgentJsonV2.Compact(
+                indexBuilder.ToString(),
+                MaxScriptIndexChars
+            );
 
             foreach (
                 string scriptPath
                 in scriptPaths.Take(MaxRelevantScripts)
             )
             {
-                activity(
-                    "[V2 INSPECT] read "
-                    + scriptPath
+                activity("[V2 INSPECT] read " + scriptPath);
+
+                string source = unity.ReadUnityScript(
+                    scriptPath,
+                    1,
+                    360
                 );
 
-                string source =
-                    unity.ReadUnityScript(
-                        scriptPath,
-                        1,
-                        700
-                    );
-
                 snapshot.RelevantScripts[scriptPath] =
-                    AgentJsonV2.Compact(
-                        source,
-                        MaxScriptChars
-                    );
+                    AgentJsonV2.Compact(source, MaxScriptChars);
             }
 
             return snapshot;
         }
 
-        public Task<string> GetDocumentationAsync(
-            string query
-        )
+        public Task<string> GetDocumentationAsync(string query)
         {
-            return Task.Run(
-                () => GetDocumentation(query)
-            );
+            return Task.Run(() => GetDocumentation(query));
         }
 
         private string GetDocumentation(string query)
@@ -155,34 +118,22 @@ namespace AI_Assistant.AgentV2
 
             activity(
                 "[V2 DOCS] "
-                + AgentJsonV2.Compact(
-                    query,
-                    120
-                )
+                + AgentJsonV2.Compact(query, 120)
             );
 
-            string search =
-                docs.SearchUnityDocs(query);
-
-            string? firstUrl =
-                ExtractFirstDocsUrl(search);
+            string search = docs.SearchUnityDocs(query);
+            string? firstUrl = ExtractFirstDocsUrl(search);
 
             if (string.IsNullOrWhiteSpace(firstUrl))
             {
-                return AgentJsonV2.Compact(
-                    search,
-                    3500
-                );
+                return AgentJsonV2.Compact(search, 2200);
             }
 
-            string document =
-                docs.ReadUnityDoc(firstUrl);
+            string document = docs.ReadUnityDoc(firstUrl);
 
             return AgentJsonV2.Compact(
-                search
-                + "\n\n"
-                + document,
-                7500
+                search + "\n\n" + document,
+                4200
             );
         }
 
@@ -190,57 +141,102 @@ namespace AI_Assistant.AgentV2
             UnityProjectSnapshotV2 snapshot
         )
         {
-            StringBuilder builder =
-                new StringBuilder();
+            StringBuilder builder = new StringBuilder();
 
-            builder.AppendLine("=== UNITY PROJECT SETTINGS ===");
-            builder.AppendLine(snapshot.ProjectSettings);
-            builder.AppendLine();
-
-            builder.AppendLine("=== SCENE HIERARCHY ===");
-            builder.AppendLine(snapshot.SceneHierarchy);
-            builder.AppendLine();
-
-            builder.AppendLine("=== CURRENT CONSOLE ERRORS ===");
-            builder.AppendLine(snapshot.ConsoleErrors);
-            builder.AppendLine();
-
-            builder.AppendLine("=== RELEVANT SCRIPT INDEX ===");
-            builder.AppendLine(snapshot.ScriptIndex);
-            builder.AppendLine();
+            AppendSection(
+                builder,
+                "UNITY PROJECT SETTINGS",
+                snapshot.ProjectSettings
+            );
+            AppendSection(
+                builder,
+                "SCENE HIERARCHY",
+                snapshot.SceneHierarchy
+            );
+            AppendSection(
+                builder,
+                "CURRENT CONSOLE",
+                snapshot.ConsoleErrors
+            );
+            AppendSection(
+                builder,
+                "RELEVANT SCRIPT INDEX",
+                snapshot.ScriptIndex
+            );
 
             foreach (
                 KeyValuePair<string, string> script
-                in snapshot.RelevantScripts
+                in snapshot.RelevantScripts.Take(MaxRelevantScripts)
             )
             {
-                builder.AppendLine(
-                    "=== SCRIPT: "
-                    + script.Key
-                    + " ==="
+                AppendSection(
+                    builder,
+                    "SCRIPT: " + script.Key,
+                    AgentJsonV2.Compact(script.Value, MaxScriptChars)
                 );
-
-                builder.AppendLine(script.Value);
-                builder.AppendLine();
             }
 
             if (!string.IsNullOrWhiteSpace(snapshot.Documentation))
             {
-                builder.AppendLine("=== OFFICIAL UNITY DOCUMENTATION ===");
-                builder.AppendLine(snapshot.Documentation);
-                builder.AppendLine();
+                AppendSection(
+                    builder,
+                    "OFFICIAL UNITY DOCUMENTATION",
+                    AgentJsonV2.Compact(snapshot.Documentation, 4200)
+                );
             }
 
-            return builder.ToString();
+            return AgentJsonV2.Compact(builder.ToString(), 14500);
+        }
+
+        private static void AppendSection(
+            StringBuilder builder,
+            string title,
+            string content
+        )
+        {
+            if (string.IsNullOrWhiteSpace(content))
+            {
+                return;
+            }
+
+            builder.Append("=== ");
+            builder.Append(title);
+            builder.AppendLine(" ===");
+            builder.AppendLine(content.Trim());
+            builder.AppendLine();
+        }
+
+        private static string CompactConsole(string result)
+        {
+            if (string.IsNullOrWhiteSpace(result))
+            {
+                return "No Unity console output.";
+            }
+
+            string normalized = result
+                .Replace(" ", "", StringComparison.Ordinal)
+                .Replace("\r", "", StringComparison.Ordinal)
+                .Replace("\n", "", StringComparison.Ordinal)
+                .ToLowerInvariant();
+
+            bool success = normalized.Contains("\"success\":true");
+            bool emptyErrors =
+                normalized.Contains("\"errors\":[]")
+                || normalized.Contains("\"items\":[]")
+                || normalized.Contains("\"messages\":[]");
+
+            if (success && emptyErrors)
+            {
+                return "No Unity console errors.";
+            }
+
+            return AgentJsonV2.Compact(result, MaxConsoleChars);
         }
 
         private static List<string> BuildSearchTerms(string goal)
         {
-            string text =
-                goal.ToLowerInvariant();
-
-            List<string> terms =
-                new List<string>();
+            string text = goal.ToLowerInvariant();
+            List<string> terms = new List<string>();
 
             void Add(params string[] values)
             {
@@ -332,23 +328,15 @@ namespace AI_Assistant.AgentV2
         )
         {
             HashSet<string> result =
-                new HashSet<string>(
-                    StringComparer.OrdinalIgnoreCase
-                );
+                new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             try
             {
-                using JsonDocument document =
-                    JsonDocument.Parse(text);
-
-                CollectAssetPaths(
-                    document.RootElement,
-                    result
-                );
+                using JsonDocument document = JsonDocument.Parse(text);
+                CollectAssetPaths(document.RootElement, result);
             }
             catch
             {
-                // Fall through to regex extraction below.
             }
 
             foreach (
@@ -360,9 +348,7 @@ namespace AI_Assistant.AgentV2
                 )
             )
             {
-                result.Add(
-                    match.Value.Trim()
-                );
+                result.Add(match.Value.Trim());
             }
 
             return result;
@@ -381,23 +367,14 @@ namespace AI_Assistant.AgentV2
                         in element.EnumerateObject()
                     )
                     {
-                        CollectAssetPaths(
-                            property.Value,
-                            result
-                        );
+                        CollectAssetPaths(property.Value, result);
                     }
                     break;
 
                 case JsonValueKind.Array:
-                    foreach (
-                        JsonElement item
-                        in element.EnumerateArray()
-                    )
+                    foreach (JsonElement item in element.EnumerateArray())
                     {
-                        CollectAssetPaths(
-                            item,
-                            result
-                        );
+                        CollectAssetPaths(item, result);
                     }
                     break;
 
@@ -424,12 +401,11 @@ namespace AI_Assistant.AgentV2
 
         private static string? ExtractFirstDocsUrl(string text)
         {
-            Match match =
-                Regex.Match(
-                    text,
-                    @"https://docs\.unity3d\.com/[^\s\)\]\>]+",
-                    RegexOptions.IgnoreCase
-                );
+            Match match = Regex.Match(
+                text,
+                @"https://docs\.unity3d\.com/[^\s\)\]\>]+",
+                RegexOptions.IgnoreCase
+            );
 
             return match.Success
                 ? match.Value.TrimEnd('.', ',', ';')
