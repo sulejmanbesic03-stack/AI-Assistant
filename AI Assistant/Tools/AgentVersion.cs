@@ -6,7 +6,7 @@ namespace AI_Assistant.Tools
     public static class AgentVersion
     {
         public const string Version =
-            "0.6.0-cowork-v2";
+            "0.6.1-cowork-free";
 
 
         // Compile-time handshake retained for the legacy compatibility path.
@@ -14,6 +14,6 @@ namespace AI_Assistant.Tools
             AIIntegration.ContextRouterBuild;
 
         public const string CoworkKernelBuild =
-            "unity-cowork-v2-openrouter";
+            "unity-cowork-v2-openrouter-free";
     }
 }
