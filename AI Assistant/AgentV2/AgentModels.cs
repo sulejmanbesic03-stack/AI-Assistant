@@ -17,6 +17,8 @@ namespace AI_Assistant.AgentV2
         Inspecting,
         Designing,
         Executing,
+        Observing,
+        Correcting,
         Repairing,
         Verifying,
         Completed,
@@ -34,9 +36,8 @@ namespace AI_Assistant.AgentV2
             AgentTaskPhaseV2.Created;
 
         public string ActiveProvider { get; set; } = "";
-
         public int ModelCalls { get; set; }
-
+        public int ExecutionAttempts { get; set; }
         public bool Completed { get; set; }
 
         public List<string> CompletedSteps { get; } =
@@ -45,10 +46,13 @@ namespace AI_Assistant.AgentV2
         public List<string> FilesChanged { get; } =
             new List<string>();
 
-        public string LastSummary { get; set; } = "";
+        public List<string> AttemptFingerprints { get; } =
+            new List<string>();
 
-        public DateTime CreatedUtc { get; } =
-            DateTime.UtcNow;
+        public string LastSummary { get; set; } = "";
+        public string LastObservation { get; set; } = "";
+
+        public DateTime CreatedUtc { get; } = DateTime.UtcNow;
 
         public void Advance(
             AgentTaskPhaseV2 phase,
@@ -98,6 +102,9 @@ namespace AI_Assistant.AgentV2
         public List<SceneActionV2> SceneActions { get; set; } =
             new List<SceneActionV2>();
 
+        [JsonPropertyName("capability_call")]
+        public ReusableCapabilityCallV2? CapabilityCall { get; set; }
+
         [JsonPropertyName("temporary_capability")]
         public TempCapabilitySpecV2? TemporaryCapability { get; set; }
 
@@ -108,6 +115,15 @@ namespace AI_Assistant.AgentV2
         [JsonPropertyName("notes")]
         public List<string> Notes { get; set; } =
             new List<string>();
+
+        public bool HasConcreteWork()
+        {
+            return
+                ScriptChanges.Count > 0
+                || SceneActions.Count > 0
+                || CapabilityCall != null
+                || TemporaryCapability != null;
+        }
     }
 
     public sealed class ScriptChangeV2
@@ -203,6 +219,15 @@ namespace AI_Assistant.AgentV2
         public bool? Active { get; set; }
     }
 
+    public sealed class ReusableCapabilityCallV2
+    {
+        [JsonPropertyName("tool_name")]
+        public string ToolName { get; set; } = "";
+
+        [JsonPropertyName("arguments_json")]
+        public string ArgumentsJson { get; set; } = "{}";
+    }
+
     public sealed class TempCapabilitySpecV2
     {
         [JsonPropertyName("name")]
@@ -222,22 +247,36 @@ namespace AI_Assistant.AgentV2
         public string CompileFailureText { get; set; } = "";
         public string ConsoleResult { get; set; } = "";
 
-        public List<string> Steps { get; } =
-            new List<string>();
-
-        public List<string> Errors { get; } =
-            new List<string>();
-
-        public List<string> RuntimeResults { get; } =
-            new List<string>();
-
-        public List<string> FilesChanged { get; } =
-            new List<string>();
+        public List<string> Steps { get; } = new List<string>();
+        public List<string> Errors { get; } = new List<string>();
+        public List<string> RuntimeResults { get; } = new List<string>();
+        public List<string> FilesChanged { get; } = new List<string>();
 
         public void Fail(string message)
         {
             Success = false;
             Errors.Add(message);
+        }
+
+        public void MergeFrom(AgentExecutionReportV2 other)
+        {
+            Success = Success && other.Success;
+            CompileFailed = CompileFailed || other.CompileFailed;
+
+            if (!string.IsNullOrWhiteSpace(other.CompileFailureText))
+            {
+                CompileFailureText = other.CompileFailureText;
+            }
+
+            if (!string.IsNullOrWhiteSpace(other.ConsoleResult))
+            {
+                ConsoleResult = other.ConsoleResult;
+            }
+
+            Steps.AddRange(other.Steps);
+            Errors.AddRange(other.Errors);
+            RuntimeResults.AddRange(other.RuntimeResults);
+            FilesChanged.AddRange(other.FilesChanged);
         }
     }
 
@@ -275,16 +314,17 @@ namespace AI_Assistant.AgentV2
                     return false;
                 }
 
+                parsed.ScriptChanges ??= new List<ScriptChangeV2>();
+                parsed.SceneActions ??= new List<SceneActionV2>();
+                parsed.RuntimeObjectPaths ??= new List<string>();
+                parsed.Notes ??= new List<string>();
+
                 implementation = parsed;
                 return true;
             }
             catch (Exception ex)
             {
-                error =
-                    ex.GetType().Name
-                    + ": "
-                    + ex.Message;
-
+                error = ex.GetType().Name + ": " + ex.Message;
                 return false;
             }
         }
@@ -296,11 +336,10 @@ namespace AI_Assistant.AgentV2
                 throw new JsonException("Response is empty.");
             }
 
-            string cleaned =
-                text
-                    .Replace("```json", "", StringComparison.OrdinalIgnoreCase)
-                    .Replace("```", "", StringComparison.Ordinal)
-                    .Trim();
+            string cleaned = text
+                .Replace("```json", "", StringComparison.OrdinalIgnoreCase)
+                .Replace("```", "", StringComparison.Ordinal)
+                .Trim();
 
             int start = cleaned.IndexOf('{');
             int end = cleaned.LastIndexOf('}');
@@ -312,10 +351,7 @@ namespace AI_Assistant.AgentV2
                 );
             }
 
-            return cleaned.Substring(
-                start,
-                end - start + 1
-            );
+            return cleaned.Substring(start, end - start + 1);
         }
 
         public static string? FindStringProperty(
@@ -325,8 +361,7 @@ namespace AI_Assistant.AgentV2
         {
             try
             {
-                using JsonDocument document =
-                    JsonDocument.Parse(json);
+                using JsonDocument document = JsonDocument.Parse(json);
 
                 return FindStringProperty(
                     document.RootElement,
@@ -360,11 +395,10 @@ namespace AI_Assistant.AgentV2
                         return property.Value.GetString();
                     }
 
-                    string? nested =
-                        FindStringProperty(
-                            property.Value,
-                            propertyName
-                        );
+                    string? nested = FindStringProperty(
+                        property.Value,
+                        propertyName
+                    );
 
                     if (nested != null)
                     {
@@ -376,11 +410,10 @@ namespace AI_Assistant.AgentV2
             {
                 foreach (JsonElement item in element.EnumerateArray())
                 {
-                    string? nested =
-                        FindStringProperty(
-                            item,
-                            propertyName
-                        );
+                    string? nested = FindStringProperty(
+                        item,
+                        propertyName
+                    );
 
                     if (nested != null)
                     {
@@ -401,8 +434,7 @@ namespace AI_Assistant.AgentV2
 
             try
             {
-                using JsonDocument document =
-                    JsonDocument.Parse(result);
+                using JsonDocument document = JsonDocument.Parse(result);
 
                 if (
                     document.RootElement.ValueKind == JsonValueKind.Object
@@ -421,7 +453,7 @@ namespace AI_Assistant.AgentV2
             }
             catch
             {
-                // Some legacy bridge endpoints return plain text on success.
+                // Some bridge endpoints return plain text on success.
             }
 
             string normalized = result.ToLowerInvariant();
@@ -450,8 +482,7 @@ namespace AI_Assistant.AgentV2
                 return text;
             }
 
-            return
-                text.Substring(0, maxChars)
+            return text.Substring(0, maxChars)
                 + "\n...[truncated by Agent V2]";
         }
     }
