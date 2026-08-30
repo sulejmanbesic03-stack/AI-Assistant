@@ -165,9 +165,10 @@ $orchestrator = [regex]::Replace(
 $promptAnchor =
     '+ "- Persistent gameplay logic belongs in normal MonoBehaviour scripts under Assets, never in a temporary capability.\\n"'
 
+# PowerShell continuation rule: keep -and at the end of the previous line.
 if (
-    -not $orchestrator.Contains("When script_changes uses attach_to")
-    -and $orchestrator.Contains($promptAnchor)
+    (-not $orchestrator.Contains("When script_changes uses attach_to")) -and
+    $orchestrator.Contains($promptAnchor)
 ) {
     $promptReplacement =
         $promptAnchor + "`r`n                " +
@@ -398,7 +399,7 @@ foreach ($check in $checks) {
 }
 
 if ($failed) {
-    Write-Host "" 
+    Write-Host ""
     Write-Host "Patch verification failed." -ForegroundColor Red
     Write-Host "Executor backup: $executorBackup"
     Write-Host "Orchestrator backup: $orchestratorBackup"
