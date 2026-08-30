@@ -190,6 +190,30 @@ namespace AI_Assistant.AgentV2
                     };
                 }
 
+                // OpenRouter may occasionally return HTTP 200 while the JSON
+                // body itself contains an upstream provider error. Treat that
+                // as a real failed request so ProviderRouterV2 can continue to
+                // Gemini/Groq instead of reporting "no assistant content".
+                if (
+                    TryReadProviderError(
+                        responseText,
+                        out int embeddedStatusCode,
+                        out string embeddedError
+                    )
+                )
+                {
+                    return new ProviderReplyV2
+                    {
+                        Success = false,
+                        Provider = Name,
+                        Model = responseModel,
+                        StatusCode = embeddedStatusCode > 0
+                            ? embeddedStatusCode
+                            : 502,
+                        Error = embeddedError
+                    };
+                }
+
                 string? content = TryReadContent(responseText);
 
                 if (string.IsNullOrWhiteSpace(content))
@@ -199,7 +223,9 @@ namespace AI_Assistant.AgentV2
                         Success = false,
                         Provider = Name,
                         Model = responseModel,
-                        StatusCode = (int)response.StatusCode,
+                        // Empty success bodies are effectively transient
+                        // upstream failures for an agent request.
+                        StatusCode = 502,
                         Error =
                             "Provider returned no assistant content. Raw response: "
                             + AgentJsonV2.Compact(responseText, 1600)
@@ -237,6 +263,66 @@ namespace AI_Assistant.AgentV2
                     Model = requestedModel,
                     Error = ex.GetType().Name + ": " + ex.Message
                 };
+            }
+        }
+
+        private static bool TryReadProviderError(
+            string responseText,
+            out int statusCode,
+            out string errorText
+        )
+        {
+            statusCode = 0;
+            errorText = "";
+
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(responseText);
+                JsonElement root = document.RootElement;
+
+                if (
+                    root.ValueKind != JsonValueKind.Object
+                    || !root.TryGetProperty("error", out JsonElement error)
+                    || error.ValueKind != JsonValueKind.Object
+                )
+                {
+                    return false;
+                }
+
+                string message =
+                    error.TryGetProperty("message", out JsonElement messageElement)
+                    && messageElement.ValueKind == JsonValueKind.String
+                        ? messageElement.GetString() ?? "Provider upstream error."
+                        : "Provider upstream error.";
+
+                if (
+                    error.TryGetProperty("code", out JsonElement codeElement)
+                )
+                {
+                    if (codeElement.ValueKind == JsonValueKind.Number)
+                    {
+                        codeElement.TryGetInt32(out statusCode);
+                    }
+                    else if (
+                        codeElement.ValueKind == JsonValueKind.String
+                        && int.TryParse(codeElement.GetString(), out int parsed)
+                    )
+                    {
+                        statusCode = parsed;
+                    }
+                }
+
+                errorText =
+                    "Embedded provider error"
+                    + (statusCode > 0 ? " (" + statusCode + ")" : "")
+                    + ": "
+                    + message;
+
+                return true;
+            }
+            catch
+            {
+                return false;
             }
         }
 
@@ -364,8 +450,6 @@ namespace AI_Assistant.AgentV2
 
             body.Remove("temperature");
 
-            // Free-only model fallback inside OpenRouter. The primary `model`
-            // is tried first, then the `models` entries are tried in order.
             if (fallbackModels.Length > 0)
             {
                 body["models"] = fallbackModels;
@@ -471,9 +555,6 @@ namespace AI_Assistant.AgentV2
 
             openRouter = new OpenRouterProviderV2();
 
-            // Direct provider fallbacks stay on models that currently have
-            // official free tiers. Account/billing state is still controlled
-            // by the provider account itself.
             string geminiModel = "gemini-3.6-flash";
             string groqModel = "openai/gpt-oss-120b";
 
