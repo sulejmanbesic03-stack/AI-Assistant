@@ -176,6 +176,26 @@ namespace AI_Assistant.AgentV2
                     TryReadModel(responseText)
                     ?? requestedModel;
 
+                if (
+                    TryReadProviderError(
+                        responseText,
+                        out int embeddedStatus,
+                        out string embeddedError
+                    )
+                )
+                {
+                    return new ProviderReplyV2
+                    {
+                        Success = false,
+                        Provider = Name,
+                        Model = responseModel,
+                        StatusCode = embeddedStatus > 0
+                            ? embeddedStatus
+                            : (int)HttpStatusCode.BadGateway,
+                        Error = embeddedError
+                    };
+                }
+
                 if (!response.IsSuccessStatusCode)
                 {
                     return new ProviderReplyV2
@@ -190,30 +210,6 @@ namespace AI_Assistant.AgentV2
                     };
                 }
 
-                // OpenRouter may occasionally return HTTP 200 while the JSON
-                // body itself contains an upstream provider error. Treat that
-                // as a real failed request so ProviderRouterV2 can continue to
-                // Gemini/Groq instead of reporting "no assistant content".
-                if (
-                    TryReadProviderError(
-                        responseText,
-                        out int embeddedStatusCode,
-                        out string embeddedError
-                    )
-                )
-                {
-                    return new ProviderReplyV2
-                    {
-                        Success = false,
-                        Provider = Name,
-                        Model = responseModel,
-                        StatusCode = embeddedStatusCode > 0
-                            ? embeddedStatusCode
-                            : 502,
-                        Error = embeddedError
-                    };
-                }
-
                 string? content = TryReadContent(responseText);
 
                 if (string.IsNullOrWhiteSpace(content))
@@ -223,9 +219,7 @@ namespace AI_Assistant.AgentV2
                         Success = false,
                         Provider = Name,
                         Model = responseModel,
-                        // Empty success bodies are effectively transient
-                        // upstream failures for an agent request.
-                        StatusCode = 502,
+                        StatusCode = (int)HttpStatusCode.BadGateway,
                         Error =
                             "Provider returned no assistant content. Raw response: "
                             + AgentJsonV2.Compact(responseText, 1600)
@@ -261,6 +255,7 @@ namespace AI_Assistant.AgentV2
                     Success = false,
                     Provider = Name,
                     Model = requestedModel,
+                    StatusCode = (int)HttpStatusCode.BadGateway,
                     Error = ex.GetType().Name + ": " + ex.Message
                 };
             }
@@ -281,42 +276,52 @@ namespace AI_Assistant.AgentV2
                 JsonElement root = document.RootElement;
 
                 if (
-                    root.ValueKind != JsonValueKind.Object
-                    || !root.TryGetProperty("error", out JsonElement error)
-                    || error.ValueKind != JsonValueKind.Object
+                    !root.TryGetProperty("error", out JsonElement error)
+                    || error.ValueKind == JsonValueKind.Null
+                    || error.ValueKind == JsonValueKind.Undefined
                 )
                 {
                     return false;
                 }
 
-                string message =
-                    error.TryGetProperty("message", out JsonElement messageElement)
-                    && messageElement.ValueKind == JsonValueKind.String
-                        ? messageElement.GetString() ?? "Provider upstream error."
-                        : "Provider upstream error.";
-
-                if (
-                    error.TryGetProperty("code", out JsonElement codeElement)
-                )
+                if (error.ValueKind == JsonValueKind.String)
                 {
-                    if (codeElement.ValueKind == JsonValueKind.Number)
+                    errorText = error.GetString() ?? "Provider error.";
+                    return true;
+                }
+
+                if (error.ValueKind != JsonValueKind.Object)
+                {
+                    errorText = error.GetRawText();
+                    return true;
+                }
+
+                if (error.TryGetProperty("code", out JsonElement code))
+                {
+                    if (code.ValueKind == JsonValueKind.Number)
                     {
-                        codeElement.TryGetInt32(out statusCode);
+                        code.TryGetInt32(out statusCode);
                     }
                     else if (
-                        codeElement.ValueKind == JsonValueKind.String
-                        && int.TryParse(codeElement.GetString(), out int parsed)
+                        code.ValueKind == JsonValueKind.String
+                        && int.TryParse(code.GetString(), out int parsed)
                     )
                     {
                         statusCode = parsed;
                     }
                 }
 
-                errorText =
-                    "Embedded provider error"
-                    + (statusCode > 0 ? " (" + statusCode + ")" : "")
-                    + ": "
-                    + message;
+                if (
+                    error.TryGetProperty("message", out JsonElement message)
+                    && message.ValueKind == JsonValueKind.String
+                )
+                {
+                    errorText = message.GetString() ?? error.GetRawText();
+                }
+                else
+                {
+                    errorText = error.GetRawText();
+                }
 
                 return true;
             }
@@ -390,6 +395,55 @@ namespace AI_Assistant.AgentV2
         }
     }
 
+    internal sealed class GeminiProviderV2
+        : OpenAiCompatibleProviderV2
+    {
+        private readonly string reasoningEffort;
+
+        public GeminiProviderV2()
+            : base(
+                "Gemini",
+                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
+                "gemini-3.7-flash",
+                "GEMINI_API_KEY",
+                180
+            )
+        {
+            reasoningEffort = NormalizeReasoningEffort(
+                Environment.GetEnvironmentVariable("GEMINI_REASONING_EFFORT")
+                ?? "high"
+            );
+        }
+
+        protected override Dictionary<string, object?> BuildRequestBody(
+            string systemPrompt,
+            string userPrompt
+        )
+        {
+            Dictionary<string, object?> body =
+                base.BuildRequestBody(systemPrompt, userPrompt);
+
+            body.Remove("temperature");
+            body["reasoning_effort"] = reasoningEffort;
+
+            return body;
+        }
+
+        private static string NormalizeReasoningEffort(string value)
+        {
+            string normalized = (value ?? "")
+                .Trim()
+                .ToLowerInvariant();
+
+            return normalized switch
+            {
+                "low" => "low",
+                "medium" => "medium",
+                _ => "high"
+            };
+        }
+    }
+
     internal sealed class OpenRouterProviderV2
         : OpenAiCompatibleProviderV2
     {
@@ -398,6 +452,7 @@ namespace AI_Assistant.AgentV2
 
         private static readonly string[] DefaultFallbackModels =
         {
+            "minimax/minimax-m3:free",
             "nvidia/nemotron-3-ultra-550b-a55b:free"
         };
 
@@ -443,10 +498,7 @@ namespace AI_Assistant.AgentV2
         )
         {
             Dictionary<string, object?> body =
-                base.BuildRequestBody(
-                    systemPrompt,
-                    userPrompt
-                );
+                base.BuildRequestBody(systemPrompt, userPrompt);
 
             body.Remove("temperature");
 
@@ -536,6 +588,12 @@ namespace AI_Assistant.AgentV2
                 )
                 .Select(item => item.Trim())
                 .Where(IsFreeOpenRouterModel)
+                .Where(item =>
+                    !item.Equals(
+                        DefaultPrimaryModel,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
                 .Distinct(StringComparer.OrdinalIgnoreCase)
                 .Take(6)
                 .ToArray();
@@ -544,8 +602,8 @@ namespace AI_Assistant.AgentV2
 
     internal sealed class ProviderRouterV2
     {
-        private readonly IAIProviderV2 openRouter;
         private readonly IAIProviderV2 gemini;
+        private readonly IAIProviderV2 openRouter;
         private readonly IAIProviderV2 groq;
         private readonly Action<string> activity;
 
@@ -553,22 +611,13 @@ namespace AI_Assistant.AgentV2
         {
             this.activity = activity;
 
+            gemini = new GeminiProviderV2();
             openRouter = new OpenRouterProviderV2();
-
-            string geminiModel = "gemini-3.6-flash";
-            string groqModel = "openai/gpt-oss-120b";
-
-            gemini = new OpenAiCompatibleProviderV2(
-                "Gemini",
-                "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-                geminiModel,
-                "GEMINI_API_KEY"
-            );
 
             groq = new OpenAiCompatibleProviderV2(
                 "Groq",
                 "https://api.groq.com/openai/v1/chat/completions",
-                groqModel,
+                "openai/gpt-oss-120b",
                 "GROQ_API_KEY"
             );
         }
@@ -593,7 +642,7 @@ namespace AI_Assistant.AgentV2
                 {
                     Success = false,
                     Error =
-                        "No Agent V2 provider is configured. Set OPENROUTER_API_KEY, GEMINI_API_KEY or GROQ_API_KEY."
+                        "No Agent V2 provider is configured. Set GEMINI_API_KEY, OPENROUTER_API_KEY or GROQ_API_KEY."
                 };
             }
 
@@ -687,14 +736,14 @@ namespace AI_Assistant.AgentV2
 
         private IAIProviderV2? FirstConfigured()
         {
-            if (openRouter.IsConfigured)
-            {
-                return openRouter;
-            }
-
             if (gemini.IsConfigured)
             {
                 return gemini;
+            }
+
+            if (openRouter.IsConfigured)
+            {
+                return openRouter;
             }
 
             if (groq.IsConfigured)
@@ -709,17 +758,6 @@ namespace AI_Assistant.AgentV2
         {
             if (
                 name.Equals(
-                    "OpenRouter",
-                    StringComparison.OrdinalIgnoreCase
-                )
-                && openRouter.IsConfigured
-            )
-            {
-                return openRouter;
-            }
-
-            if (
-                name.Equals(
                     "Gemini",
                     StringComparison.OrdinalIgnoreCase
                 )
@@ -727,6 +765,17 @@ namespace AI_Assistant.AgentV2
             )
             {
                 return gemini;
+            }
+
+            if (
+                name.Equals(
+                    "OpenRouter",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                && openRouter.IsConfigured
+            )
+            {
+                return openRouter;
             }
 
             if (
@@ -747,19 +796,31 @@ namespace AI_Assistant.AgentV2
             IAIProviderV2 selected
         )
         {
-            if (!selected.Name.Equals("OpenRouter", StringComparison.OrdinalIgnoreCase))
+            IAIProviderV2[] order =
             {
-                yield return openRouter;
+                gemini,
+                openRouter,
+                groq
+            };
+
+            int selectedIndex = Array.FindIndex(
+                order,
+                item => item.Name.Equals(
+                    selected.Name,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            );
+
+            if (selectedIndex < 0)
+            {
+                selectedIndex = 0;
             }
 
-            if (!selected.Name.Equals("Gemini", StringComparison.OrdinalIgnoreCase))
+            for (int offset = 1; offset < order.Length; offset++)
             {
-                yield return gemini;
-            }
-
-            if (!selected.Name.Equals("Groq", StringComparison.OrdinalIgnoreCase))
-            {
-                yield return groq;
+                yield return order[
+                    (selectedIndex + offset) % order.Length
+                ];
             }
         }
 
