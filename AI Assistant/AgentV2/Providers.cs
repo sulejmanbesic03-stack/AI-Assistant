@@ -18,6 +18,7 @@ namespace AI_Assistant.AgentV2
         public string Content { get; init; } = "";
         public string Error { get; init; } = "";
         public int StatusCode { get; init; }
+        public int RetryAfterSeconds { get; init; }
     }
 
     internal interface IAIProviderV2
@@ -43,9 +44,7 @@ namespace AI_Assistant.AgentV2
 
         public bool IsConfigured =>
             !string.IsNullOrWhiteSpace(
-                Environment.GetEnvironmentVariable(
-                    ApiKeyEnvironmentVariable
-                )
+                Environment.GetEnvironmentVariable(ApiKeyEnvironmentVariable)
             );
 
         public OpenAiCompatibleProviderV2(
@@ -60,7 +59,6 @@ namespace AI_Assistant.AgentV2
             Endpoint = endpoint;
             Model = model;
             ApiKeyEnvironmentVariable = apiKeyEnvironmentVariable;
-
             Client = new HttpClient
             {
                 Timeout = TimeSpan.FromSeconds(timeoutSeconds)
@@ -73,11 +71,8 @@ namespace AI_Assistant.AgentV2
             CancellationToken cancellationToken = default
         )
         {
-            Dictionary<string, object?> body =
-                BuildRequestBody(systemPrompt, userPrompt);
-
             return SendAsync(
-                body,
+                BuildRequestBody(systemPrompt, userPrompt),
                 Model,
                 cancellationToken
             );
@@ -93,16 +88,8 @@ namespace AI_Assistant.AgentV2
                 ["model"] = Model,
                 ["messages"] = new object[]
                 {
-                    new
-                    {
-                        role = "system",
-                        content = systemPrompt
-                    },
-                    new
-                    {
-                        role = "user",
-                        content = userPrompt
-                    }
+                    new { role = "system", content = systemPrompt },
+                    new { role = "user", content = userPrompt }
                 },
                 ["temperature"] = 0.1
             };
@@ -114,10 +101,7 @@ namespace AI_Assistant.AgentV2
         )
         {
             request.Headers.Authorization =
-                new AuthenticationHeaderValue(
-                    "Bearer",
-                    apiKey
-                );
+                new AuthenticationHeaderValue("Bearer", apiKey);
         }
 
         protected async Task<ProviderReplyV2> SendAsync(
@@ -127,9 +111,7 @@ namespace AI_Assistant.AgentV2
         )
         {
             string? apiKey =
-                Environment.GetEnvironmentVariable(
-                    ApiKeyEnvironmentVariable
-                );
+                Environment.GetEnvironmentVariable(ApiKeyEnvironmentVariable);
 
             if (string.IsNullOrWhiteSpace(apiKey))
             {
@@ -142,18 +124,12 @@ namespace AI_Assistant.AgentV2
                 };
             }
 
-            string requestJson = JsonSerializer.Serialize(requestBody);
-
             using HttpRequestMessage request =
-                new HttpRequestMessage(
-                    HttpMethod.Post,
-                    Endpoint
-                );
+                new HttpRequestMessage(HttpMethod.Post, Endpoint);
 
             ConfigureHeaders(request, apiKey);
-
             request.Content = new StringContent(
-                requestJson,
+                JsonSerializer.Serialize(requestBody),
                 Encoding.UTF8,
                 "application/json"
             );
@@ -161,19 +137,15 @@ namespace AI_Assistant.AgentV2
             try
             {
                 using HttpResponseMessage response =
-                    await Client.SendAsync(
-                        request,
-                        cancellationToken
-                    );
+                    await Client.SendAsync(request, cancellationToken);
 
                 string responseText =
-                    await response.Content.ReadAsStringAsync(
-                        cancellationToken
-                    );
+                    await response.Content.ReadAsStringAsync(cancellationToken);
 
                 string responseModel =
-                    TryReadModel(responseText)
-                    ?? requestedModel;
+                    TryReadModel(responseText) ?? requestedModel;
+
+                int retryAfterSeconds = GetRetryAfterSeconds(response);
 
                 if (
                     TryReadProviderError(
@@ -191,6 +163,7 @@ namespace AI_Assistant.AgentV2
                         StatusCode = embeddedStatus > 0
                             ? embeddedStatus
                             : (int)HttpStatusCode.BadGateway,
+                        RetryAfterSeconds = retryAfterSeconds,
                         Error = embeddedError
                     };
                 }
@@ -203,6 +176,7 @@ namespace AI_Assistant.AgentV2
                         Provider = Name,
                         Model = responseModel,
                         StatusCode = (int)response.StatusCode,
+                        RetryAfterSeconds = retryAfterSeconds,
                         Error = string.IsNullOrWhiteSpace(responseText)
                             ? response.ReasonPhrase ?? "Provider error."
                             : responseText
@@ -221,7 +195,7 @@ namespace AI_Assistant.AgentV2
                         StatusCode = (int)HttpStatusCode.BadGateway,
                         Error =
                             "Provider returned no assistant content. Raw response: "
-                            + AgentJsonV2.Compact(responseText, 1600)
+                            + AgentJsonV2.Compact(responseText, 1200)
                     };
                 }
 
@@ -258,6 +232,37 @@ namespace AI_Assistant.AgentV2
                     Error = ex.GetType().Name + ": " + ex.Message
                 };
             }
+        }
+
+        private static int GetRetryAfterSeconds(HttpResponseMessage response)
+        {
+            RetryConditionHeaderValue? retryAfter = response.Headers.RetryAfter;
+
+            if (retryAfter?.Delta is TimeSpan delta)
+            {
+                return Math.Max(1, (int)Math.Ceiling(delta.TotalSeconds));
+            }
+
+            if (retryAfter?.Date is DateTimeOffset date)
+            {
+                return Math.Max(
+                    1,
+                    (int)Math.Ceiling((date - DateTimeOffset.UtcNow).TotalSeconds)
+                );
+            }
+
+            if (response.Headers.TryGetValues("Retry-After", out IEnumerable<string>? values))
+            {
+                foreach (string value in values)
+                {
+                    if (int.TryParse(value, out int seconds) && seconds > 0)
+                    {
+                        return seconds;
+                    }
+                }
+            }
+
+            return 0;
         }
 
         private static bool TryReadProviderError(
@@ -356,12 +361,9 @@ namespace AI_Assistant.AgentV2
                     return null;
                 }
 
-                if (content.ValueKind == JsonValueKind.String)
-                {
-                    return content.GetString();
-                }
-
-                return content.GetRawText();
+                return content.ValueKind == JsonValueKind.String
+                    ? content.GetString()
+                    : content.GetRawText();
             }
             catch
             {
@@ -376,10 +378,7 @@ namespace AI_Assistant.AgentV2
                 using JsonDocument document = JsonDocument.Parse(responseText);
 
                 if (
-                    document.RootElement.TryGetProperty(
-                        "model",
-                        out JsonElement model
-                    )
+                    document.RootElement.TryGetProperty("model", out JsonElement model)
                     && model.ValueKind == JsonValueKind.String
                 )
                 {
@@ -394,8 +393,7 @@ namespace AI_Assistant.AgentV2
         }
     }
 
-    internal sealed class MiniMaxProviderV2
-        : OpenAiCompatibleProviderV2
+    internal sealed class MiniMaxProviderV2 : OpenAiCompatibleProviderV2
     {
         public MiniMaxProviderV2()
             : base(
@@ -415,8 +413,6 @@ namespace AI_Assistant.AgentV2
         {
             Dictionary<string, object?> body =
                 base.BuildRequestBody(systemPrompt, userPrompt);
-
-            // Use the model's own recommended sampling defaults.
             body.Remove("temperature");
             return body;
         }
@@ -427,7 +423,6 @@ namespace AI_Assistant.AgentV2
         )
         {
             base.ConfigureHeaders(request, apiKey);
-
             request.Headers.TryAddWithoutValidation(
                 "X-OpenRouter-Title",
                 "AI Assistant Unity Cowork Agent V2"
@@ -435,8 +430,7 @@ namespace AI_Assistant.AgentV2
         }
     }
 
-    internal sealed class GeminiProviderV2
-        : OpenAiCompatibleProviderV2
+    internal sealed class GeminiProviderV2 : OpenAiCompatibleProviderV2
     {
         private readonly string reasoningEffort;
 
@@ -462,20 +456,14 @@ namespace AI_Assistant.AgentV2
         {
             Dictionary<string, object?> body =
                 base.BuildRequestBody(systemPrompt, userPrompt);
-
             body.Remove("temperature");
             body["reasoning_effort"] = reasoningEffort;
-
             return body;
         }
 
         private static string NormalizeReasoningEffort(string value)
         {
-            string normalized = (value ?? "")
-                .Trim()
-                .ToLowerInvariant();
-
-            return normalized switch
+            return (value ?? "").Trim().ToLowerInvariant() switch
             {
                 "low" => "low",
                 "medium" => "medium",
@@ -491,13 +479,15 @@ namespace AI_Assistant.AgentV2
         private readonly IAIProviderV2 groq;
         private readonly Action<string> activity;
 
+        private readonly Dictionary<string, DateTime> cooldownUntil =
+            new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+
         public ProviderRouterV2(Action<string> activity)
         {
             this.activity = activity;
 
             minimax = new MiniMaxProviderV2();
             gemini = new GeminiProviderV2();
-
             groq = new OpenAiCompatibleProviderV2(
                 "Groq",
                 "https://api.groq.com/openai/v1/chat/completions",
@@ -513,27 +503,23 @@ namespace AI_Assistant.AgentV2
             CancellationToken cancellationToken = default
         )
         {
-            IAIProviderV2? selected = ResolveProvider(task.ActiveProvider)
-                ?? FirstConfigured();
+            IAIProviderV2? selected =
+                ResolveProvider(task.ActiveProvider) ?? FirstAvailable();
 
             if (selected == null)
             {
-                return new ProviderReplyV2
-                {
-                    Success = false,
-                    Error =
-                        "No Agent V2 provider is configured. Set OPENROUTER_API_KEY, GEMINI_API_KEY or GROQ_API_KEY."
-                };
+                return BuildUnavailableReply();
             }
 
-            ProviderReplyV2 reply =
-                await CallProvider(
-                    task,
-                    selected,
-                    systemPrompt,
-                    userPrompt,
-                    cancellationToken
-                );
+            ProviderReplyV2 reply = await CallProvider(
+                task,
+                selected,
+                systemPrompt,
+                userPrompt,
+                cancellationToken
+            );
+
+            UpdateCooldown(reply);
 
             if (reply.Success || !ShouldFallback(reply.StatusCode))
             {
@@ -542,7 +528,7 @@ namespace AI_Assistant.AgentV2
 
             foreach (IAIProviderV2 fallback in GetFallbackOrder(selected))
             {
-                if (!fallback.IsConfigured)
+                if (!fallback.IsConfigured || IsCoolingDown(fallback.Name))
                 {
                     continue;
                 }
@@ -564,6 +550,8 @@ namespace AI_Assistant.AgentV2
                     userPrompt,
                     cancellationToken
                 );
+
+                UpdateCooldown(reply);
 
                 if (reply.Success || !ShouldFallback(reply.StatusCode))
                 {
@@ -587,46 +575,79 @@ namespace AI_Assistant.AgentV2
             task.ActiveProvider = provider.Name;
             task.ModelCalls++;
 
+            int approxInputTokens =
+                Math.Max(1, (systemPrompt.Length + userPrompt.Length + 3) / 4);
+
             activity(
                 "[V2 MODEL] "
                 + provider.Name
                 + " call "
                 + task.ModelCalls
             );
+            activity(
+                "[V2 TOKENS] "
+                + provider.Name
+                + " approx input "
+                + approxInputTokens
+                + " tokens"
+            );
 
-            ProviderReplyV2 reply =
-                await provider.CompleteAsync(
-                    systemPrompt,
-                    userPrompt,
-                    cancellationToken
-                );
+            ProviderReplyV2 reply = await provider.CompleteAsync(
+                systemPrompt,
+                userPrompt,
+                cancellationToken
+            );
 
             if (reply.Success && !string.IsNullOrWhiteSpace(reply.Model))
             {
-                activity(
-                    "[V2 MODEL] resolved "
-                    + reply.Model
-                );
+                activity("[V2 MODEL] resolved " + reply.Model);
             }
 
             return reply;
         }
 
-        private IAIProviderV2? FirstConfigured()
+        private void UpdateCooldown(ProviderReplyV2 reply)
         {
-            if (minimax.IsConfigured)
+            if (string.IsNullOrWhiteSpace(reply.Provider))
             {
-                return minimax;
+                return;
             }
 
-            if (gemini.IsConfigured)
+            if (reply.Success)
             {
-                return gemini;
+                cooldownUntil.Remove(reply.Provider);
+                return;
             }
 
-            if (groq.IsConfigured)
+            if (reply.StatusCode != 429)
             {
-                return groq;
+                return;
+            }
+
+            int seconds = reply.RetryAfterSeconds > 0
+                ? Math.Clamp(reply.RetryAfterSeconds, 1, 86400)
+                : 90;
+
+            cooldownUntil[reply.Provider] =
+                DateTime.UtcNow.AddSeconds(seconds);
+
+            activity(
+                "[V2 RATE LIMIT] "
+                + reply.Provider
+                + " cooling down for "
+                + seconds
+                + "s; no blind retries"
+            );
+        }
+
+        private IAIProviderV2? FirstAvailable()
+        {
+            foreach (IAIProviderV2 provider in ProviderOrder())
+            {
+                if (provider.IsConfigured && !IsCoolingDown(provider.Name))
+                {
+                    return provider;
+                }
             }
 
             return null;
@@ -634,37 +655,16 @@ namespace AI_Assistant.AgentV2
 
         private IAIProviderV2? ResolveProvider(string name)
         {
-            if (
-                name.Equals(
-                    "MiniMax",
-                    StringComparison.OrdinalIgnoreCase
-                )
-                && minimax.IsConfigured
-            )
+            foreach (IAIProviderV2 provider in ProviderOrder())
             {
-                return minimax;
-            }
-
-            if (
-                name.Equals(
-                    "Gemini",
-                    StringComparison.OrdinalIgnoreCase
+                if (
+                    provider.Name.Equals(name, StringComparison.OrdinalIgnoreCase)
+                    && provider.IsConfigured
+                    && !IsCoolingDown(provider.Name)
                 )
-                && gemini.IsConfigured
-            )
-            {
-                return gemini;
-            }
-
-            if (
-                name.Equals(
-                    "Groq",
-                    StringComparison.OrdinalIgnoreCase
-                )
-                && groq.IsConfigured
-            )
-            {
-                return groq;
+                {
+                    return provider;
+                }
             }
 
             return null;
@@ -674,18 +674,103 @@ namespace AI_Assistant.AgentV2
             IAIProviderV2 selected
         )
         {
-            if (selected.Name.Equals("MiniMax", StringComparison.OrdinalIgnoreCase))
+            IAIProviderV2[] order = ProviderOrder();
+            int selectedIndex = -1;
+
+            for (int i = 0; i < order.Length; i++)
             {
-                yield return gemini;
-                yield return groq;
+                if (
+                    order[i].Name.Equals(
+                        selected.Name,
+                        StringComparison.OrdinalIgnoreCase
+                    )
+                )
+                {
+                    selectedIndex = i;
+                    break;
+                }
+            }
+
+            if (selectedIndex < 0)
+            {
                 yield break;
             }
 
-            if (selected.Name.Equals("Gemini", StringComparison.OrdinalIgnoreCase))
+            for (int i = selectedIndex + 1; i < order.Length; i++)
             {
-                yield return groq;
-                yield break;
+                yield return order[i];
             }
+        }
+
+        private IAIProviderV2[] ProviderOrder()
+        {
+            return new[] { minimax, gemini, groq };
+        }
+
+        private bool IsCoolingDown(string providerName)
+        {
+            if (!cooldownUntil.TryGetValue(providerName, out DateTime until))
+            {
+                return false;
+            }
+
+            if (DateTime.UtcNow >= until)
+            {
+                cooldownUntil.Remove(providerName);
+                return false;
+            }
+
+            return true;
+        }
+
+        private ProviderReplyV2 BuildUnavailableReply()
+        {
+            bool anyConfigured = false;
+            int shortestWait = int.MaxValue;
+
+            foreach (IAIProviderV2 provider in ProviderOrder())
+            {
+                if (!provider.IsConfigured)
+                {
+                    continue;
+                }
+
+                anyConfigured = true;
+
+                if (cooldownUntil.TryGetValue(provider.Name, out DateTime until))
+                {
+                    int wait = Math.Max(
+                        1,
+                        (int)Math.Ceiling((until - DateTime.UtcNow).TotalSeconds)
+                    );
+                    shortestWait = Math.Min(shortestWait, wait);
+                }
+            }
+
+            if (!anyConfigured)
+            {
+                return new ProviderReplyV2
+                {
+                    Success = false,
+                    Error =
+                        "No Agent V2 provider is configured. Set OPENROUTER_API_KEY, GEMINI_API_KEY or GROQ_API_KEY."
+                };
+            }
+
+            int retry = shortestWait == int.MaxValue ? 90 : shortestWait;
+
+            return new ProviderReplyV2
+            {
+                Success = false,
+                Provider = "rate-limit-guard",
+                StatusCode = 429,
+                RetryAfterSeconds = retry,
+                Error =
+                    "All configured free providers are temporarily rate-limited. "
+                    + "The host will not waste requests during cooldown. Retry in about "
+                    + retry
+                    + " seconds."
+            };
         }
 
         private static bool ShouldFallback(int statusCode)
