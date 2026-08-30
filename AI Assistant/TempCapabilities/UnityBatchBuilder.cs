@@ -1,6 +1,7 @@
 ﻿using AI_Assistant.Tools;
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Text.Json;
 
 namespace AI_Assistant.TempCapabilities
@@ -12,15 +13,14 @@ namespace AI_Assistant.TempCapabilities
         private readonly List<Dictionary<string, object?>> operations =
             new List<Dictionary<string, object?>>();
 
-        // Pamti pune putanje objekata napravljenih u trenutnom batchu.
-        // Primjer: TempDllCube -> TempDllRoot/TempDllCube
         private readonly Dictionary<string, string> createdObjectPaths =
             new Dictionary<string, string>(StringComparer.Ordinal);
 
-        // Ako dva novonapravljena objekta imaju isto kratko ime,
-        // ne pokušavamo pogoditi koji je pravi.
         private readonly HashSet<string> ambiguousCreatedNames =
             new HashSet<string>(StringComparer.Ordinal);
+
+        private string? liveHierarchyJson;
+        private Dictionary<string, HashSet<string>>? liveComponentsByPath;
 
         private bool stopOnFailure = true;
         private bool saveScene;
@@ -31,10 +31,6 @@ namespace AI_Assistant.TempCapabilities
         {
             this.unity = unity;
         }
-
-        // ============================================================
-        // SETTINGS
-        // ============================================================
 
         public UnityBatchBuilder StopOnFailure(
             bool value = true
@@ -52,10 +48,6 @@ namespace AI_Assistant.TempCapabilities
             return this;
         }
 
-        // ============================================================
-        // GAMEOBJECT
-        // ============================================================
-
         public UnityBatchBuilder CreateGameObject(
             string name,
             string parentPath = ""
@@ -64,14 +56,24 @@ namespace AI_Assistant.TempCapabilities
             string resolvedParentPath =
                 ResolveObjectPath(parentPath);
 
-            operations.Add(
-                new Dictionary<string, object?>
-                {
-                    ["operation"] = "create_gameobject",
-                    ["name"] = name,
-                    ["parentPath"] = resolvedParentPath
-                }
+            string fullPath = BuildPath(
+                name,
+                resolvedParentPath
             );
+
+            // Cowork/idempotency rule: a retry must reuse an object that the
+            // previous attempt already created instead of stacking duplicates.
+            if (!ObjectExistsLive(fullPath))
+            {
+                operations.Add(
+                    new Dictionary<string, object?>
+                    {
+                        ["operation"] = "create_gameobject",
+                        ["name"] = name,
+                        ["parentPath"] = resolvedParentPath
+                    }
+                );
+            }
 
             RememberCreatedObject(
                 name,
@@ -90,15 +92,23 @@ namespace AI_Assistant.TempCapabilities
             string resolvedParentPath =
                 ResolveObjectPath(parentPath);
 
-            operations.Add(
-                new Dictionary<string, object?>
-                {
-                    ["operation"] = "create_primitive",
-                    ["primitiveType"] = primitiveType,
-                    ["name"] = name,
-                    ["parentPath"] = resolvedParentPath
-                }
+            string fullPath = BuildPath(
+                name,
+                resolvedParentPath
             );
+
+            if (!ObjectExistsLive(fullPath))
+            {
+                operations.Add(
+                    new Dictionary<string, object?>
+                    {
+                        ["operation"] = "create_primitive",
+                        ["primitiveType"] = primitiveType,
+                        ["name"] = name,
+                        ["parentPath"] = resolvedParentPath
+                    }
+                );
+            }
 
             RememberCreatedObject(
                 name,
@@ -174,10 +184,6 @@ namespace AI_Assistant.TempCapabilities
             return this;
         }
 
-        // ============================================================
-        // TRANSFORM
-        // ============================================================
-
         public UnityBatchBuilder SetPosition(
             string objectPath,
             float x,
@@ -241,23 +247,24 @@ namespace AI_Assistant.TempCapabilities
             return this;
         }
 
-        // ============================================================
-        // COMPONENTS
-        // ============================================================
-
         public UnityBatchBuilder AddComponent(
             string objectPath,
             string componentType
         )
         {
-            operations.Add(
-                new Dictionary<string, object?>
-                {
-                    ["operation"] = "add_component",
-                    ["objectPath"] = ResolveObjectPath(objectPath),
-                    ["componentType"] = componentType
-                }
-            );
+            string resolvedPath = ResolveObjectPath(objectPath);
+
+            if (!ComponentExistsLive(resolvedPath, componentType))
+            {
+                operations.Add(
+                    new Dictionary<string, object?>
+                    {
+                        ["operation"] = "add_component",
+                        ["objectPath"] = resolvedPath,
+                        ["componentType"] = componentType
+                    }
+                );
+            }
 
             return this;
         }
@@ -278,10 +285,6 @@ namespace AI_Assistant.TempCapabilities
 
             return this;
         }
-
-        // ============================================================
-        // SERIALIZED PROPERTIES
-        // ============================================================
 
         public UnityBatchBuilder SetInt(
             string objectPath,
@@ -453,10 +456,6 @@ namespace AI_Assistant.TempCapabilities
             return this;
         }
 
-        // ============================================================
-        // BATCH PATH RESOLUTION
-        // ============================================================
-
         private string ResolveObjectPath(
             string objectPath
         )
@@ -492,10 +491,7 @@ namespace AI_Assistant.TempCapabilities
                 return;
             }
 
-            string fullPath =
-                string.IsNullOrWhiteSpace(parentPath)
-                    ? name
-                    : parentPath.TrimEnd('/') + "/" + name;
+            string fullPath = BuildPath(name, parentPath);
 
             if (
                 createdObjectPaths.TryGetValue(
@@ -517,9 +513,167 @@ namespace AI_Assistant.TempCapabilities
             createdObjectPaths[name] = fullPath;
         }
 
-        // ============================================================
-        // SCRIPT
-        // ============================================================
+        private static string BuildPath(
+            string name,
+            string parentPath
+        )
+        {
+            return string.IsNullOrWhiteSpace(parentPath)
+                ? name
+                : parentPath.TrimEnd('/') + "/" + name;
+        }
+
+        private bool ObjectExistsLive(string fullPath)
+        {
+            EnsureLiveHierarchyIndex();
+
+            return liveComponentsByPath != null
+                && liveComponentsByPath.ContainsKey(fullPath);
+        }
+
+        private bool ComponentExistsLive(
+            string objectPath,
+            string componentType
+        )
+        {
+            EnsureLiveHierarchyIndex();
+
+            if (
+                liveComponentsByPath == null
+                || !liveComponentsByPath.TryGetValue(
+                    objectPath,
+                    out HashSet<string>? components
+                )
+            )
+            {
+                return false;
+            }
+
+            string requested = (componentType ?? "").Trim();
+
+            return components.Any(actual =>
+                string.Equals(
+                    actual,
+                    requested,
+                    StringComparison.OrdinalIgnoreCase
+                )
+                || actual.EndsWith(
+                    "." + requested,
+                    StringComparison.OrdinalIgnoreCase
+                )
+            );
+        }
+
+        private void EnsureLiveHierarchyIndex()
+        {
+            if (liveComponentsByPath != null)
+            {
+                return;
+            }
+
+            liveComponentsByPath =
+                new Dictionary<string, HashSet<string>>(
+                    StringComparer.OrdinalIgnoreCase
+                );
+
+            try
+            {
+                liveHierarchyJson = unity.GetSceneHierarchy();
+
+                using JsonDocument document =
+                    JsonDocument.Parse(liveHierarchyJson);
+
+                if (
+                    document.RootElement.TryGetProperty(
+                        "roots",
+                        out JsonElement roots
+                    )
+                    && roots.ValueKind == JsonValueKind.Array
+                )
+                {
+                    foreach (JsonElement root in roots.EnumerateArray())
+                    {
+                        IndexHierarchyNode(root);
+                    }
+                }
+            }
+            catch
+            {
+                // If inspection is temporarily unavailable, do not block the
+                // batch. The Unity server still performs its normal validation.
+            }
+        }
+
+        private void IndexHierarchyNode(JsonElement node)
+        {
+            if (liveComponentsByPath == null)
+            {
+                return;
+            }
+
+            string path =
+                node.TryGetProperty(
+                    "hierarchyPath",
+                    out JsonElement pathElement
+                )
+                && pathElement.ValueKind == JsonValueKind.String
+                    ? pathElement.GetString() ?? ""
+                    : "";
+
+            if (!string.IsNullOrWhiteSpace(path))
+            {
+                HashSet<string> components =
+                    new HashSet<string>(
+                        StringComparer.OrdinalIgnoreCase
+                    );
+
+                if (
+                    node.TryGetProperty(
+                        "components",
+                        out JsonElement componentArray
+                    )
+                    && componentArray.ValueKind == JsonValueKind.Array
+                )
+                {
+                    foreach (
+                        JsonElement component
+                        in componentArray.EnumerateArray()
+                    )
+                    {
+                        if (component.ValueKind == JsonValueKind.String)
+                        {
+                            string? value = component.GetString();
+
+                            if (!string.IsNullOrWhiteSpace(value))
+                            {
+                                components.Add(value);
+                            }
+                        }
+                    }
+                }
+
+                // Duplicate hierarchy names are possible in Unity. For the
+                // idempotency guard it is enough to know that the path exists.
+                if (!liveComponentsByPath.ContainsKey(path))
+                {
+                    liveComponentsByPath[path] = components;
+                }
+            }
+
+            if (
+                node.TryGetProperty(
+                    "children",
+                    out JsonElement children
+                )
+                && children.ValueKind == JsonValueKind.Array
+            )
+            {
+                foreach (JsonElement child in children.EnumerateArray())
+                {
+                    IndexHierarchyNode(child);
+                }
+            }
+        }
 
         public UnityBatchBuilder CreateScript(
             string assetPath,
@@ -538,16 +692,12 @@ namespace AI_Assistant.TempCapabilities
             return this;
         }
 
-        // ============================================================
-        // EXECUTE
-        // ============================================================
-
         public string Execute()
         {
             if (operations.Count == 0)
             {
                 return
-                    "{\"success\":false,\"message\":\"Batch contains no operations.\"}";
+                    "{\"success\":true,\"message\":\"Batch already satisfied by live Unity state.\",\"results\":[]}";
             }
 
             string json =
