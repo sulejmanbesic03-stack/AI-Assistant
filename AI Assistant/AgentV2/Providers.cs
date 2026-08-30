@@ -308,22 +308,38 @@ namespace AI_Assistant.AgentV2
         : OpenAiCompatibleProviderV2
     {
         private readonly string[] fallbackModels;
+        private readonly string reasoningEffort;
 
         public OpenRouterProviderV2()
             : base(
                 "OpenRouter",
                 "https://openrouter.ai/api/v1/chat/completions",
                 Environment.GetEnvironmentVariable("OPENROUTER_MODEL")
-                    ?? "openrouter/auto",
+                    ?? "z-ai/glm-5.3",
                 "OPENROUTER_API_KEY",
                 180
             )
         {
-            fallbackModels = ParseFallbackModels(
+            reasoningEffort =
+                NormalizeReasoningEffort(
+                    Environment.GetEnvironmentVariable(
+                        "OPENROUTER_REASONING_EFFORT"
+                    )
+                    ?? "high"
+                );
+
+            string? configuredFallbacks =
                 Environment.GetEnvironmentVariable(
                     "OPENROUTER_FALLBACK_MODELS"
-                )
-            );
+                );
+
+            fallbackModels = string.IsNullOrWhiteSpace(configuredFallbacks)
+                ? new[]
+                {
+                    "z-ai/glm-5.2",
+                    "z-ai/glm-5.3-flash"
+                }
+                : ParseFallbackModels(configuredFallbacks);
         }
 
         protected override Dictionary<string, object?> BuildRequestBody(
@@ -337,12 +353,25 @@ namespace AI_Assistant.AgentV2
                     userPrompt
                 );
 
-            // OpenRouter supports model-level fallback through the `models`
-            // array. Provider-level failover is handled by OpenRouter itself.
+            // GLM 5.3 is the primary project-level coding/reasoning model.
+            // OpenRouter first performs provider failover for that same model,
+            // then walks this model fallback chain if necessary.
             if (fallbackModels.Length > 0)
             {
                 body["models"] = fallbackModels;
             }
+
+            body["reasoning"] = new
+            {
+                effort = reasoningEffort
+            };
+
+            // Agent V2 consumes a strict implementation object rather than
+            // free-form prose. OpenRouter + GLM support structured JSON output.
+            body["response_format"] = new
+            {
+                type = "json_object"
+            };
 
             return body;
         }
@@ -356,8 +385,23 @@ namespace AI_Assistant.AgentV2
 
             request.Headers.TryAddWithoutValidation(
                 "X-OpenRouter-Title",
-                "AI Assistant Unity Agent V2"
+                "AI Assistant Unity Cowork Agent V2"
             );
+        }
+
+        private static string NormalizeReasoningEffort(string value)
+        {
+            string normalized = (value ?? "")
+                .Trim()
+                .ToLowerInvariant();
+
+            return normalized switch
+            {
+                "low" => "low",
+                "max" => "max",
+                "xhigh" => "max",
+                _ => "high"
+            };
         }
 
         private static string[] ParseFallbackModels(string? value)
