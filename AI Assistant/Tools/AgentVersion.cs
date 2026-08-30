@@ -6,7 +6,7 @@ namespace AI_Assistant.Tools
     public static class AgentVersion
     {
         public const string Version =
-            "0.4.7-gemini-timeout-preview";
+            "0.5.0-agent-v2";
 
 
         // Compile-time handshake. A new version label cannot compile
