@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.Linq;
 using System.Net;
 using System.Net.Http;
 using System.Net.Http.Headers;
@@ -395,6 +394,47 @@ namespace AI_Assistant.AgentV2
         }
     }
 
+    internal sealed class MiniMaxProviderV2
+        : OpenAiCompatibleProviderV2
+    {
+        public MiniMaxProviderV2()
+            : base(
+                "MiniMax",
+                "https://openrouter.ai/api/v1/chat/completions",
+                "minimax/minimax-m3:free",
+                "OPENROUTER_API_KEY",
+                180
+            )
+        {
+        }
+
+        protected override Dictionary<string, object?> BuildRequestBody(
+            string systemPrompt,
+            string userPrompt
+        )
+        {
+            Dictionary<string, object?> body =
+                base.BuildRequestBody(systemPrompt, userPrompt);
+
+            // Use the model's own recommended sampling defaults.
+            body.Remove("temperature");
+            return body;
+        }
+
+        protected override void ConfigureHeaders(
+            HttpRequestMessage request,
+            string apiKey
+        )
+        {
+            base.ConfigureHeaders(request, apiKey);
+
+            request.Headers.TryAddWithoutValidation(
+                "X-OpenRouter-Title",
+                "AI Assistant Unity Cowork Agent V2"
+            );
+        }
+    }
+
     internal sealed class GeminiProviderV2
         : OpenAiCompatibleProviderV2
     {
@@ -444,166 +484,10 @@ namespace AI_Assistant.AgentV2
         }
     }
 
-    internal sealed class OpenRouterProviderV2
-        : OpenAiCompatibleProviderV2
-    {
-        private const string DefaultPrimaryModel =
-            "z-ai/glm-5.2:free";
-
-        private static readonly string[] DefaultFallbackModels =
-        {
-            "minimax/minimax-m3:free",
-            "nvidia/nemotron-3-ultra-550b-a55b:free"
-        };
-
-        private readonly string[] fallbackModels;
-        private readonly string reasoningEffort;
-
-        public OpenRouterProviderV2()
-            : base(
-                "OpenRouter",
-                "https://openrouter.ai/api/v1/chat/completions",
-                ResolveFreeModel(
-                    Environment.GetEnvironmentVariable("OPENROUTER_MODEL"),
-                    DefaultPrimaryModel
-                ),
-                "OPENROUTER_API_KEY",
-                180
-            )
-        {
-            reasoningEffort =
-                NormalizeReasoningEffort(
-                    Environment.GetEnvironmentVariable(
-                        "OPENROUTER_REASONING_EFFORT"
-                    )
-                    ?? "high"
-                );
-
-            string? configuredFallbacks =
-                Environment.GetEnvironmentVariable(
-                    "OPENROUTER_FALLBACK_MODELS"
-                );
-
-            string[] configuredFreeFallbacks =
-                ParseFallbackModels(configuredFallbacks);
-
-            fallbackModels = configuredFreeFallbacks.Length > 0
-                ? configuredFreeFallbacks
-                : DefaultFallbackModels;
-        }
-
-        protected override Dictionary<string, object?> BuildRequestBody(
-            string systemPrompt,
-            string userPrompt
-        )
-        {
-            Dictionary<string, object?> body =
-                base.BuildRequestBody(systemPrompt, userPrompt);
-
-            body.Remove("temperature");
-
-            if (fallbackModels.Length > 0)
-            {
-                body["models"] = fallbackModels;
-            }
-
-            body["reasoning"] = new
-            {
-                effort = reasoningEffort
-            };
-
-            return body;
-        }
-
-        protected override void ConfigureHeaders(
-            HttpRequestMessage request,
-            string apiKey
-        )
-        {
-            base.ConfigureHeaders(request, apiKey);
-
-            request.Headers.TryAddWithoutValidation(
-                "X-OpenRouter-Title",
-                "AI Assistant Unity Cowork Agent V2"
-            );
-        }
-
-        private static string ResolveFreeModel(
-            string? configuredModel,
-            string fallbackModel
-        )
-        {
-            string value = (configuredModel ?? "").Trim();
-
-            return IsFreeOpenRouterModel(value)
-                ? value
-                : fallbackModel;
-        }
-
-        private static bool IsFreeOpenRouterModel(string? model)
-        {
-            if (string.IsNullOrWhiteSpace(model))
-            {
-                return false;
-            }
-
-            string value = model.Trim();
-
-            return value.EndsWith(
-                    ":free",
-                    StringComparison.OrdinalIgnoreCase
-                )
-                || value.Equals(
-                    "openrouter/free",
-                    StringComparison.OrdinalIgnoreCase
-                );
-        }
-
-        private static string NormalizeReasoningEffort(string value)
-        {
-            string normalized = (value ?? "")
-                .Trim()
-                .ToLowerInvariant();
-
-            return normalized switch
-            {
-                "low" => "low",
-                "max" => "max",
-                "xhigh" => "max",
-                _ => "high"
-            };
-        }
-
-        private static string[] ParseFallbackModels(string? value)
-        {
-            if (string.IsNullOrWhiteSpace(value))
-            {
-                return Array.Empty<string>();
-            }
-
-            return value
-                .Split(
-                    new[] { ',', ';' },
-                    StringSplitOptions.RemoveEmptyEntries
-                )
-                .Select(item => item.Trim())
-                .Where(IsFreeOpenRouterModel)
-                .Where(item =>
-                    !item.Equals(
-                        DefaultPrimaryModel,
-                        StringComparison.OrdinalIgnoreCase
-                    )
-                )
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Take(6)
-                .ToArray();
-        }
-    }
-
     internal sealed class ProviderRouterV2
     {
+        private readonly IAIProviderV2 minimax;
         private readonly IAIProviderV2 gemini;
-        private readonly IAIProviderV2 openRouter;
         private readonly IAIProviderV2 groq;
         private readonly Action<string> activity;
 
@@ -611,8 +495,8 @@ namespace AI_Assistant.AgentV2
         {
             this.activity = activity;
 
+            minimax = new MiniMaxProviderV2();
             gemini = new GeminiProviderV2();
-            openRouter = new OpenRouterProviderV2();
 
             groq = new OpenAiCompatibleProviderV2(
                 "Groq",
@@ -629,12 +513,8 @@ namespace AI_Assistant.AgentV2
             CancellationToken cancellationToken = default
         )
         {
-            IAIProviderV2? selected = ResolveProvider(task.ActiveProvider);
-
-            if (selected == null)
-            {
-                selected = FirstConfigured();
-            }
+            IAIProviderV2? selected = ResolveProvider(task.ActiveProvider)
+                ?? FirstConfigured();
 
             if (selected == null)
             {
@@ -642,7 +522,7 @@ namespace AI_Assistant.AgentV2
                 {
                     Success = false,
                     Error =
-                        "No Agent V2 provider is configured. Set GEMINI_API_KEY, OPENROUTER_API_KEY or GROQ_API_KEY."
+                        "No Agent V2 provider is configured. Set OPENROUTER_API_KEY, GEMINI_API_KEY or GROQ_API_KEY."
                 };
             }
 
@@ -676,8 +556,6 @@ namespace AI_Assistant.AgentV2
                     + reply.StatusCode
                     + ")"
                 );
-
-                task.ActiveProvider = fallback.Name;
 
                 reply = await CallProvider(
                     task,
@@ -736,14 +614,14 @@ namespace AI_Assistant.AgentV2
 
         private IAIProviderV2? FirstConfigured()
         {
+            if (minimax.IsConfigured)
+            {
+                return minimax;
+            }
+
             if (gemini.IsConfigured)
             {
                 return gemini;
-            }
-
-            if (openRouter.IsConfigured)
-            {
-                return openRouter;
             }
 
             if (groq.IsConfigured)
@@ -758,6 +636,17 @@ namespace AI_Assistant.AgentV2
         {
             if (
                 name.Equals(
+                    "MiniMax",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                && minimax.IsConfigured
+            )
+            {
+                return minimax;
+            }
+
+            if (
+                name.Equals(
                     "Gemini",
                     StringComparison.OrdinalIgnoreCase
                 )
@@ -765,17 +654,6 @@ namespace AI_Assistant.AgentV2
             )
             {
                 return gemini;
-            }
-
-            if (
-                name.Equals(
-                    "OpenRouter",
-                    StringComparison.OrdinalIgnoreCase
-                )
-                && openRouter.IsConfigured
-            )
-            {
-                return openRouter;
             }
 
             if (
@@ -796,31 +674,17 @@ namespace AI_Assistant.AgentV2
             IAIProviderV2 selected
         )
         {
-            IAIProviderV2[] order =
+            if (selected.Name.Equals("MiniMax", StringComparison.OrdinalIgnoreCase))
             {
-                gemini,
-                openRouter,
-                groq
-            };
-
-            int selectedIndex = Array.FindIndex(
-                order,
-                item => item.Name.Equals(
-                    selected.Name,
-                    StringComparison.OrdinalIgnoreCase
-                )
-            );
-
-            if (selectedIndex < 0)
-            {
-                selectedIndex = 0;
+                yield return gemini;
+                yield return groq;
+                yield break;
             }
 
-            for (int offset = 1; offset < order.Length; offset++)
+            if (selected.Name.Equals("Gemini", StringComparison.OrdinalIgnoreCase))
             {
-                yield return order[
-                    (selectedIndex + offset) % order.Length
-                ];
+                yield return groq;
+                yield break;
             }
         }
 
@@ -828,7 +692,11 @@ namespace AI_Assistant.AgentV2
         {
             return
                 statusCode == 0
+                || statusCode == 400
+                || statusCode == 404
                 || statusCode == 408
+                || statusCode == 409
+                || statusCode == 422
                 || statusCode == 429
                 || statusCode == 500
                 || statusCode == 502
