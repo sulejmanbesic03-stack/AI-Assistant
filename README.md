@@ -18,31 +18,35 @@ Unity engineering requests now use a Cowork-style execution kernel:
 
 The previous AIIntegration path is retained for compatibility with non-Unity workflows.
 
-## OpenRouter
+## Free model routing
 
-Set the key as a user environment variable on Windows:
+Set the OpenRouter key as a user environment variable on Windows:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("OPENROUTER_API_KEY","YOUR_KEY","User")
 ```
 
-Default Unity Agent V2 model routing:
+Default Unity Agent V2 routing is intentionally free-only:
 
-- Main: `z-ai/glm-5.3`
-- Model fallback 1: `z-ai/glm-5.2`
-- Model fallback 2: `z-ai/glm-5.3-flash`
-- Direct provider fallback: Gemini, then Groq when their keys are configured
+- Main OpenRouter model: `z-ai/glm-5.2:free`
+- OpenRouter model fallback: `nvidia/nemotron-3-ultra-550b-a55b:free`
+- Direct provider fallback: `gemini-3.6-flash` when `GEMINI_API_KEY` is configured
+- Final direct provider fallback: `openai/gpt-oss-120b` on Groq when `GROQ_API_KEY` is configured
 - Default OpenRouter reasoning effort: `high`
 
-Optional overrides:
+The OpenRouter adapter accepts only `:free` model overrides (or `openrouter/free`). If `OPENROUTER_MODEL` still contains an older paid model such as `z-ai/glm-5.3`, Agent V2 ignores it and falls back to `z-ai/glm-5.2:free`.
+
+Optional free-only overrides:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("OPENROUTER_MODEL","z-ai/glm-5.3","User")
+[Environment]::SetEnvironmentVariable("OPENROUTER_MODEL","z-ai/glm-5.2:free","User")
 [Environment]::SetEnvironmentVariable("OPENROUTER_REASONING_EFFORT","high","User")
-[Environment]::SetEnvironmentVariable("OPENROUTER_FALLBACK_MODELS","z-ai/glm-5.2,z-ai/glm-5.3-flash","User")
+[Environment]::SetEnvironmentVariable("OPENROUTER_FALLBACK_MODELS","nvidia/nemotron-3-ultra-550b-a55b:free","User")
 ```
 
 Restart the AI Assistant after changing user environment variables.
+
+Important: Gemini and Groq have free account tiers, but billing/account state is controlled by those providers. The project selects their free-tier-supported models; keep those provider accounts on their free plans if zero spend is required.
 
 ## Validation
 
