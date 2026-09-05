@@ -1,56 +1,91 @@
-# AI-Assistant
+# AI Assistant · Cowork SHIP V1
 
-An autonomous AI development assistant integrating Unity engineering workflows with provider-routed reasoning models.
+A local Windows .NET 8/WPF development agent that routes Unity and Blender work through separate controlled execution domains.
 
-## Unity Cowork Agent V2
+Current SHIP candidate: **0.7.1-cowork-ship-v1** on branch `beta/ship-v1`.
 
-Unity engineering requests use a Cowork-style execution kernel:
+## Runtime domains
 
-1. Inspect the live Unity project.
-2. Design the smallest safe implementation.
-3. Prefer persistent scripts and deterministic Unity actions.
-4. Reuse known capabilities when available.
-5. Use a generated dynamic Unity capability only as a RunCommand-style escape hatch.
-6. Execute locally through the Unity bridge.
-7. Observe the post-attempt project state and console.
-8. Correct from fresh state instead of blindly retrying the same plan.
-9. Reject duplicate failed plans and request a fresh delta instead of dead-ending.
-10. Resume failed tasks with a new live inspect cycle so partial Unity state is never assumed away.
+### Unity Cowork Agent V2
 
-The Unity batch bridge is transactional/idempotent: failed deterministic batches roll back through Unity Undo, while create operations reuse an already-existing exact hierarchy path instead of creating duplicate objects.
+Unity requests use an inspect -> design -> execute -> observe -> correct loop. Persistent gameplay code is written as normal MonoBehaviour scripts, normal scene work uses deterministic bridge actions, failed batches are transactional/idempotent, and correction passes use fresh Unity state instead of blind retries.
 
-The previous AIIntegration path is retained for compatibility with non-Unity workflows.
+Bridge responses are interpreted semantically, so harmless JSON fields such as `error: null` or `errors: []` do not create false task failures.
 
-## Free-first model routing
+### Controlled Blender Agent V2
 
-Default Unity Agent V2 model/provider routing is deliberately simple:
+Blender requests use a controlled headless pipeline:
 
-1. **MiniMax M3 Free** — `minimax/minimax-m3:free` through OpenRouter. This is the main model.
-2. **Gemini 3.7 Flash** — `gemini-3.7-flash` through the direct Gemini API, using `high` reasoning by default.
-3. **Groq GPT-OSS-120B** — `openai/gpt-oss-120b` through the direct Groq API as the final fallback.
+1. Probe the installed Blender version.
+2. Ask a free-first model for version-compatible scene-construction Python.
+3. Safety-scan generated code.
+4. Run Blender with `--background --factory-startup`.
+5. Host code saves `.blend` and exports FBX/GLB.
+6. Capture Python traceback/output and verify both expected files.
+7. If the first run fails, perform one bounded repair pass using the failed script + Blender log.
+8. Optionally copy the exported model to `Assets/AI_Generated/Models` in the configured Unity project.
 
-GLM and Nemotron are not part of the default route.
+Blender **3.6 LTS and Blender 4.x** are supported targets.
 
-The provider adapter detects gateway responses that arrive as HTTP 200 with a top-level JSON `error` object and converts them into real provider failures so fallback can continue automatically.
+## Free-first provider routing
 
-### Environment keys
+Initial implementation passes:
+
+1. OpenRouter free router (`openrouter/free`)
+2. Gemini (`gemini-3.7-flash` by default)
+3. Groq (`openai/gpt-oss-120b` by default)
+
+Correction/repair passes prefer Groq -> Gemini -> OpenRouter. Rate-limit cooldowns are remembered and blind 429 retries are blocked.
+
+Model IDs can be overridden with environment variables.
+
+## Required environment keys
+
+At least one provider key must be configured; all three are recommended for fallback coverage:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("OPENROUTER_API_KEY","YOUR_KEY","User")
-[Environment]::SetEnvironmentVariable("GEMINI_API_KEY","YOUR_KEY","User")
-[Environment]::SetEnvironmentVariable("GROQ_API_KEY","YOUR_KEY","User")
+setx OPENROUTER_API_KEY "your-key"
+setx GEMINI_API_KEY "your-key"
+setx GROQ_API_KEY "your-key"
 ```
 
-Optional Gemini reasoning setting:
+Optional model overrides:
 
 ```powershell
-[Environment]::SetEnvironmentVariable("GEMINI_REASONING_EFFORT","high","User")
+setx OPENROUTER_MODEL "openrouter/free"
+setx GEMINI_MODEL "gemini-3.7-flash"
+setx GROQ_MODEL "openai/gpt-oss-120b"
+setx GEMINI_REASONING_EFFORT "high"
 ```
 
 Restart AI Assistant after changing user environment variables.
 
-MiniMax is pinned to its OpenRouter `:free` model. Gemini and Groq are used through their direct provider APIs; keep those provider projects/accounts on free tiers if zero spend is required.
+## App settings
+
+Open **Settings** in the WPF app and configure:
+
+- Unity project root: local `AIIntegrationProject` clone on `beta/ship-v1`
+- Blender executable, for example `C:\Program Files\Blender Foundation\Blender 3.6\blender.exe`
+- Blender workspace, default `C:\BlenderProjects`
+
+The app stores runtime settings in `%LOCALAPPDATA%\AI Assistant\settings.json`. API keys remain environment variables and are not stored in that file.
+
+## Commands
+
+```text
+/agent <Unity implementation or repair request>
+/plan <Unity inspect/plan-only request>
+/blender <3D asset request>
+```
+
+Destructive/high-impact work is held behind the explicit `APPROVE` / `CANCEL` risk gate.
+
+## UI behavior
+
+The conversation shows user prompts and final assistant results. Internal model/tool activity does **not** create chat bubbles; the current operation is shown in the status area and Live Inspector telemetry instead.
 
 ## Validation
 
-GitHub Actions builds the Windows .NET 8 project on every push to `main`.
+`.github/workflows/beta-build.yml` restores and builds the Windows .NET 8 project on every push to `beta/ship-v1`.
+
+See `BETA_RELEASE.md` for the full SHIP test matrix and known boundaries.
