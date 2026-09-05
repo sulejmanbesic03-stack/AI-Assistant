@@ -1,4 +1,6 @@
 using AI_Assistant.AgentV2;
+using AI_Assistant.Blender;
+using AI_Assistant.Runtime;
 using AI_Assistant.TempCapabilities;
 using AI_Assistant.Tools;
 
@@ -10,23 +12,22 @@ namespace AI_Assistant.AI
 {
     /// <summary>
     /// Top-level runtime router.
-    /// Unity engineering requests go through the Cowork-style Agent V2.
-    /// The legacy AIIntegration remains available for chat, filesystem and
-    /// self-development workflows that have not yet moved to the V2 kernel.
+    /// Unity engineering requests go through Cowork Agent V2.
+    /// Blender modeling requests go through the controlled headless Blender agent.
+    /// Legacy AIIntegration remains available for compatibility workflows.
     /// </summary>
     public sealed class AssistantRuntime
     {
         private readonly AIIntegration legacy;
         private readonly AgentOrchestratorV2 agentV2;
+        private readonly BlenderAgentV2 blenderV2;
+        private readonly RuntimeSettings settings;
 
-        // Recovery anchor for Unity continuations. A Unity domain reload or a
-        // no-mutation response can leave the V2 task marked non-resumable even
-        // though the user still means "continue the Unity task". In that case
-        // we replay the original V2 goal through a fresh inspect instead of
-        // accidentally routing the bare word "nastavi" into legacy V1.
         private string lastUnityV2Goal = "";
 
         public event Action<string>? Activity;
+
+        public RuntimeSettings Settings => settings;
 
         public AssistantRuntime(
             List<string> allowedRoots,
@@ -35,6 +36,9 @@ namespace AI_Assistant.AI
             string updaterProjectPath
         )
         {
+            settings = RuntimeSettings.Load();
+            settings.ApplyToProcessEnvironment();
+
             legacy = new AIIntegration(
                 allowedRoots,
                 projectFilePath,
@@ -57,12 +61,23 @@ namespace AI_Assistant.AI
                 tempCapabilities,
                 ReportActivity
             );
+
+            blenderV2 = new BlenderAgentV2(
+                settings,
+                ReportActivity
+            );
         }
 
         public async Task<string> Ask(string prompt)
         {
             string normalizedPrompt = (prompt ?? "").Trim();
             bool continuation = IsContinuation(normalizedPrompt);
+
+            if (blenderV2.ShouldHandle(normalizedPrompt))
+            {
+                ReportActivity("[ROUTER] Blender Agent V2");
+                return await blenderV2.HandleAsync(normalizedPrompt);
+            }
 
             if (agentV2.ShouldHandle(normalizedPrompt))
             {
@@ -71,34 +86,21 @@ namespace AI_Assistant.AI
                     lastUnityV2Goal = normalizedPrompt;
                 }
 
-                ReportActivity(
-                    "[ROUTER] Unity Cowork Agent V2"
-                );
-
+                ReportActivity("[ROUTER] Unity Cowork Agent V2");
                 return await agentV2.HandleAsync(normalizedPrompt);
             }
 
-            // Important recovery path: never send a bare Unity continuation to
-            // legacy V1 just because V2 lost/closed its in-memory task state.
-            // Re-run the remembered Unity goal so V2 performs a fresh inspect
-            // against the real post-reload project state.
             if (
                 continuation
                 && IsAgentV2Enabled()
                 && !string.IsNullOrWhiteSpace(lastUnityV2Goal)
             )
             {
-                ReportActivity(
-                    "[ROUTER] Unity Cowork Agent V2 resume recovery"
-                );
-
+                ReportActivity("[ROUTER] Unity Cowork Agent V2 resume recovery");
                 return await agentV2.HandleAsync(lastUnityV2Goal);
             }
 
-            ReportActivity(
-                "[ROUTER] Legacy compatibility path"
-            );
-
+            ReportActivity("[ROUTER] Legacy compatibility path");
             return await legacy.Ask(normalizedPrompt);
         }
 
@@ -107,6 +109,30 @@ namespace AI_Assistant.AI
             agentV2.Reset();
             legacy.ResetConversationContext();
             lastUnityV2Goal = "";
+        }
+
+        public string BuildDiagnostics()
+        {
+            List<string> lines = new List<string>();
+            lines.Add("Agent: " + AgentVersion.Version);
+            lines.Add("Unity root: " + (string.IsNullOrWhiteSpace(settings.UnityProjectRoot) ? "not configured" : settings.UnityProjectRoot));
+            string blender = settings.ResolveBlenderExecutable();
+            lines.Add("Blender: " + (string.IsNullOrWhiteSpace(blender) ? "not found" : blender));
+            lines.Add("OpenRouter: " + IsKeyConfigured("OPENROUTER_API_KEY"));
+            lines.Add("Gemini: " + IsKeyConfigured("GEMINI_API_KEY"));
+            lines.Add("Groq: " + IsKeyConfigured("GROQ_API_KEY"));
+            foreach (string issue in settings.Validate())
+            {
+                lines.Add("Warning: " + issue);
+            }
+            return string.Join(Environment.NewLine, lines);
+        }
+
+        private static string IsKeyConfigured(string name)
+        {
+            return string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name))
+                ? "not configured"
+                : "configured";
         }
 
         private static bool IsAgentV2Enabled()
