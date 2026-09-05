@@ -20,6 +20,7 @@ namespace AI_Assistant
 
         private AssistantRuntime? ai;
         private bool isBusy;
+        private bool stopRequested;
         private string latestActivity = "Idle";
 
         public MainWindow()
@@ -57,25 +58,32 @@ namespace AI_Assistant
                 AddMessage("System", ex.GetType().Name + ": " + ex.Message);
                 PromptTextBox.IsEnabled = false;
                 SendButton.IsEnabled = false;
-                StopButton.IsEnabled = false;
             }
         }
 
         private async void SendButton_Click(object sender, RoutedEventArgs e)
         {
+            if (isBusy)
+            {
+                RequestStop();
+                return;
+            }
+
             await SendCurrentPromptAsync();
         }
 
-        private void StopButton_Click(object sender, RoutedEventArgs e)
+        private void RequestStop()
         {
-            if (!isBusy || ai == null)
+            if (!isBusy || ai == null || stopRequested)
             {
                 return;
             }
 
+            stopRequested = true;
             ai.CancelCurrentWork();
             latestActivity = "Stopping current task";
-            StopButton.IsEnabled = false;
+            SendButton.IsEnabled = false;
+            SendButton.Content = "Stopping...";
             SetStatus("Zaustavljam agenta...", Color.FromRgb(239, 95, 95));
             RefreshLiveInspector();
         }
@@ -140,10 +148,10 @@ namespace AI_Assistant
         private void SetBusy(bool busy)
         {
             isBusy = busy;
-            SendButton.IsEnabled = !busy;
+            stopRequested = false;
             PromptTextBox.IsEnabled = !busy;
-            StopButton.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
-            StopButton.IsEnabled = busy;
+            SendButton.IsEnabled = true;
+            SendButton.Content = busy ? "Stop ■" : "Run agent ↗";
 
             SetStatus(
                 busy ? "Agent radi..." : "Spreman · " + AgentVersion.Version,
