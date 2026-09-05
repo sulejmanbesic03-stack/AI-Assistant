@@ -175,6 +175,25 @@ namespace AI_Assistant.AgentV2
                     };
                 }
 
+                // Blender's pinned model is asked for a strict builder JSON plan. Some
+                // free-model runs return prose, markdown without an object, or a JSON
+                // object truncated at the output boundary while still reporting HTTP
+                // 200. Treat those as provider failures so BlenderAgentV3 immediately
+                // falls through to the independent free-provider chain instead of
+                // wasting its schema-recovery call on the same broken response mode.
+                if (Name.StartsWith("Blender-", StringComparison.OrdinalIgnoreCase)
+                    && !LooksLikeCompleteJsonObject(content))
+                {
+                    return new ProviderReplyV2
+                    {
+                        Success = false,
+                        Provider = Name,
+                        Model = responseModel,
+                        StatusCode = (int)HttpStatusCode.BadGateway,
+                        Error = "Blender provider returned non-JSON or truncated structured output; failover required."
+                    };
+                }
+
                 return new ProviderReplyV2
                 {
                     Success = true,
@@ -208,6 +227,24 @@ namespace AI_Assistant.AgentV2
                     StatusCode = (int)HttpStatusCode.BadGateway,
                     Error = ex.GetType().Name + ": " + ex.Message
                 };
+            }
+        }
+
+        private static bool LooksLikeCompleteJsonObject(string content)
+        {
+            if (string.IsNullOrWhiteSpace(content)) return false;
+            int start = content.IndexOf('{');
+            int end = content.LastIndexOf('}');
+            if (start < 0 || end <= start) return false;
+
+            try
+            {
+                using JsonDocument doc = JsonDocument.Parse(content.Substring(start, end - start + 1));
+                return doc.RootElement.ValueKind == JsonValueKind.Object;
+            }
+            catch
+            {
+                return false;
             }
         }
 
