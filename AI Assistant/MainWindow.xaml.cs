@@ -20,6 +20,7 @@ namespace AI_Assistant
 
         private AssistantRuntime? ai;
         private bool isBusy;
+        private string latestActivity = "Idle";
 
         public MainWindow()
         {
@@ -40,11 +41,11 @@ namespace AI_Assistant
                     Color.FromRgb(69, 201, 142)
                 );
 
-                RuntimeDiagnosticsText.Text = ai.BuildDiagnostics();
+                RefreshLiveInspector();
 
                 AddMessage(
                     "Assistant",
-                    "Cowork Beta je spreman. Unity zahtjevi koriste Agent V2, /blender koristi controlled headless Blender pipeline, a ostali workflow-i compatibility router."
+                    "Cowork SHIP V1 je spreman. Unity koristi Agent V2, /blender koristi controlled Blender pipeline, a runtime prikazuje rad agenta u Live Inspectoru bez zatrpavanja chata."
                 );
 
                 PromptTextBox.Focus();
@@ -87,7 +88,9 @@ namespace AI_Assistant
 
             PromptTextBox.Clear();
             AddMessage("User", prompt);
+            latestActivity = "Starting task";
             SetBusy(true);
+            RefreshLiveInspector();
 
             try
             {
@@ -111,8 +114,9 @@ namespace AI_Assistant
             }
             finally
             {
+                latestActivity = "Ready";
                 SetBusy(false);
-                RuntimeDiagnosticsText.Text = ai.BuildDiagnostics();
+                RefreshLiveInspector();
                 PromptTextBox.Focus();
             }
         }
@@ -133,13 +137,153 @@ namespace AI_Assistant
 
         private void OnAgentActivity(string message)
         {
+            void Apply()
+            {
+                latestActivity = FormatActivity(message);
+
+                if (isBusy)
+                {
+                    SetStatus(
+                        "Agent radi · " + ActivityStage(message),
+                        Color.FromRgb(240, 180, 41)
+                    );
+                }
+
+                RefreshLiveInspector();
+            }
+
             if (Dispatcher.CheckAccess())
             {
-                AddMessage("Activity", message);
+                Apply();
                 return;
             }
 
-            Dispatcher.Invoke(() => AddMessage("Activity", message));
+            Dispatcher.BeginInvoke((Action)Apply);
+        }
+
+        private void RefreshLiveInspector()
+        {
+            if (ai == null)
+            {
+                return;
+            }
+
+            string diagnostics = ai.BuildDiagnostics();
+
+            RuntimeDiagnosticsText.Text =
+                diagnostics
+                + "\n\n"
+                + (isBusy ? "ACTIVE TASK" : "LAST STATE")
+                + "\n"
+                + latestActivity;
+        }
+
+        private static string FormatActivity(string message)
+        {
+            string raw = (message ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return "Working";
+            }
+
+            if (raw.StartsWith("[V2 MODEL]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Reasoning · " + TrimPrefix(raw, "[V2 MODEL]");
+            }
+
+            if (raw.StartsWith("[V2 TOKENS]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Reasoning · context prepared";
+            }
+
+            if (raw.StartsWith("[V2 INSPECT]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Inspecting Unity · " + TrimPrefix(raw, "[V2 INSPECT]");
+            }
+
+            if (raw.StartsWith("[V2 PROVIDER]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 RATE LIMIT]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Provider fallback · " + raw[(raw.IndexOf(']') + 1)..].Trim();
+            }
+
+            if (raw.StartsWith("[V2 WRITE]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 COMPILE]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 ATTACH]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 ACTION]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 BATCH]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 SAVE]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 TEMP]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Executing Unity · " + raw[(raw.IndexOf(']') + 1)..].Trim();
+            }
+
+            if (raw.StartsWith("[V2 VERIFY]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 OBSERVE]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 RUNTIME]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Verifying Unity · " + raw[(raw.IndexOf(']') + 1)..].Trim();
+            }
+
+            if (raw.StartsWith("[BLENDER REPAIR]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Repairing Blender run · " + TrimPrefix(raw, "[BLENDER REPAIR]");
+            }
+
+            if (raw.StartsWith("[BLENDER VERIFY]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Verifying Blender · " + TrimPrefix(raw, "[BLENDER VERIFY]");
+            }
+
+            if (raw.StartsWith("[BLENDER]", StringComparison.OrdinalIgnoreCase))
+            {
+                string detail = TrimPrefix(raw, "[BLENDER]");
+                return detail.Contains("execut", StringComparison.OrdinalIgnoreCase)
+                    ? "Executing Blender · " + detail
+                    : "Preparing Blender · " + detail;
+            }
+
+            return raw;
+        }
+
+        private static string ActivityStage(string message)
+        {
+            string raw = (message ?? "").ToUpperInvariant();
+
+            if (raw.Contains("VERIFY") || raw.Contains("OBSERVE"))
+            {
+                return "Verify";
+            }
+
+            if (raw.Contains("EXECUT")
+                || raw.Contains("BATCH")
+                || raw.Contains("ACTION")
+                || raw.Contains("WRITE")
+                || raw.Contains("COMPILE")
+                || raw.Contains("ATTACH")
+                || raw.Contains("SAVE"))
+            {
+                return "Execute";
+            }
+
+            if (raw.Contains("INSPECT"))
+            {
+                return "Inspect";
+            }
+
+            if (raw.Contains("REPAIR") || raw.Contains("CORRECT"))
+            {
+                return "Repair";
+            }
+
+            return "Reason";
+        }
+
+        private static string TrimPrefix(string value, string prefix)
+        {
+            return value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                ? value.Substring(prefix.Length).Trim()
+                : value;
         }
 
         private void AddMessage(string role, string text)
@@ -160,6 +304,8 @@ namespace AI_Assistant
 
             ai?.ResetConversationContext();
             messages.Clear();
+            latestActivity = "Ready";
+            RefreshLiveInspector();
             AddMessage("Assistant", "Razgovor i kontekst zadatka su očišćeni.");
         }
 
@@ -175,7 +321,7 @@ namespace AI_Assistant
                 Owner = this
             };
             window.ShowDialog();
-            RuntimeDiagnosticsText.Text = ai.BuildDiagnostics();
+            RefreshLiveInspector();
         }
 
         private void SetStatus(string text, Color color)
