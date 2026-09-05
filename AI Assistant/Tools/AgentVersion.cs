@@ -5,12 +5,12 @@ namespace AI_Assistant.Tools
     public static class AgentVersion
     {
         public const string Version =
-            "0.8.4-cowork-unity-aware-quality";
+            "0.9.0-cowork-blender-v3";
 
         public const string RequiredContextRouterBuild =
             AIIntegration.ContextRouterBuild;
 
         public const string CoworkKernelBuild =
-            "ship-v1-unity-aware-blender-quality-low-medium-high-aa-schema-runtime-recovery";
+            "ship-v1-blender-v3-builder-first-unity-aware-quality-profiles";
     }
 }
