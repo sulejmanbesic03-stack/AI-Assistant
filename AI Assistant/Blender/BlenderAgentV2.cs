@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using System.Threading.Tasks;
 
 namespace AI_Assistant.Blender
@@ -106,9 +107,9 @@ namespace AI_Assistant.Blender
                 return BuildSuccessReply(first, plan, reply);
             }
 
-            // One bounded repair pass. The model receives only the failed script,
-            // the compact Blender log and the exact runtime version. This keeps
-            // token usage low while making Blender API/version mistakes recoverable.
+            // One bounded model repair pass. Before each Blender run the host also
+            // applies deterministic compatibility hardening, so known RNA
+            // mutation-during-iteration mistakes do not waste another model call.
             activity("[BLENDER REPAIR] correcting failed headless run from log");
             task.Phase = AgentTaskPhaseV2.Correcting;
 
@@ -191,8 +192,20 @@ namespace AI_Assistant.Blender
             TryDelete(blendPath);
             TryDelete(exportPath);
 
-            string finalScript = BuildExecutableScript(
+            string hardenedBody = HardenGeneratedScript(
                 plan.Script,
+                out bool hostAdjusted
+            );
+
+            if (hostAdjusted)
+            {
+                activity(
+                    "[BLENDER HOSTFIX] snapshotted mutable Blender collections before iteration"
+                );
+            }
+
+            string finalScript = BuildExecutableScript(
+                hardenedBody,
                 blendPath,
                 exportPath,
                 format
@@ -236,7 +249,8 @@ namespace AI_Assistant.Blender
                 Format = format,
                 BlendExists = blendExists,
                 ExportExists = exportExists,
-                PythonFailure = pythonFailure
+                PythonFailure = pythonFailure,
+                HostAdjusted = hostAdjusted
             };
 
             if (success)
@@ -295,6 +309,7 @@ namespace AI_Assistant.Blender
                 + ", pythonFailure=" + attempt.PythonFailure
                 + ", blend=" + attempt.BlendExists
                 + ", export=" + attempt.ExportExists
+                + ", hostAdjusted=" + attempt.HostAdjusted
             );
 
             string compactLog = Compact(attempt.Output, 1800);
@@ -534,6 +549,58 @@ namespace AI_Assistant.Blender
             return script.ToString();
         }
 
+        // Blender RNA collections invalidate active iterators when the generated
+        // code removes/relinks datablocks from the same collection. Free models
+        // commonly emit `for material in bpy.data.materials: ... remove(...)`,
+        // which throws "structure changed during iteration" on Blender 3.6.
+        // Snapshot simple RNA/collection iterations into list(...) deterministically.
+        private static string HardenGeneratedScript(
+            string script,
+            out bool changed
+        )
+        {
+            string value = script ?? "";
+            string original = value;
+
+            const string dottedCollectionPattern =
+                @"(?m)^(?<indent>[ \t]*)for\s+(?<target>[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s+in\s+(?<expr>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\s*:\s*$";
+
+            value = Regex.Replace(
+                value,
+                dottedCollectionPattern,
+                match =>
+                    match.Groups["indent"].Value
+                    + "for "
+                    + match.Groups["target"].Value
+                    + " in list("
+                    + match.Groups["expr"].Value
+                    + "):"
+            );
+
+            const string namedCollectionPattern =
+                @"(?m)^(?<indent>[ \t]*)for\s+(?<target>[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s+in\s+(?<expr>nodes|objects|materials|meshes|curves|collections|modifiers|slots|polygons|vertices|edges|faces|children|inputs|outputs)\s*:\s*$";
+
+            value = Regex.Replace(
+                value,
+                namedCollectionPattern,
+                match =>
+                    match.Groups["indent"].Value
+                    + "for "
+                    + match.Groups["target"].Value
+                    + " in list("
+                    + match.Groups["expr"].Value
+                    + "):"
+            );
+
+            changed = !string.Equals(
+                original,
+                value,
+                StringComparison.Ordinal
+            );
+
+            return value;
+        }
+
         private static string IndentPython(string value, int spaces)
         {
             string prefix = new string(' ', spaces);
@@ -565,6 +632,8 @@ namespace AI_Assistant.Blender
                 + "Target runtime is " + blenderVersion + ". "
                 + "Return strict JSON only with keys asset_name, export_format, summary, script. "
                 + "script must be Python using only bpy, math and mathutils. It must construct the requested model/scene but MUST NOT save/export files; the host does that. "
+                + "The host already starts from a clean factory scene and removes default scene objects, so DO NOT perform scene cleanup or delete unrelated datablocks. "
+                + "Never mutate a Blender RNA collection while directly iterating it. If a collection may be modified, iterate over list(collection), for example `for material in list(bpy.data.materials):`. "
                 + "Do not access network, filesystem, subprocesses, shell, environment variables, addons, external files or delete arbitrary files. "
                 + "Use APIs available in the target Blender version. For Blender 3.6 do not use Blender 4-only node socket names or APIs. "
                 + "Prefer deterministic geometry, sensible transforms, named objects, applied scale where useful, clean topology for simple hard-surface/low-poly assets, and Principled BSDF materials. "
@@ -581,7 +650,7 @@ namespace AI_Assistant.Blender
                 + goal
                 + "\nRuntime: " + blenderVersion
                 + "\nThe host starts from an empty factory scene and will save/export after your script. "
-                + "Keep the script self-contained, deterministic and compatible with that exact Blender runtime.";
+                + "Do not clear the scene or delete datablocks. Keep the script self-contained, deterministic and compatible with that exact Blender runtime.";
         }
 
         private static string BuildRepairPrompt(
@@ -593,7 +662,9 @@ namespace AI_Assistant.Blender
         {
             return
                 "The first controlled Blender run failed. Return a corrected complete JSON object only. "
-                + "Do not repeat the same incompatible API. Preserve the requested visual goal while fixing only the execution problem.\n\n"
+                + "Do not repeat the same incompatible API. Preserve the requested visual goal while fixing only the execution problem. "
+                + "If the log mentions structure changed during iteration, StructRNA removed, or collection mutation, take a snapshot with list(collection) before removing/relinking anything. "
+                + "Do not perform scene cleanup; the host already starts clean.\n\n"
                 + "GOAL:\n" + goal
                 + "\n\nTARGET RUNTIME:\n" + blenderVersion
                 + "\n\nFAILED SCRIPT:\n" + Compact(previous.Script, 5000)
@@ -603,6 +674,7 @@ namespace AI_Assistant.Blender
                 + ", blend=" + attempt.BlendExists
                 + ", export=" + attempt.ExportExists
                 + ", pythonFailure=" + attempt.PythonFailure
+                + ", hostAdjusted=" + attempt.HostAdjusted
                 + "\n\nBLENDER LOG:\n" + Compact(attempt.Output, 4500)
                 + "\n\nReturn keys asset_name, export_format, summary, script. The host owns save/export.";
         }
@@ -793,6 +865,7 @@ namespace AI_Assistant.Blender
             public bool BlendExists { get; set; }
             public bool ExportExists { get; set; }
             public bool PythonFailure { get; set; }
+            public bool HostAdjusted { get; set; }
         }
 
         private readonly record struct ProcessResult(
