@@ -1,6 +1,6 @@
-# AI Assistant 0.7.0 Cowork Beta
+# AI Assistant 0.7.1 Cowork SHIP V1
 
-This branch is the first integrated beta that treats Unity and Blender as separate execution domains behind one desktop runtime.
+This branch is the integrated beta/SHIP candidate that treats Unity and Blender as separate execution domains behind one desktop runtime.
 
 ## Architecture
 
@@ -11,15 +11,18 @@ User goal
           -> compact live Unity snapshot
           -> adaptive free-first model request
           -> deterministic/local execution
+          -> semantic bridge result validation
           -> compile + live verification
           -> correction delta when required
       -> Controlled Blender Agent V2
-          -> model generates scene-construction Python only
+          -> probe installed Blender version
+          -> model generates version-compatible scene-construction Python only
           -> host safety scan
           -> Blender headless factory-startup execution
           -> host-controlled .blend save
           -> host-controlled FBX/GLB export
-          -> file existence verification
+          -> Python traceback + file verification
+          -> one bounded automatic repair pass from the failed log
           -> optional handoff to Unity Assets/AI_Generated/Models
       -> legacy compatibility path for non-V2 workflows
 ```
@@ -37,6 +40,10 @@ User goal
   - 429 cooldowns are remembered and blind retries are blocked
   - the successful provider remains sticky during a normal task
 - Provider model IDs are overrideable with environment variables.
+- Unity bridge responses are validated semantically, so harmless fields such as `error:null` or `errors:[]` no longer create false task failures.
+- Runtime activity no longer fills the conversation. The chat contains user/assistant results while the current tool/model operation is shown in Live Inspector/status telemetry.
+- Blender 3.6 LTS and Blender 4.x are supported by the controlled pipeline. The runtime probes the installed version and tells the model which API level to target.
+- Blender execution catches Python tracebacks, verifies both `.blend` and export files, and performs one automatic correction pass from the failed script/log before returning failure.
 - Added runtime diagnostics and a GitHub Actions Release build gate.
 
 ## Required setup
@@ -62,14 +69,24 @@ setx GROQ_MODEL "openai/gpt-oss-120b"
 setx GEMINI_REASONING_EFFORT "high"
 ```
 
-The default OpenRouter model is `openrouter/free`, so the beta is not tied to one promotional free model.
+The default OpenRouter model is `openrouter/free`, so SHIP V1 is not tied to one promotional free model.
 
 ### Blender
 
-Install Blender 4.x. In the app open **Settings** and configure:
+Install Blender 3.6 LTS or Blender 4.x. In the app open **Settings** and configure the executable if auto-detection does not find it.
 
-- Blender executable, e.g. `C:\Program Files\Blender Foundation\Blender 4.5\blender.exe`
-- Blender workspace, default `C:\BlenderProjects`
+Examples:
+
+```text
+C:\Program Files\Blender Foundation\Blender 3.6\blender.exe
+C:\Program Files\Blender Foundation\Blender 4.5\blender.exe
+```
+
+Recommended workspace:
+
+```text
+C:\BlenderProjects
+```
 
 Blender runs with:
 
@@ -77,11 +94,11 @@ Blender runs with:
 --background --factory-startup --python <generated script>
 ```
 
-The generated AI script is not allowed to save files, export, spawn subprocesses, access network modules or perform arbitrary file IO. The host owns save/export.
+The generated AI script is not allowed to save files, export, spawn subprocesses, access network modules or perform arbitrary file IO. The host owns save/export and verification.
 
 ### Unity
 
-In **Settings**, set Unity project root to the local clone of `AIIntegrationProject`.
+In **Settings**, set Unity project root to the local clone of `AIIntegrationProject` on its `beta/ship-v1` branch.
 
 Blender exports are copied to:
 
@@ -89,7 +106,7 @@ Blender exports are copied to:
 Assets/AI_Generated/Models
 ```
 
-The Unity beta branch includes `AIGeneratedAssetPostprocessor.cs`, which applies conservative import defaults and adds:
+The Unity SHIP branch includes `AIGeneratedAssetPostprocessor.cs`, which applies conservative import defaults and adds:
 
 ```text
 AI Assistant > Generated Assets > Reveal Folder
@@ -130,17 +147,19 @@ or:
 CANCEL
 ```
 
-## Beta test matrix
+## SHIP test matrix
 
 1. **Startup / diagnostics**
    - app opens
    - runtime panel shows configured providers
    - Blender path validation is accurate
    - Unity project root validation is accurate
+   - runtime activity appears in Live Inspector instead of chat bubbles
 
 2. **Unity simple mutation**
    - create primitive or material
    - save scene
+   - verify no false failure from harmless bridge error fields
    - verify no duplicate execution after continuation
 
 3. **Unity code repair**
@@ -156,25 +175,32 @@ CANCEL
    - `/blender create a low-poly barrel`
    - verify `.blend` and `.fbx` or `.glb`
    - verify asset appears in `Assets/AI_Generated/Models`
+   - repeat on Blender 3.6 LTS
 
-6. **Blender safety**
+6. **Blender recovery**
+   - force or encounter a generated Python API error
+   - confirm traceback is captured
+   - confirm one correction pass runs from the log
+   - confirm final files are verified before success
+
+7. **Blender safety**
    - request something that tempts arbitrary filesystem/network access
    - verify generated script is blocked if it contains forbidden operations
 
-7. **Provider fallback**
+8. **Provider fallback**
    - test with only one key
    - test with OpenRouter + Groq
    - hit/imitate a rate limit and confirm no blind repeat loop
 
-8. **Risk gate**
+9. **Risk gate**
    - request deletion/replacement
    - confirm no execution before `APPROVE`
 
-## Known beta boundaries
+## Known boundaries
 
-This is a beta, not a claim of perfect autonomy. Important boundaries are intentional:
+This remains a beta/SHIP candidate rather than a claim of perfect autonomy. Important boundaries are intentional:
 
-- Blender verification currently proves the headless run and expected files, not visual quality. Visual/mesh-quality scoring is a later layer.
+- Blender verification proves the headless run and expected files, not artistic quality. Visual/mesh-quality scoring is a later layer.
 - Free model quality varies, especially through a rotating free router.
 - Unity Play Mode verification still occurs only when explicitly requested by the current Agent V2 flow.
 - Blender-to-Unity handoff imports the generated model but does not automatically build production prefabs, LOD groups, colliders or materials unless the subsequent Unity task requests them.
