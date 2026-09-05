@@ -119,7 +119,23 @@ namespace AI_Assistant.AI
                         : "[BLENDER UNITY CONTEXT] live scene snapshot attached before layout planning"
                 );
 
-                return await blenderV2.HandleAsync(augmentedPrompt);
+                string result = await blenderV2.HandleAsync(augmentedPrompt);
+
+                if (IsMalformedBlenderScenePlan(result)
+                    && !AgentCancellationHub.Token.IsCancellationRequested)
+                {
+                    ReportActivity(
+                        "[BLENDER SCHEMA REPAIR] malformed scene plan detected; retrying once with strict asset/root schema"
+                    );
+
+                    string retryPrompt = augmentedPrompt
+                        + "\n\n--- HOST SCHEMA RECOVERY ---\n"
+                        + "Your previous scene plan was rejected because assets were empty or asset root_object entries were missing/invalid. Return a COMPLETE scene plan, not a partial plan. The JSON MUST contain a non-empty assets array. Every asset entry MUST contain non-empty asset_name and root_object, and the Python script MUST create that exact root_object. Every instances[].asset_name MUST match an assets[].asset_name exactly. Do not omit assets, root_object, script, or instances. Keep the same user goal, quality profile and Unity-aware placement context.";
+
+                    result = await blenderV2.HandleAsync(retryPrompt);
+                }
+
+                return result;
             }
 
             if (agentV2.ShouldHandle(normalizedPrompt))
@@ -166,6 +182,7 @@ namespace AI_Assistant.AI
             lines.Add("Blender model: " + (Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_MODEL") ?? "inclusionai/ling-3.0-flash-fin:free"));
             lines.Add("Blender quality default: Medium");
             lines.Add("Unity-aware Blender layout: on");
+            lines.Add("Blender schema recovery: on");
             lines.Add("OpenRouter: " + IsKeyConfigured("OPENROUTER_API_KEY"));
             lines.Add("Gemini: " + IsKeyConfigured("GEMINI_API_KEY"));
             lines.Add("Groq: " + IsKeyConfigured("GROQ_API_KEY"));
@@ -300,6 +317,20 @@ namespace AI_Assistant.AI
             }
 
             return "Medium";
+        }
+
+        private static bool IsMalformedBlenderScenePlan(string result)
+        {
+            string text = (result ?? "").Trim();
+            return text.StartsWith(
+                    "Blender Agent received invalid scene JSON:",
+                    StringComparison.OrdinalIgnoreCase
+                )
+                && (
+                    text.Contains("assets array is empty", StringComparison.OrdinalIgnoreCase)
+                    || text.Contains("root_object", StringComparison.OrdinalIgnoreCase)
+                    || text.Contains("script is empty", StringComparison.OrdinalIgnoreCase)
+                );
         }
 
         private static bool ContainsAny(string text, params string[] values)
