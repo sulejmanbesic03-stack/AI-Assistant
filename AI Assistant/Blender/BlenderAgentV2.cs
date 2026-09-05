@@ -322,7 +322,7 @@ namespace AI_Assistant.Blender
             if (hostAdjusted)
             {
                 activity(
-                    "[BLENDER HOSTFIX] snapshotted mutable Blender collections before iteration"
+                    "[BLENDER HOSTFIX] Blender compatibility patch applied before execution"
                 );
             }
 
@@ -906,6 +906,33 @@ namespace AI_Assistant.Blender
             string value = script ?? "";
             string original = value;
 
+            // Deterministic Blender 2.7x/early-2.8 API shims for scripts produced
+            // by free models. These are safe one-to-one renames for Blender 3.6+
+            // and avoid wasting a model repair call on known compatibility drift.
+            value = value
+                .Replace(".empty_draw_type", ".empty_display_type", StringComparison.Ordinal)
+                .Replace(".empty_draw_size", ".empty_display_size", StringComparison.Ordinal)
+                .Replace("bpy.data.lamps", "bpy.data.lights", StringComparison.Ordinal)
+                .Replace("bpy.ops.object.lamp_add", "bpy.ops.object.light_add", StringComparison.Ordinal)
+                .Replace("bpy.types.Lamp", "bpy.types.Light", StringComparison.Ordinal)
+                .Replace("bpy.context.scene.objects.active", "bpy.context.view_layer.objects.active", StringComparison.Ordinal)
+                .Replace("bpy.context.scene.cursor_location", "bpy.context.scene.cursor.location", StringComparison.Ordinal)
+                .Replace("bpy.context.scene.objects.link(", "bpy.context.scene.collection.objects.link(", StringComparison.Ordinal);
+
+            const string legacySelectPattern =
+                @"(?m)^(?<indent>[ \t]*)(?<expr>[A-Za-z_][A-Za-z0-9_\.]*)\.select\s*=\s*(?<state>True|False)\s*$";
+
+            value = Regex.Replace(
+                value,
+                legacySelectPattern,
+                match =>
+                    match.Groups["indent"].Value
+                    + match.Groups["expr"].Value
+                    + ".select_set("
+                    + match.Groups["state"].Value
+                    + ")"
+            );
+
             const string dottedCollectionPattern =
                 @"(?m)^(?<indent>[ \t]*)for\s+(?<target>[A-Za-z_][A-Za-z0-9_]*(?:\s*,\s*[A-Za-z_][A-Za-z0-9_]*)*)\s+in\s+(?<expr>[A-Za-z_][A-Za-z0-9_]*(?:\.[A-Za-z_][A-Za-z0-9_]*)+)\s*:\s*$";
 
@@ -981,7 +1008,8 @@ namespace AI_Assistant.Blender
                 + "Every asset MUST have one exact root object named by root_object. Parent every mesh/material object belonging to that asset under that root. Keep each reusable asset root at world origin with identity rotation/scale; scene placement belongs ONLY in the instances array so Unity can assemble it correctly. "
                 + "script must be Python using only bpy, math and mathutils. It constructs geometry/materials only and MUST NOT save or export; the host owns save/export and topology inspection. "
                 + "The host starts clean, so do not clear the scene or delete unrelated datablocks. Never mutate an RNA collection while directly iterating it; use list(collection) snapshots. "
-                + "For Blender 3.6 do not use Blender 4-only node socket names or APIs. Prefer deterministic low-poly game-ready geometry, sensible proportions, clean silhouettes, applied transforms where useful, named objects and simple Principled BSDF materials. "
+                + "For Blender 3.6 use current 3.x APIs only: use empty_display_type/empty_display_size (never empty_draw_type/empty_draw_size), bpy.data.lights (not lamps), object.select_set(...), bpy.context.view_layer.objects.active and scene.collection.objects.link(...). Do not use Blender 4-only node socket names or APIs. "
+                + "Prefer deterministic low-poly game-ready geometry, sensible proportions, clean silhouettes, applied transforms where useful, named objects and simple Principled BSDF materials. "
                 + "Set realistic target_triangles per UNIQUE asset. Use FBX unless GLB is materially better. No markdown fences and no prose outside JSON.";
         }
 
@@ -1006,7 +1034,7 @@ namespace AI_Assistant.Blender
         {
             return
                 "The controlled Blender scene build failed execution or topology verification. Return a corrected COMPLETE scene JSON object only. Preserve the user's visual goal and asset layout while fixing the failing geometry/API/root/topology issue. Do not repeat the same failure. "
-                + "If an asset root is missing, create the exact root_object and parent that asset beneath it. If topology reports zero triangles or a very low score, repair that asset. If the log mentions structure changed during iteration, snapshot the collection with list(collection). Do not perform scene cleanup; the host already starts clean.\n\n"
+                + "If an asset root is missing, create the exact root_object and parent that asset beneath it. If topology reports zero triangles or a very low score, repair that asset. If the log mentions structure changed during iteration, snapshot the collection with list(collection). For Blender 3.6 use empty_display_type/empty_display_size, never legacy empty_draw_type/empty_draw_size. Do not perform scene cleanup; the host already starts clean.\n\n"
                 + "GOAL:\n" + goal
                 + "\n\nTARGET RUNTIME:\n" + blenderVersion
                 + "\n\nFAILED SCENE PLAN:\n" + Compact(JsonSerializer.Serialize(previous), 9000)
