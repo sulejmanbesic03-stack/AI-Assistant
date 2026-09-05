@@ -135,6 +135,20 @@ namespace AI_Assistant.AI
                     result = await blenderV2.HandleAsync(retryPrompt);
                 }
 
+                if (IsRecoverableBlenderRuntimeFailure(result)
+                    && !AgentCancellationHub.Token.IsCancellationRequested)
+                {
+                    ReportActivity(
+                        "[BLENDER HOST RECOVERY] unsafe/missing Blender world node access detected; retrying with world-node-safe rules"
+                    );
+
+                    string runtimeRetryPrompt = augmentedPrompt
+                        + "\n\n--- HOST BLENDER 3.6 RUNTIME RECOVERY ---\n"
+                        + "The previous execution failed because generated code assumed a Blender World shader node existed and accessed .inputs on a null result from nodes.get(...). Do NOT modify World/node_tree nodes unless absolutely required for the requested asset geometry. Environment/world lighting is not part of the exported reusable models and should be left to Unity. If any bpy data lookup uses .get(...), always store/check the returned object before accessing .inputs, .outputs, .data or other members. Never write code like nodes.get('Volume').inputs[...] without checking for None. Preserve the same user goal, quality profile, assets and Unity-aware layout.";
+
+                    result = await blenderV2.HandleAsync(runtimeRetryPrompt);
+                }
+
                 return result;
             }
 
@@ -183,6 +197,7 @@ namespace AI_Assistant.AI
             lines.Add("Blender quality default: Medium");
             lines.Add("Unity-aware Blender layout: on");
             lines.Add("Blender schema recovery: on");
+            lines.Add("Blender runtime recovery: on");
             lines.Add("OpenRouter: " + IsKeyConfigured("OPENROUTER_API_KEY"));
             lines.Add("Gemini: " + IsKeyConfigured("GEMINI_API_KEY"));
             lines.Add("Groq: " + IsKeyConfigured("GROQ_API_KEY"));
@@ -235,6 +250,8 @@ namespace AI_Assistant.AI
                 + "QUALITY PROFILE: " + qualityProfile + "\n"
                 + qualityRules
                 + "\nThis explicit quality profile overrides any generic low-poly preference when the selected profile is Medium, High or AA. Preserve real-time game readiness, but do not downgrade requested detail just to reduce polygon count."
+                + "\n\n--- HOST BLENDER SAFETY RULES ---\n"
+                + "Do not modify Blender World/node_tree/environment shader nodes for model-generation tasks; Unity owns final scene lighting/environment. If you use any bpy collection or nodes.get(...) lookup, check the returned object for None before accessing inputs, outputs, data or properties."
                 + "\n\n--- HOST UNITY-AWARE LAYOUT RULES ---\n"
                 + contextRules
                 + (string.IsNullOrWhiteSpace(unityContext)
@@ -331,6 +348,17 @@ namespace AI_Assistant.AI
                     || text.Contains("root_object", StringComparison.OrdinalIgnoreCase)
                     || text.Contains("script is empty", StringComparison.OrdinalIgnoreCase)
                 );
+        }
+
+        private static bool IsRecoverableBlenderRuntimeFailure(string result)
+        {
+            string text = (result ?? "").ToLowerInvariant();
+            return text.Contains("nonetype")
+                    && text.Contains("inputs")
+                || text.Contains("nodes.get")
+                    && text.Contains("attributeerror")
+                || text.Contains("world.node_tree")
+                    && text.Contains("attributeerror");
         }
 
         private static bool ContainsAny(string text, params string[] values)
