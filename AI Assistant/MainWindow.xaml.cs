@@ -11,38 +11,28 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 
-
 namespace AI_Assistant
 {
     public partial class MainWindow : Window
     {
-        private readonly ObservableCollection<ChatEntry>
-            messages =
-                new ObservableCollection<ChatEntry>();
+        private readonly ObservableCollection<ChatEntry> messages =
+            new ObservableCollection<ChatEntry>();
 
         private AssistantRuntime? ai;
         private bool isBusy;
 
-
         public MainWindow()
         {
             InitializeComponent();
-
             MessagesList.ItemsSource = messages;
-
             Loaded += MainWindow_Loaded;
         }
 
-
-        private void MainWindow_Loaded(
-            object sender,
-            RoutedEventArgs e
-        )
+        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             try
             {
                 ai = CreateAgent();
-
                 ai.Activity += OnAgentActivity;
 
                 SetStatus(
@@ -50,69 +40,46 @@ namespace AI_Assistant
                     Color.FromRgb(69, 201, 142)
                 );
 
+                RuntimeDiagnosticsText.Text = ai.BuildDiagnostics();
+
                 AddMessage(
                     "Assistant",
-                    "AI Assistant je spreman. Unity zahtjevi koriste Cowork Agent V2; ostali workflow-i ostaju na compatibility routeru."
+                    "Cowork Beta je spreman. Unity zahtjevi koriste Agent V2, /blender koristi controlled headless Blender pipeline, a ostali workflow-i compatibility router."
                 );
 
                 PromptTextBox.Focus();
             }
             catch (Exception ex)
             {
-                SetStatus(
-                    "Greška pri pokretanju",
-                    Color.FromRgb(239, 95, 95)
-                );
-
-                AddMessage(
-                    "System",
-                    ex.GetType().Name + ": " + ex.Message
-                );
-
+                SetStatus("Greška pri pokretanju", Color.FromRgb(239, 95, 95));
+                AddMessage("System", ex.GetType().Name + ": " + ex.Message);
                 PromptTextBox.IsEnabled = false;
                 SendButton.IsEnabled = false;
             }
         }
 
-
-        private async void SendButton_Click(
-            object sender,
-            RoutedEventArgs e
-        )
+        private async void SendButton_Click(object sender, RoutedEventArgs e)
         {
             await SendCurrentPromptAsync();
         }
 
-
-        private async void PromptTextBox_PreviewKeyDown(
-            object sender,
-            KeyEventArgs e
-        )
+        private async void PromptTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
         {
-            if (
-                e.Key == Key.Enter
-                && Keyboard.Modifiers != ModifierKeys.Shift
-            )
+            if (e.Key == Key.Enter && Keyboard.Modifiers != ModifierKeys.Shift)
             {
                 e.Handled = true;
                 await SendCurrentPromptAsync();
             }
         }
 
-
         private async Task SendCurrentPromptAsync()
         {
-            if (
-                isBusy
-                || ai == null
-            )
+            if (isBusy || ai == null)
             {
                 return;
             }
 
-            string prompt =
-                PromptTextBox.Text.Trim();
-
+            string prompt = PromptTextBox.Text.Trim();
             if (string.IsNullOrWhiteSpace(prompt))
             {
                 return;
@@ -120,21 +87,13 @@ namespace AI_Assistant
 
             PromptTextBox.Clear();
             AddMessage("User", prompt);
-
             SetBusy(true);
 
             try
             {
-                string answer =
-                    await Task.Run(
-                        () => ai.Ask(prompt)
-                    );
+                string answer = await Task.Run(() => ai.Ask(prompt));
 
-                if (
-                    string.IsNullOrWhiteSpace(
-                        answer
-                    )
-                )
+                if (string.IsNullOrWhiteSpace(answer))
                 {
                     AddMessage(
                         "System",
@@ -148,23 +107,19 @@ namespace AI_Assistant
             }
             catch (Exception ex)
             {
-                AddMessage(
-                    "System",
-                    ex.GetType().Name + ": " + ex.Message
-                );
+                AddMessage("System", ex.GetType().Name + ": " + ex.Message);
             }
             finally
             {
                 SetBusy(false);
+                RuntimeDiagnosticsText.Text = ai.BuildDiagnostics();
                 PromptTextBox.Focus();
             }
         }
 
-
         private void SetBusy(bool busy)
         {
             isBusy = busy;
-
             SendButton.IsEnabled = !busy;
             PromptTextBox.IsEnabled = !busy;
 
@@ -176,7 +131,6 @@ namespace AI_Assistant
             );
         }
 
-
         private void OnAgentActivity(string message)
         {
             if (Dispatcher.CheckAccess())
@@ -185,34 +139,19 @@ namespace AI_Assistant
                 return;
             }
 
-            Dispatcher.Invoke(
-                () => AddMessage("Activity", message)
-            );
+            Dispatcher.Invoke(() => AddMessage("Activity", message));
         }
 
-
-        private void AddMessage(
-            string role,
-            string text
-        )
+        private void AddMessage(string role, string text)
         {
-            messages.Add(
-                new ChatEntry(role, text)
-            );
-
+            messages.Add(new ChatEntry(role, text));
             Dispatcher.BeginInvoke(
                 DispatcherPriority.Background,
-                new Action(
-                    () => MessagesScroll.ScrollToEnd()
-                )
+                new Action(() => MessagesScroll.ScrollToEnd())
             );
         }
 
-
-        private void ClearButton_Click(
-            object sender,
-            RoutedEventArgs e
-        )
+        private void ClearButton_Click(object sender, RoutedEventArgs e)
         {
             if (isBusy)
             {
@@ -220,67 +159,59 @@ namespace AI_Assistant
             }
 
             ai?.ResetConversationContext();
-
             messages.Clear();
-
-            AddMessage(
-                "Assistant",
-                "Razgovor i kontekst zadatka su očišćeni."
-            );
+            AddMessage("Assistant", "Razgovor i kontekst zadatka su očišćeni.");
         }
 
+        private void SettingsButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (isBusy || ai == null)
+            {
+                return;
+            }
 
-        private void SetStatus(
-            string text,
-            Color color
-        )
+            SettingsWindow window = new SettingsWindow(ai.Settings)
+            {
+                Owner = this
+            };
+            window.ShowDialog();
+            RuntimeDiagnosticsText.Text = ai.BuildDiagnostics();
+        }
+
+        private void SetStatus(string text, Color color)
         {
             StatusText.Text = text;
             StatusDot.Fill = new SolidColorBrush(color);
         }
 
-
         private static AssistantRuntime CreateAgent()
         {
             string projectFile =
-                FindProjectFileUpwards(
-                    AppContext.BaseDirectory,
-                    "AI Assistant.csproj"
-                )
+                FindProjectFileUpwards(AppContext.BaseDirectory, "AI Assistant.csproj")
                 ?? throw new FileNotFoundException(
                     "AI Assistant.csproj nije pronađen. Pokreni aplikaciju iz build outputa projekta."
                 );
 
-            string sourceRoot =
-                Path.GetDirectoryName(projectFile)
-                ?? throw new DirectoryNotFoundException(
-                    "Source root nije pronađen."
-                );
+            string sourceRoot = Path.GetDirectoryName(projectFile)
+                ?? throw new DirectoryNotFoundException("Source root nije pronađen.");
 
-            string solutionRoot =
-                Directory.GetParent(sourceRoot)?.FullName
-                ?? throw new DirectoryNotFoundException(
-                    "Solution root nije pronađen."
-                );
+            string solutionRoot = Directory.GetParent(sourceRoot)?.FullName
+                ?? throw new DirectoryNotFoundException("Solution root nije pronađen.");
 
-            string updaterProject =
-                Path.Combine(
-                    solutionRoot,
-                    "AI Assistant Updater",
-                    "AI Assistant Updater.csproj"
-                );
+            string updaterProject = Path.Combine(
+                solutionRoot,
+                "AI Assistant Updater",
+                "AI Assistant Updater.csproj"
+            );
 
             if (!File.Exists(updaterProject))
             {
                 throw new FileNotFoundException(
-                    "Updater project nije pronađen: "
-                    + updaterProject
+                    "Updater project nije pronađen: " + updaterProject
                 );
             }
 
-            List<string> allowedRoots =
-                new List<string>();
-
+            List<string> allowedRoots = new List<string>();
             string[] optionalRoots =
             {
                 @"C:\AIWorkspace",
@@ -298,32 +229,24 @@ namespace AI_Assistant
 
             allowedRoots.Add(sourceRoot);
 
-            return
-                new AssistantRuntime(
-                    allowedRoots,
-                    projectFile,
-                    sourceRoot,
-                    updaterProject
-                );
+            return new AssistantRuntime(
+                allowedRoots,
+                projectFile,
+                sourceRoot,
+                updaterProject
+            );
         }
-
 
         private static string? FindProjectFileUpwards(
             string startDirectory,
             string projectFileName
         )
         {
-            DirectoryInfo? directory =
-                new DirectoryInfo(startDirectory);
+            DirectoryInfo? directory = new DirectoryInfo(startDirectory);
 
             while (directory != null)
             {
-                string candidate =
-                    Path.Combine(
-                        directory.FullName,
-                        projectFileName
-                    );
-
+                string candidate = Path.Combine(directory.FullName, projectFileName);
                 if (File.Exists(candidate))
                 {
                     return candidate;
@@ -336,22 +259,15 @@ namespace AI_Assistant
         }
     }
 
-
     public sealed class ChatEntry
     {
         public string Role { get; }
         public string Text { get; }
 
         public string DisplayRole =>
-            Role == "Assistant"
-                ? "AI"
-                : Role.ToUpperInvariant();
+            Role == "Assistant" ? "AI" : Role.ToUpperInvariant();
 
-
-        public ChatEntry(
-            string role,
-            string text
-        )
+        public ChatEntry(string role, string text)
         {
             Role = role;
             Text = text;
