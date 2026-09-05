@@ -1,7 +1,5 @@
 using AI_Assistant.Runtime;
 
-using System;
-using System.Linq;
 using System.Windows;
 
 namespace AI_Assistant
@@ -18,9 +16,7 @@ namespace AI_Assistant
             UnityRootTextBox.Text = settings.UnityProjectRoot;
             BlenderExeTextBox.Text = settings.BlenderExecutable;
             BlenderWorkspaceTextBox.Text = settings.BlenderWorkspace;
-            PreferFreeCheckBox.IsChecked = settings.PreferFreeProviders;
             ApprovalCheckBox.IsChecked = settings.RequireApprovalForDestructiveChanges;
-            MaxCallsTextBox.Text = settings.MaxModelCallsPerTask.ToString();
             RefreshValidation();
         }
 
@@ -38,7 +34,7 @@ namespace AI_Assistant
             RefreshValidation();
             MessageBox.Show(
                 this,
-                "Settings saved. New Blender tasks use them immediately. Restart the app if you changed provider-related environment variables outside this window.",
+                "Settings saved. New Blender tasks and risk-gate decisions use them immediately.",
                 "AI Assistant",
                 MessageBoxButton.OK,
                 MessageBoxImage.Information
@@ -50,13 +46,7 @@ namespace AI_Assistant
             settings.UnityProjectRoot = UnityRootTextBox.Text;
             settings.BlenderExecutable = BlenderExeTextBox.Text;
             settings.BlenderWorkspace = BlenderWorkspaceTextBox.Text;
-            settings.PreferFreeProviders = PreferFreeCheckBox.IsChecked != false;
             settings.RequireApprovalForDestructiveChanges = ApprovalCheckBox.IsChecked != false;
-
-            if (int.TryParse(MaxCallsTextBox.Text, out int calls))
-            {
-                settings.MaxModelCallsPerTask = Math.Clamp(calls, 1, 20);
-            }
         }
 
         private void RefreshValidation()
