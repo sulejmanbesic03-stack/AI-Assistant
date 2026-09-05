@@ -3,9 +3,9 @@
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         Title="AI Assistant · Settings"
         Width="720"
-        Height="610"
+        Height="560"
         MinWidth="620"
-        MinHeight="520"
+        MinHeight="500"
         WindowStartupLocation="CenterOwner"
         Background="{StaticResource WindowBrush}"
         Foreground="{StaticResource TextBrush}">
@@ -13,7 +13,7 @@
         <StackPanel Margin="28">
             <TextBlock Text="Beta Runtime Settings" FontSize="24" FontWeight="Bold" />
             <TextBlock Margin="0,6,0,24"
-                       Text="Unity + Blender integration and free-first model policy. API keys remain environment variables and are never stored here."
+                       Text="Unity + Blender integration. API keys remain environment variables and are never stored here. Model routing is zero-cost-first by design."
                        TextWrapping="Wrap"
                        Foreground="{StaticResource MutedTextBrush}" />
 
@@ -28,17 +28,10 @@
             <TextBlock Margin="0,20,0,0" Text="Blender workspace" FontWeight="SemiBold" />
             <TextBox x:Name="BlenderWorkspaceTextBox" Margin="0,7,0,6" Padding="10" Background="#11182A" Foreground="White" BorderBrush="#24304A" />
 
-            <CheckBox x:Name="PreferFreeCheckBox"
-                      Margin="0,22,0,0"
-                      Content="Prefer free providers and fall back only when needed"
-                      Foreground="White" />
             <CheckBox x:Name="ApprovalCheckBox"
-                      Margin="0,12,0,0"
-                      Content="Require approval for destructive/high-risk changes"
+                      Margin="0,22,0,0"
+                      Content="Require explicit APPROVE for destructive/high-impact requests"
                       Foreground="White" />
-
-            <TextBlock Margin="0,20,0,0" Text="Maximum model calls per task" FontWeight="SemiBold" />
-            <TextBox x:Name="MaxCallsTextBox" Width="100" HorizontalAlignment="Left" Margin="0,7,0,0" Padding="10" Background="#11182A" Foreground="White" BorderBrush="#24304A" />
 
             <Border Margin="0,24,0,0" Padding="14" Background="#0E1525" BorderBrush="#24304A" BorderThickness="1" CornerRadius="10">
                 <TextBlock x:Name="ValidationText" TextWrapping="Wrap" Foreground="#A9B5C9" />
