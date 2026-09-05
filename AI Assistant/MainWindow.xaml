@@ -1,206 +1,444 @@
 <Window x:Class="AI_Assistant.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="AI Assistant · Beta"
-        Width="1180"
-        Height="800"
-        MinWidth="820"
-        MinHeight="600"
+        Title="AI Assistant · Cowork Beta"
+        Width="1440"
+        Height="900"
+        MinWidth="1080"
+        MinHeight="700"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource WindowBrush}"
         Foreground="{StaticResource TextBrush}">
-    <Grid>
-        <Grid.RowDefinitions>
-            <RowDefinition Height="76" />
-            <RowDefinition Height="*" />
-            <RowDefinition Height="Auto" />
-        </Grid.RowDefinitions>
+    <Grid Background="#070A12">
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="220" />
+            <ColumnDefinition Width="*" />
+            <ColumnDefinition Width="320" />
+        </Grid.ColumnDefinitions>
 
-        <Border Grid.Row="0"
-                Background="#10172A"
-                BorderBrush="{StaticResource PanelBorderBrush}"
-                BorderThickness="0,0,0,1">
-            <Grid Margin="24,0">
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
+        <!-- LEFT WORKSPACE RAIL -->
+        <Border Grid.Column="0"
+                Background="#090D16"
+                BorderBrush="#1B2232"
+                BorderThickness="0,0,1,0">
+            <Grid Margin="16">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="Auto" />
+                    <RowDefinition Height="*" />
+                    <RowDefinition Height="Auto" />
+                </Grid.RowDefinitions>
 
-                <StackPanel VerticalAlignment="Center">
-                    <TextBlock Text="AI Assistant · Cowork Beta"
-                               FontSize="22"
-                               FontWeight="Bold" />
-                    <TextBlock Text="Unity Agent V2 · Controlled Blender · Free-first provider router"
-                               Margin="0,4,0,0"
-                               FontSize="12"
-                               Foreground="{StaticResource MutedTextBrush}" />
+                <StackPanel>
+                    <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border Width="38" Height="38" CornerRadius="11" Background="{StaticResource HeroGradient}">
+                            <TextBlock Text="AI"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       FontWeight="Black"
+                                       FontSize="15" />
+                        </Border>
+                        <StackPanel Margin="10,0,0,0" VerticalAlignment="Center">
+                            <TextBlock Text="COWORK" FontSize="14" FontWeight="Bold" />
+                            <TextBlock Text="DEV AGENT" FontSize="9" FontWeight="SemiBold" Foreground="#69758B" />
+                        </StackPanel>
+                    </StackPanel>
+                    <Border Margin="0,18,0,0" Height="1" Background="#1B2232" />
                 </StackPanel>
 
-                <StackPanel Grid.Column="1"
-                            Orientation="Horizontal"
-                            VerticalAlignment="Center">
-                    <Ellipse x:Name="StatusDot"
-                             Width="9"
-                             Height="9"
-                             Margin="0,0,8,0"
-                             Fill="#F0B429" />
-                    <TextBlock x:Name="StatusText"
-                               Text="Pokretanje..."
-                               VerticalAlignment="Center"
-                               Foreground="{StaticResource MutedTextBrush}" />
-                    <Button Margin="18,0,0,0"
-                            Padding="12,7"
-                            Background="#263149"
-                            Click="SettingsButton_Click"
-                            Content="Settings" />
-                    <Button Margin="8,0,0,0"
-                            Padding="12,7"
-                            Background="#263149"
-                            Click="ClearButton_Click"
-                            Content="Očisti chat" />
+                <StackPanel Grid.Row="1" Margin="0,18,0,0">
+                    <TextBlock Text="WORKSPACE" FontSize="9" FontWeight="Bold" Foreground="#59657B" Margin="8,0,0,8" />
+
+                    <Border Padding="11,9" CornerRadius="10" Background="#15142B" BorderBrush="#342A68" BorderThickness="1">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="28" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="✦" FontSize="14" Foreground="#9A86FF" VerticalAlignment="Center" />
+                            <StackPanel Grid.Column="1">
+                                <TextBlock Text="Agent Workspace" FontWeight="SemiBold" FontSize="12" />
+                                <TextBlock Text="Live orchestration" FontSize="10" Foreground="#7A8497" Margin="0,2,0,0" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <Border Margin="0,8,0,0" Padding="11,9" CornerRadius="10" Background="#0D121D">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="28" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="U" FontWeight="Black" Foreground="#D9DDF0" VerticalAlignment="Center" />
+                            <StackPanel Grid.Column="1">
+                                <TextBlock Text="Unity" FontWeight="SemiBold" FontSize="12" />
+                                <TextBlock Text="Cowork Agent V2" FontSize="10" Foreground="#6F7A8E" Margin="0,2,0,0" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+
+                    <Border Margin="0,8,0,0" Padding="11,9" CornerRadius="10" Background="#0D121D">
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="28" />
+                                <ColumnDefinition Width="*" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="B" FontWeight="Black" Foreground="#F4A261" VerticalAlignment="Center" />
+                            <StackPanel Grid.Column="1">
+                                <TextBlock Text="Blender" FontWeight="SemiBold" FontSize="12" />
+                                <TextBlock Text="Controlled pipeline" FontSize="10" Foreground="#6F7A8E" Margin="0,2,0,0" />
+                            </StackPanel>
+                        </Grid>
+                    </Border>
+                </StackPanel>
+
+                <StackPanel Grid.Row="2" VerticalAlignment="Top" Margin="0,26,0,0">
+                    <TextBlock Text="QUICK COMMANDS" FontSize="9" FontWeight="Bold" Foreground="#59657B" Margin="8,0,0,9" />
+                    <Border Padding="10" CornerRadius="10" Background="#0C111B" BorderBrush="#171F2F" BorderThickness="1">
+                        <StackPanel>
+                            <TextBlock Text="/agent" FontFamily="Consolas" FontSize="11" Foreground="#B7ABFF" />
+                            <TextBlock Text="Build or repair in Unity" FontSize="10" Foreground="#677286" Margin="0,2,0,8" />
+                            <TextBlock Text="/plan" FontFamily="Consolas" FontSize="11" Foreground="#7EDCF7" />
+                            <TextBlock Text="Inspect without mutation" FontSize="10" Foreground="#677286" Margin="0,2,0,8" />
+                            <TextBlock Text="/blender" FontFamily="Consolas" FontSize="11" Foreground="#F4A261" />
+                            <TextBlock Text="Generate 3D asset pipeline" FontSize="10" Foreground="#677286" Margin="0,2,0,0" />
+                        </StackPanel>
+                    </Border>
+                </StackPanel>
+
+                <StackPanel Grid.Row="3">
+                    <Border Padding="11" CornerRadius="12" Background="#0C111B" BorderBrush="#1B2535" BorderThickness="1">
+                        <StackPanel>
+                            <StackPanel Orientation="Horizontal">
+                                <Ellipse x:Name="StatusDot" Width="8" Height="8" Fill="#F6C85F" Margin="0,0,7,0" />
+                                <TextBlock x:Name="StatusText" Text="Pokretanje..." FontSize="11" Foreground="#C5CCDA" />
+                            </StackPanel>
+                            <TextBlock Text="local runtime" Margin="15,4,0,0" FontSize="9" Foreground="#5E6A7D" />
+                        </StackPanel>
+                    </Border>
+                    <StackPanel Orientation="Horizontal" Margin="0,10,0,0">
+                        <Button Style="{StaticResource GhostButton}" Width="92" Click="SettingsButton_Click" Content="Settings" />
+                        <Button Style="{StaticResource GhostButton}" Width="92" Margin="8,0,0,0" Click="ClearButton_Click" Content="Clear" />
+                    </StackPanel>
                 </StackPanel>
             </Grid>
         </Border>
 
-        <Grid Grid.Row="1">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="*" />
-                <ColumnDefinition Width="250" />
-            </Grid.ColumnDefinitions>
+        <!-- CENTER AGENT AREA -->
+        <Grid Grid.Column="1" Background="#080B13">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="72" />
+                <RowDefinition Height="*" />
+                <RowDefinition Height="Auto" />
+            </Grid.RowDefinitions>
+
+            <Border Grid.Row="0" BorderBrush="#171E2B" BorderThickness="0,0,0,1" Background="#090D16">
+                <Grid Margin="24,0">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="*" />
+                        <ColumnDefinition Width="Auto" />
+                    </Grid.ColumnDefinitions>
+                    <StackPanel VerticalAlignment="Center">
+                        <TextBlock Text="Agent Workspace" FontSize="18" FontWeight="Bold" />
+                        <TextBlock Text="Unity + Blender autonomous development environment"
+                                   Margin="0,3,0,0" FontSize="11" Foreground="#737F93" />
+                    </StackPanel>
+                    <StackPanel Grid.Column="1" Orientation="Horizontal" VerticalAlignment="Center">
+                        <Border Style="{StaticResource ChipBorder}" Margin="0,0,8,0">
+                            <StackPanel Orientation="Horizontal">
+                                <Ellipse Width="6" Height="6" Fill="#36D399" Margin="0,0,6,0" />
+                                <TextBlock Text="AGENT V2" FontSize="9" FontWeight="Bold" Foreground="#B8C1D2" />
+                            </StackPanel>
+                        </Border>
+                        <Border Style="{StaticResource ChipBorder}" Margin="0,0,8,0">
+                            <TextBlock Text="FREE-FIRST" FontSize="9" FontWeight="Bold" Foreground="#8FE8FF" />
+                        </Border>
+                        <Border Style="{StaticResource ChipBorder}">
+                            <TextBlock Text="BETA 0.7" FontSize="9" FontWeight="Bold" Foreground="#B9A9FF" />
+                        </Border>
+                    </StackPanel>
+                </Grid>
+            </Border>
 
             <ScrollViewer x:Name="MessagesScroll"
-                          Grid.Column="0"
-                          Padding="24,20"
+                          Grid.Row="1"
+                          Padding="26,24,26,16"
                           VerticalScrollBarVisibility="Auto">
-                <ItemsControl x:Name="MessagesList">
-                    <ItemsControl.ItemTemplate>
-                        <DataTemplate>
-                            <Border x:Name="Bubble"
-                                    MaxWidth="780"
-                                    Margin="0,0,0,14"
-                                    Padding="14,11"
-                                    HorizontalAlignment="Left"
-                                    Background="#182238"
-                                    BorderBrush="#2B3956"
-                                    BorderThickness="1"
-                                    CornerRadius="12">
-                                <StackPanel>
-                                    <TextBlock x:Name="RoleLabel"
-                                               Text="{Binding DisplayRole}"
-                                               Margin="0,0,0,5"
-                                               FontSize="11"
-                                               FontWeight="Bold"
-                                               Foreground="#9EAAFF" />
-                                    <TextBlock x:Name="MessageText"
-                                               Text="{Binding Text}"
-                                               FontSize="14"
-                                               LineHeight="21"
-                                               TextWrapping="Wrap"
-                                               Foreground="{StaticResource TextBrush}" />
-                                </StackPanel>
+                <StackPanel>
+                    <Border Margin="0,0,0,22"
+                            Padding="20"
+                            CornerRadius="18"
+                            BorderBrush="#232C40"
+                            BorderThickness="1">
+                        <Border.Background>
+                            <LinearGradientBrush StartPoint="0,0" EndPoint="1,1">
+                                <GradientStop Color="#15122E" Offset="0" />
+                                <GradientStop Color="#10172B" Offset="0.52" />
+                                <GradientStop Color="#0B1E29" Offset="1" />
+                            </LinearGradientBrush>
+                        </Border.Background>
+                        <Grid>
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="Auto" />
+                            </Grid.ColumnDefinitions>
+                            <StackPanel>
+                                <TextBlock Text="BUILD. TEST. VERIFY." FontSize="10" FontWeight="Bold" Foreground="#8E80FF" />
+                                <TextBlock Text="One workspace for your game pipeline."
+                                           Margin="0,7,0,0" FontSize="24" FontWeight="Black" />
+                                <TextBlock Text="Describe the result. Cowork inspects the project, chooses the execution domain, applies changes and verifies what actually happened."
+                                           Margin="0,8,0,0" MaxWidth="650" FontSize="12" LineHeight="19" TextWrapping="Wrap" Foreground="#94A0B4" />
+                            </StackPanel>
+                            <Border Grid.Column="1" Width="72" Height="72" Margin="20,0,0,0" CornerRadius="22" Background="{StaticResource HeroGradient}">
+                                <TextBlock Text="✦" FontSize="28" FontWeight="Bold" HorizontalAlignment="Center" VerticalAlignment="Center" />
                             </Border>
+                        </Grid>
+                    </Border>
 
-                            <DataTemplate.Triggers>
-                                <DataTrigger Binding="{Binding Role}" Value="User">
-                                    <Setter TargetName="Bubble" Property="HorizontalAlignment" Value="Right" />
-                                    <Setter TargetName="Bubble" Property="Background" Value="#322C75" />
-                                    <Setter TargetName="Bubble" Property="BorderBrush" Value="#665BE1" />
-                                    <Setter TargetName="RoleLabel" Property="Text" Value="TI" />
-                                </DataTrigger>
-
-                                <DataTrigger Binding="{Binding Role}" Value="Activity">
-                                    <Setter TargetName="Bubble" Property="MaxWidth" Value="920" />
-                                    <Setter TargetName="Bubble" Property="Padding" Value="10,7" />
-                                    <Setter TargetName="Bubble" Property="Background" Value="#0E1525" />
-                                    <Setter TargetName="Bubble" Property="BorderBrush" Value="#202A40" />
-                                    <Setter TargetName="RoleLabel" Property="Text" Value="TOOL" />
-                                    <Setter TargetName="RoleLabel" Property="Foreground" Value="#58C9A8" />
-                                    <Setter TargetName="MessageText" Property="FontFamily" Value="Consolas" />
-                                    <Setter TargetName="MessageText" Property="FontSize" Value="12" />
-                                    <Setter TargetName="MessageText" Property="Foreground" Value="#A9B5C9" />
-                                </DataTrigger>
-
-                                <DataTrigger Binding="{Binding Role}" Value="System">
-                                    <Setter TargetName="Bubble" Property="Background" Value="#30251A" />
-                                    <Setter TargetName="Bubble" Property="BorderBrush" Value="#665036" />
-                                    <Setter TargetName="RoleLabel" Property="Text" Value="SISTEM" />
-                                    <Setter TargetName="RoleLabel" Property="Foreground" Value="#F0B429" />
-                                </DataTrigger>
-                            </DataTemplate.Triggers>
-                        </DataTemplate>
-                    </ItemsControl.ItemTemplate>
-                </ItemsControl>
+                    <ItemsControl x:Name="MessagesList">
+                        <ItemsControl.ItemTemplate>
+                            <DataTemplate>
+                                <Border x:Name="Bubble"
+                                        MaxWidth="820"
+                                        Margin="0,0,0,14"
+                                        Padding="15,12"
+                                        HorizontalAlignment="Left"
+                                        Background="#101624"
+                                        BorderBrush="#202A3D"
+                                        BorderThickness="1"
+                                        CornerRadius="14">
+                                    <StackPanel>
+                                        <StackPanel Orientation="Horizontal" Margin="0,0,0,6">
+                                            <Border x:Name="RoleIcon" Width="23" Height="23" CornerRadius="7" Background="#222043" Margin="0,0,8,0">
+                                                <TextBlock x:Name="RoleGlyph" Text="✦" FontSize="10" Foreground="#A998FF" HorizontalAlignment="Center" VerticalAlignment="Center" />
+                                            </Border>
+                                            <TextBlock x:Name="RoleLabel"
+                                                       Text="{Binding DisplayRole}"
+                                                       FontSize="10"
+                                                       FontWeight="Bold"
+                                                       Foreground="#A998FF"
+                                                       VerticalAlignment="Center" />
+                                        </StackPanel>
+                                        <TextBlock x:Name="MessageText"
+                                                   Text="{Binding Text}"
+                                                   FontSize="13.5"
+                                                   LineHeight="21"
+                                                   TextWrapping="Wrap"
+                                                   Foreground="#E9EDF5" />
+                                    </StackPanel>
+                                </Border>
+                                <DataTemplate.Triggers>
+                                    <DataTrigger Binding="{Binding Role}" Value="User">
+                                        <Setter TargetName="Bubble" Property="HorizontalAlignment" Value="Right" />
+                                        <Setter TargetName="Bubble" Property="Background" Value="#1D193C" />
+                                        <Setter TargetName="Bubble" Property="BorderBrush" Value="#3C326E" />
+                                        <Setter TargetName="RoleLabel" Property="Text" Value="YOU" />
+                                        <Setter TargetName="RoleGlyph" Property="Text" Value="›" />
+                                        <Setter TargetName="RoleIcon" Property="Background" Value="#342B6A" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Role}" Value="Activity">
+                                        <Setter TargetName="Bubble" Property="MaxWidth" Value="920" />
+                                        <Setter TargetName="Bubble" Property="Padding" Value="12,9" />
+                                        <Setter TargetName="Bubble" Property="Background" Value="#0A1018" />
+                                        <Setter TargetName="Bubble" Property="BorderBrush" Value="#172231" />
+                                        <Setter TargetName="RoleLabel" Property="Text" Value="RUNTIME" />
+                                        <Setter TargetName="RoleLabel" Property="Foreground" Value="#51D8B3" />
+                                        <Setter TargetName="RoleGlyph" Property="Text" Value="●" />
+                                        <Setter TargetName="RoleGlyph" Property="Foreground" Value="#51D8B3" />
+                                        <Setter TargetName="RoleIcon" Property="Background" Value="#10241F" />
+                                        <Setter TargetName="MessageText" Property="FontFamily" Value="Consolas" />
+                                        <Setter TargetName="MessageText" Property="FontSize" Value="11.5" />
+                                        <Setter TargetName="MessageText" Property="Foreground" Value="#93A3B7" />
+                                    </DataTrigger>
+                                    <DataTrigger Binding="{Binding Role}" Value="System">
+                                        <Setter TargetName="Bubble" Property="Background" Value="#241D10" />
+                                        <Setter TargetName="Bubble" Property="BorderBrush" Value="#4B3A1E" />
+                                        <Setter TargetName="RoleLabel" Property="Text" Value="SYSTEM" />
+                                        <Setter TargetName="RoleLabel" Property="Foreground" Value="#F6C85F" />
+                                        <Setter TargetName="RoleGlyph" Property="Text" Value="!" />
+                                        <Setter TargetName="RoleGlyph" Property="Foreground" Value="#F6C85F" />
+                                        <Setter TargetName="RoleIcon" Property="Background" Value="#332810" />
+                                    </DataTrigger>
+                                </DataTemplate.Triggers>
+                            </DataTemplate>
+                        </ItemsControl.ItemTemplate>
+                    </ItemsControl>
+                </StackPanel>
             </ScrollViewer>
 
-            <Border Grid.Column="1"
-                    Margin="0,20,20,20"
-                    Padding="16"
-                    Background="#0E1525"
-                    BorderBrush="#202A40"
+            <Border Grid.Row="2"
+                    Margin="22,8,22,22"
+                    Padding="10"
+                    CornerRadius="18"
+                    BorderBrush="#2A3348"
                     BorderThickness="1"
-                    CornerRadius="12">
-                <StackPanel>
-                    <TextBlock Text="Runtime" FontSize="15" FontWeight="Bold" />
-                    <TextBlock x:Name="RuntimeDiagnosticsText"
-                               Margin="0,10,0,0"
-                               FontFamily="Consolas"
-                               FontSize="11"
-                               LineHeight="18"
-                               TextWrapping="Wrap"
-                               Foreground="#A9B5C9" />
-                    <Border Margin="0,18,0,0" Padding="10" Background="#11182A" CornerRadius="8">
-                        <StackPanel>
-                            <TextBlock Text="Commands" FontWeight="SemiBold" />
-                            <TextBlock Margin="0,7,0,0"
-                                       Text="/agent ...&#10;/plan ...&#10;/blender ..."
-                                       FontFamily="Consolas"
-                                       FontSize="11"
-                                       Foreground="#A9B5C9" />
+                    Background="#0E1420">
+                <Border.Effect>
+                    <DropShadowEffect BlurRadius="30" ShadowDepth="0" Opacity="0.26" Color="#000000" />
+                </Border.Effect>
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto" />
+                        <RowDefinition Height="Auto" />
+                    </Grid.RowDefinitions>
+                    <TextBox x:Name="PromptTextBox"
+                             Grid.Row="0"
+                             MinHeight="62"
+                             MaxHeight="150"
+                             Padding="7,5"
+                             AcceptsReturn="True"
+                             Background="Transparent"
+                             BorderThickness="0"
+                             CaretBrush="#A998FF"
+                             FontSize="14"
+                             Foreground="{StaticResource TextBrush}"
+                             TextWrapping="Wrap"
+                             VerticalScrollBarVisibility="Auto"
+                             PreviewKeyDown="PromptTextBox_PreviewKeyDown" />
+                    <Grid Grid.Row="1" Margin="4,8,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel Orientation="Horizontal" VerticalAlignment="Center">
+                            <Border Style="{StaticResource ChipBorder}" Margin="0,0,7,0">
+                                <TextBlock Text="AUTO ROUTE" FontSize="9" FontWeight="Bold" Foreground="#8FE8FF" />
+                            </Border>
+                            <TextBlock Text="Enter to run · Shift+Enter for new line"
+                                       FontSize="10" Foreground="#5F6B7E" VerticalAlignment="Center" />
                         </StackPanel>
-                    </Border>
-                    <TextBlock Margin="0,18,0,0"
-                               Text="Blender tasks are headless and host-controlled: AI builds geometry; the host saves, exports and hands off to Unity."
-                               TextWrapping="Wrap"
-                               FontSize="11"
-                               Foreground="{StaticResource MutedTextBrush}" />
-                </StackPanel>
+                        <Button x:Name="SendButton"
+                                Grid.Column="1"
+                                MinWidth="118"
+                                Padding="18,10"
+                                Click="SendButton_Click">
+                            <StackPanel Orientation="Horizontal">
+                                <TextBlock Text="Run agent" FontWeight="SemiBold" />
+                                <TextBlock Text="  ↗" FontSize="14" />
+                            </StackPanel>
+                        </Button>
+                    </Grid>
+                </Grid>
             </Border>
         </Grid>
 
-        <Border Grid.Row="2"
-                Margin="20,8,20,20"
-                Padding="12"
-                Background="{StaticResource PanelBrush}"
-                BorderBrush="{StaticResource PanelBorderBrush}"
-                BorderThickness="1"
-                CornerRadius="14">
-            <Grid>
-                <Grid.ColumnDefinitions>
-                    <ColumnDefinition Width="*" />
-                    <ColumnDefinition Width="Auto" />
-                </Grid.ColumnDefinitions>
+        <!-- RIGHT LIVE INSPECTOR -->
+        <Border Grid.Column="2"
+                Background="#090D16"
+                BorderBrush="#1B2232"
+                BorderThickness="1,0,0,0">
+            <ScrollViewer VerticalScrollBarVisibility="Auto">
+                <StackPanel Margin="18">
+                    <Grid Margin="0,2,0,16">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <StackPanel>
+                            <TextBlock Text="LIVE INSPECTOR" FontSize="10" FontWeight="Bold" Foreground="#66748A" />
+                            <TextBlock Text="Runtime telemetry" FontSize="15" FontWeight="Bold" Margin="0,4,0,0" />
+                        </StackPanel>
+                        <Border Grid.Column="1" Style="{StaticResource ChipBorder}" VerticalAlignment="Center">
+                            <TextBlock Text="LIVE" FontSize="9" FontWeight="Black" Foreground="#36D399" />
+                        </Border>
+                    </Grid>
 
-                <TextBox x:Name="PromptTextBox"
-                         MinHeight="54"
-                         MaxHeight="150"
-                         Padding="4"
-                         AcceptsReturn="True"
-                         Background="Transparent"
-                         BorderThickness="0"
-                         CaretBrush="White"
-                         FontSize="14"
-                         Foreground="{StaticResource TextBrush}"
-                         TextWrapping="Wrap"
-                         VerticalScrollBarVisibility="Auto"
-                         PreviewKeyDown="PromptTextBox_PreviewKeyDown" />
+                    <Border Style="{StaticResource CardBorder}" Padding="15">
+                        <StackPanel>
+                            <TextBlock Text="Environment" FontSize="12" FontWeight="Bold" />
+                            <TextBlock x:Name="RuntimeDiagnosticsText"
+                                       Margin="0,12,0,0"
+                                       FontFamily="Consolas"
+                                       FontSize="10.5"
+                                       LineHeight="17"
+                                       TextWrapping="Wrap"
+                                       Foreground="#99A7BA" />
+                        </StackPanel>
+                    </Border>
 
-                <Button x:Name="SendButton"
-                        Grid.Column="1"
-                        MinWidth="105"
-                        Margin="12,0,0,0"
-                        Click="SendButton_Click"
-                        Content="Pošalji" />
-            </Grid>
+                    <Border Style="{StaticResource CardBorder}" Padding="15" Margin="0,12,0,0">
+                        <StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="Execution stack" FontSize="12" FontWeight="Bold" />
+                                <TextBlock Grid.Column="1" Text="READY" FontSize="9" FontWeight="Bold" Foreground="#36D399" />
+                            </Grid>
+                            <Border Margin="0,13,0,0" Padding="11" CornerRadius="10" Background="#0A101A">
+                                <StackPanel>
+                                    <Grid>
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                        <Ellipse Width="7" Height="7" Fill="#9A86FF" VerticalAlignment="Center" />
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock Text="Reason" FontSize="11" FontWeight="SemiBold" />
+                                            <TextBlock Text="model implementation pass" FontSize="9" Foreground="#657186" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <Grid Margin="0,12,0,0">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                        <Ellipse Width="7" Height="7" Fill="#41D9FF" VerticalAlignment="Center" />
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock Text="Execute" FontSize="11" FontWeight="SemiBold" />
+                                            <TextBlock Text="Unity / Blender host layer" FontSize="9" Foreground="#657186" />
+                                        </StackPanel>
+                                    </Grid>
+                                    <Grid Margin="0,12,0,0">
+                                        <Grid.ColumnDefinitions><ColumnDefinition Width="24"/><ColumnDefinition Width="*"/></Grid.ColumnDefinitions>
+                                        <Ellipse Width="7" Height="7" Fill="#36D399" VerticalAlignment="Center" />
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock Text="Verify" FontSize="11" FontWeight="SemiBold" />
+                                            <TextBlock Text="compile + live-state validation" FontSize="9" Foreground="#657186" />
+                                        </StackPanel>
+                                    </Grid>
+                                </StackPanel>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource CardBorder}" Padding="15" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="Provider strategy" FontSize="12" FontWeight="Bold" />
+                            <TextBlock Text="Adaptive zero-cost routing" FontSize="10" Foreground="#657186" Margin="0,3,0,12" />
+                            <Grid>
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="OpenRouter pool" FontSize="11" />
+                                <TextBlock Grid.Column="1" Text="PRIMARY" FontSize="9" FontWeight="Bold" Foreground="#8FE8FF" />
+                            </Grid>
+                            <Grid Margin="0,9,0,0">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="Gemini" FontSize="11" />
+                                <TextBlock Grid.Column="1" Text="FALLBACK" FontSize="9" FontWeight="Bold" Foreground="#9A86FF" />
+                            </Grid>
+                            <Grid Margin="0,9,0,0">
+                                <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
+                                <TextBlock Text="Groq · GPT-OSS 120B" FontSize="11" />
+                                <TextBlock Grid.Column="1" Text="REPAIR" FontSize="9" FontWeight="Bold" Foreground="#F6C85F" />
+                            </Grid>
+                        </StackPanel>
+                    </Border>
+
+                    <Border Style="{StaticResource CardBorder}" Padding="15" Margin="0,12,0,0">
+                        <StackPanel>
+                            <TextBlock Text="Safety posture" FontSize="12" FontWeight="Bold" />
+                            <StackPanel Orientation="Horizontal" Margin="0,12,0,0">
+                                <Border Style="{StaticResource ChipBorder}" Margin="0,0,7,0">
+                                    <TextBlock Text="HUMAN GATE" FontSize="8.5" FontWeight="Bold" Foreground="#F6C85F" />
+                                </Border>
+                                <Border Style="{StaticResource ChipBorder}">
+                                    <TextBlock Text="ROLLBACK" FontSize="8.5" FontWeight="Bold" Foreground="#36D399" />
+                                </Border>
+                            </StackPanel>
+                            <TextBlock Text="Destructive/high-risk changes remain gated. Successful low-risk tasks stay fast and autonomous."
+                                       Margin="0,11,0,0" FontSize="10" LineHeight="16" TextWrapping="Wrap" Foreground="#6F7B8F" />
+                        </StackPanel>
+                    </Border>
+
+                    <TextBlock Text="COWORK ENGINE · UNITY + BLENDER"
+                               Margin="2,18,0,6" FontSize="8.5" FontWeight="Bold" Foreground="#3F4A5D" />
+                </StackPanel>
+            </ScrollViewer>
         </Border>
     </Grid>
 </Window>
