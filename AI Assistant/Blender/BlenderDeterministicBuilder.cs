@@ -78,11 +78,15 @@ namespace AI_Assistant.Blender
             py.AppendLine("        bpy.ops.object.transform_apply(location=False, rotation=False, scale=True)");
             py.AppendLine("    if mat is not None and hasattr(obj.data, 'materials'):");
             py.AppendLine("        obj.data.materials.append(mat)");
-            py.AppendLine("    if bevel > 0.00001:");
+            py.AppendLine("    if bevel > 0.00001 and obj.type == 'MESH':");
+            py.AppendLine("        bpy.context.view_layer.objects.active = obj");
+            py.AppendLine("        obj.select_set(True)");
             py.AppendLine("        mod = obj.modifiers.new(name='AIA_Bevel', type='BEVEL')");
             py.AppendLine("        mod.width = bevel");
             py.AppendLine("        mod.segments = max(1, int(bevel_segments))");
             py.AppendLine("        mod.limit_method = 'ANGLE'");
+            py.AppendLine("        try: bpy.ops.object.modifier_apply(modifier=mod.name)");
+            py.AppendLine("        except Exception: pass");
             py.AppendLine("    if smooth and obj.type == 'MESH':");
             py.AppendLine("        for p in obj.data.polygons: p.use_smooth = True");
             py.AppendLine("    aia_parent(obj, root)");
@@ -115,9 +119,9 @@ namespace AI_Assistant.Blender
                     index++;
                     string objVar = "obj_" + SafeIdentifier(asset.RootObject) + "_" + index;
                     string type = (part.Type ?? "cube").Trim().ToLowerInvariant();
-                    int vertices = Math.Clamp(part.Vertices, 3, 128);
-                    int major = Math.Clamp(part.MajorSegments, 3, 128);
-                    int minor = Math.Clamp(part.MinorSegments, 3, 64);
+                    int vertices = Math.Clamp(Math.Max(part.Vertices, 48), 3, 128);
+                    int major = Math.Clamp(Math.Max(part.MajorSegments, 64), 3, 128);
+                    int minor = Math.Clamp(Math.Max(part.MinorSegments, 16), 3, 64);
 
                     switch (type)
                     {
@@ -129,7 +133,7 @@ namespace AI_Assistant.Blender
                             break;
                         case "uv_sphere":
                         case "sphere":
-                            py.AppendLine($"bpy.ops.mesh.primitive_uv_sphere_add(segments={vertices}, ring_count={Math.Clamp(vertices / 2, 3, 64)}, radius={F(Math.Max(0.0001f, part.Radius))}, location=(0,0,0))");
+                            py.AppendLine($"bpy.ops.mesh.primitive_uv_sphere_add(segments={vertices}, ring_count={Math.Clamp(vertices / 2, 12, 64)}, radius={F(Math.Max(0.0001f, part.Radius))}, location=(0,0,0))");
                             break;
                         case "torus":
                             py.AppendLine($"bpy.ops.mesh.primitive_torus_add(major_segments={major}, minor_segments={minor}, location=(0,0,0), major_radius={F(Math.Max(0.0001f, part.Radius))}, minor_radius={F(Math.Max(0.0001f, part.Radius2))})");
@@ -149,8 +153,19 @@ namespace AI_Assistant.Blender
                     float[] pos = Vec(part.Position, new[] { 0f, 0f, 0f });
                     float[] rot = Vec(part.Rotation, new[] { 0f, 0f, 0f });
                     float[] dims = Vec(part.Dimensions, new[] { 1f, 1f, 1f });
+                    float smallest = Math.Max(0.001f, Math.Min(dims[0], Math.Min(dims[1], dims[2])));
+                    bool autoHardSurface = type is "cube" or "cylinder" or "cone";
+                    float bevel = Math.Max(0f, part.Bevel);
+                    if (autoHardSurface && bevel <= 0.00001f)
+                    {
+                        bevel = Math.Clamp(smallest * 0.018f, 0.005f, 0.08f);
+                    }
+                    int bevelSegments = autoHardSurface
+                        ? Math.Clamp(Math.Max(part.BevelSegments, 3), 1, 6)
+                        : Math.Clamp(part.BevelSegments, 1, 6);
+                    bool smooth = part.ShadeSmooth || type is "cylinder" or "cone" or "sphere" or "uv_sphere" or "torus";
                     py.AppendLine(
-                        $"aia_finish({objVar}, {Q(string.IsNullOrWhiteSpace(part.Name) ? $"Part_{index}" : part.Name)}, {root}, ({F(pos[0])},{F(pos[1])},{F(pos[2])}), ({F(rot[0])},{F(rot[1])},{F(rot[2])}), ({F(Math.Max(0.0001f,dims[0]))},{F(Math.Max(0.0001f,dims[1]))},{F(Math.Max(0.0001f,dims[2]))}), {matVar}, {F(Math.Max(0f, part.Bevel))}, {Math.Clamp(part.BevelSegments,1,6)}, {(part.ShadeSmooth ? "True" : "False")})"
+                        $"aia_finish({objVar}, {Q(string.IsNullOrWhiteSpace(part.Name) ? $"Part_{index}" : part.Name)}, {root}, ({F(pos[0])},{F(pos[1])},{F(pos[2])}), ({F(rot[0])},{F(rot[1])},{F(rot[2])}), ({F(Math.Max(0.0001f,dims[0]))},{F(Math.Max(0.0001f,dims[1]))},{F(Math.Max(0.0001f,dims[2]))}), {matVar}, {F(bevel)}, {bevelSegments}, {(smooth ? "True" : "False")})"
                     );
                 }
                 py.AppendLine();
