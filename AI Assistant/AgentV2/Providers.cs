@@ -1,3 +1,5 @@
+using AI_Assistant.Runtime;
+
 using System;
 using System.Collections.Generic;
 using System.Linq;
@@ -174,14 +176,15 @@ namespace AI_Assistant.AgentV2
             }
             catch (TaskCanceledException ex)
             {
+                bool cancelled = cancellationToken.IsCancellationRequested;
                 return new ProviderReplyV2
                 {
                     Success = false,
                     Provider = Name,
                     Model = requestedModel,
-                    StatusCode = (int)HttpStatusCode.RequestTimeout,
-                    Error = cancellationToken.IsCancellationRequested
-                        ? "Provider request was cancelled."
+                    StatusCode = cancelled ? 499 : (int)HttpStatusCode.RequestTimeout,
+                    Error = cancelled
+                        ? "Provider request was cancelled by the user."
                         : "Provider request timed out: " + ex.Message
                 };
             }
@@ -405,6 +408,18 @@ namespace AI_Assistant.AgentV2
             CancellationToken cancellationToken = default
         )
         {
+            if (AgentCancellationHub.IsCancellationRequested)
+            {
+                return CancelledReply();
+            }
+
+            using CancellationTokenSource linkedCancellation =
+                CancellationTokenSource.CreateLinkedTokenSource(
+                    cancellationToken,
+                    AgentCancellationHub.Token
+                );
+
+            CancellationToken effectiveToken = linkedCancellation.Token;
             List<IAIProviderV2> candidates = BuildCandidateOrder(task);
             if (candidates.Count == 0)
             {
@@ -419,12 +434,17 @@ namespace AI_Assistant.AgentV2
 
             foreach (IAIProviderV2 provider in candidates)
             {
+                if (effectiveToken.IsCancellationRequested)
+                {
+                    return CancelledReply();
+                }
+
                 last = await CallProvider(
                     task,
                     provider,
                     systemPrompt,
                     userPrompt,
-                    cancellationToken
+                    effectiveToken
                 );
 
                 UpdateProviderState(last);
@@ -432,6 +452,11 @@ namespace AI_Assistant.AgentV2
                 if (last.Success)
                 {
                     return last;
+                }
+
+                if (last.StatusCode == 499 || effectiveToken.IsCancellationRequested)
+                {
+                    return CancelledReply(provider.Name, provider.ModelName);
                 }
 
                 if (!ShouldFallback(last.StatusCode))
@@ -523,7 +548,8 @@ namespace AI_Assistant.AgentV2
 
         private void UpdateProviderState(ProviderReplyV2 reply)
         {
-            if (string.IsNullOrWhiteSpace(reply.Provider))
+            if (string.IsNullOrWhiteSpace(reply.Provider)
+                || reply.StatusCode == 499)
             {
                 return;
             }
@@ -603,6 +629,21 @@ namespace AI_Assistant.AgentV2
                 StatusCode = 429,
                 RetryAfterSeconds = retry,
                 Error = "All configured free providers are cooling down. Retry in about " + retry + " seconds."
+            };
+        }
+
+        private static ProviderReplyV2 CancelledReply(
+            string provider = "cancelled",
+            string model = ""
+        )
+        {
+            return new ProviderReplyV2
+            {
+                Success = false,
+                Provider = provider,
+                Model = model,
+                StatusCode = 499,
+                Error = "Agent work was cancelled by the user."
             };
         }
 
