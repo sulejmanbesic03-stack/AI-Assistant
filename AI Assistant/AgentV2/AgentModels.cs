@@ -121,8 +121,15 @@ namespace AI_Assistant.AgentV2
             return
                 ScriptChanges.Count > 0
                 || SceneActions.Count > 0
-                || CapabilityCall != null
-                || TemporaryCapability != null;
+                || (
+                    CapabilityCall != null
+                    && !string.IsNullOrWhiteSpace(CapabilityCall.ToolName)
+                )
+                || (
+                    TemporaryCapability != null
+                    && !string.IsNullOrWhiteSpace(TemporaryCapability.Name)
+                    && !string.IsNullOrWhiteSpace(TemporaryCapability.Source)
+                );
         }
     }
 
@@ -318,6 +325,29 @@ namespace AI_Assistant.AgentV2
                 parsed.SceneActions ??= new List<SceneActionV2>();
                 parsed.RuntimeObjectPaths ??= new List<string>();
                 parsed.Notes ??= new List<string>();
+
+                // Free models sometimes emit placeholder capability objects such
+                // as {"name":"...","source":""} or an empty capability_call.
+                // Those are not executable work and must never turn an otherwise
+                // successful deterministic Unity mutation into a failed task.
+                if (
+                    parsed.CapabilityCall != null
+                    && string.IsNullOrWhiteSpace(parsed.CapabilityCall.ToolName)
+                )
+                {
+                    parsed.CapabilityCall = null;
+                }
+
+                if (
+                    parsed.TemporaryCapability != null
+                    && (
+                        string.IsNullOrWhiteSpace(parsed.TemporaryCapability.Name)
+                        || string.IsNullOrWhiteSpace(parsed.TemporaryCapability.Source)
+                    )
+                )
+                {
+                    parsed.TemporaryCapability = null;
+                }
 
                 implementation = parsed;
                 return true;
