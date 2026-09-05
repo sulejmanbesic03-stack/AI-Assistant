@@ -43,6 +43,7 @@ namespace AI_Assistant.AgentV2
         protected readonly string Model;
         protected readonly string ApiKeyEnvironmentVariable;
         protected readonly HttpClient Client;
+        protected readonly int MaxCompletionTokens;
 
         public string Name { get; }
         public string ModelName => Model;
@@ -57,13 +58,15 @@ namespace AI_Assistant.AgentV2
             string endpoint,
             string model,
             string apiKeyEnvironmentVariable,
-            int timeoutSeconds = 180
+            int timeoutSeconds = 180,
+            int maxCompletionTokens = 0
         )
         {
             Name = name;
             Endpoint = endpoint;
             Model = model;
             ApiKeyEnvironmentVariable = apiKeyEnvironmentVariable;
+            MaxCompletionTokens = Math.Max(0, maxCompletionTokens);
             Client = new HttpClient
             {
                 Timeout = TimeSpan.FromSeconds(timeoutSeconds)
@@ -88,7 +91,7 @@ namespace AI_Assistant.AgentV2
             string userPrompt
         )
         {
-            return new Dictionary<string, object?>
+            Dictionary<string, object?> body = new Dictionary<string, object?>
             {
                 ["model"] = Model,
                 ["messages"] = new object[]
@@ -98,6 +101,16 @@ namespace AI_Assistant.AgentV2
                 },
                 ["temperature"] = 0.1
             };
+
+            // Large structured Blender plans can exceed a provider's small implicit
+            // output budget and otherwise arrive as syntactically truncated JSON.
+            // Leave legacy providers unchanged unless a caller explicitly opts in.
+            if (MaxCompletionTokens > 0)
+            {
+                body["max_tokens"] = MaxCompletionTokens;
+            }
+
+            return body;
         }
 
         protected virtual void ConfigureHeaders(HttpRequestMessage request, string apiKey)
@@ -429,7 +442,7 @@ namespace AI_Assistant.AgentV2
             ProviderReplyV2 last = new ProviderReplyV2
             {
                 Success = false,
-                Error = "No provider attempt was made."
+                Error = "No configured AI provider completed the request."
             };
 
             foreach (IAIProviderV2 provider in candidates)
@@ -439,36 +452,41 @@ namespace AI_Assistant.AgentV2
                     return CancelledReply();
                 }
 
-                last = await CallProvider(
-                    task,
-                    provider,
+                if (!provider.IsConfigured || IsCoolingDown(provider.Name))
+                {
+                    continue;
+                }
+
+                task.ActiveProvider = provider.Name;
+                task.ModelCalls++;
+                activity("[V2 MODEL] " + provider.Name + " / " + provider.ModelName + " call " + task.ModelCalls);
+
+                ProviderReplyV2 reply = await provider.CompleteAsync(
                     systemPrompt,
                     userPrompt,
                     effectiveToken
                 );
+                last = reply;
 
-                UpdateProviderState(last);
-
-                if (last.Success)
+                if (reply.Success)
                 {
-                    return last;
+                    RecordSuccess(provider.Name);
+                    return reply;
                 }
 
-                if (last.StatusCode == 499 || effectiveToken.IsCancellationRequested)
+                RecordFailure(provider.Name);
+                if (reply.StatusCode == 429)
                 {
-                    return CancelledReply(provider.Name, provider.ModelName);
+                    int cooldown = Math.Max(15, reply.RetryAfterSeconds);
+                    cooldownUntil[provider.Name] = DateTime.UtcNow.AddSeconds(cooldown);
+                    activity("[V2 PROVIDER] " + provider.Name + " cooling down for " + cooldown + "s");
+                    continue;
                 }
 
-                if (!ShouldFallback(last.StatusCode))
+                if (reply.StatusCode == 499)
                 {
-                    return last;
+                    return reply;
                 }
-
-                activity(
-                    "[V2 PROVIDER] " + provider.Name
-                    + " failed HTTP " + last.StatusCode
-                    + "; trying next free provider"
-                );
             }
 
             return last;
@@ -476,112 +494,47 @@ namespace AI_Assistant.AgentV2
 
         private List<IAIProviderV2> BuildCandidateOrder(AgentTaskStateV2 task)
         {
-            IEnumerable<IAIProviderV2> baseOrder;
+            List<IAIProviderV2> baseOrder = task.Phase == AgentTaskPhaseV2.Correcting
+                ? new List<IAIProviderV2> { groq, gemini, openRouter }
+                : new List<IAIProviderV2> { openRouter, gemini, groq };
 
-            if (task.Phase == AgentTaskPhaseV2.Correcting)
-            {
-                baseOrder = new[] { groq, gemini, openRouter };
-            }
-            else
-            {
-                baseOrder = new[] { openRouter, gemini, groq };
-            }
-
-            List<IAIProviderV2> available = baseOrder
-                .Where(p => p.IsConfigured && !IsCoolingDown(p.Name))
+            return baseOrder
+                .Where(provider => provider.IsConfigured)
+                .OrderByDescending(provider => Score(provider.Name))
+                .ThenBy(provider => baseOrder.IndexOf(provider))
                 .ToList();
-
-            if (task.Phase != AgentTaskPhaseV2.Correcting
-                && !string.IsNullOrWhiteSpace(task.ActiveProvider))
-            {
-                IAIProviderV2? sticky = available.FirstOrDefault(
-                    p => p.Name.Equals(task.ActiveProvider, StringComparison.OrdinalIgnoreCase)
-                );
-                if (sticky != null)
-                {
-                    available.Remove(sticky);
-                    available.Insert(0, sticky);
-                }
-            }
-
-            return available;
         }
 
-        private async Task<ProviderReplyV2> CallProvider(
-            AgentTaskStateV2 task,
-            IAIProviderV2 provider,
-            string systemPrompt,
-            string userPrompt,
-            CancellationToken cancellationToken
-        )
+        private bool IsCoolingDown(string provider)
         {
-            task.ActiveProvider = provider.Name;
-            task.ModelCalls++;
-
-            int approxInputTokens = Math.Max(1, (systemPrompt.Length + userPrompt.Length + 3) / 4);
-            ProviderScore score = GetScore(provider.Name);
-
-            activity(
-                "[V2 MODEL] " + provider.Name
-                + " / " + provider.ModelName
-                + " call " + task.ModelCalls
-                + " success-rate=" + score.SuccessRate.ToString("P0")
-            );
-            activity(
-                "[V2 TOKENS] approx input " + approxInputTokens
-                + " · free-first route"
-            );
-
-            ProviderReplyV2 reply = await provider.CompleteAsync(
-                systemPrompt,
-                userPrompt,
-                cancellationToken
-            );
-
-            if (reply.Success && !string.IsNullOrWhiteSpace(reply.Model))
-            {
-                activity("[V2 MODEL] resolved " + reply.Model);
-            }
-
-            return reply;
+            return cooldownUntil.TryGetValue(provider, out DateTime until)
+                && until > DateTime.UtcNow;
         }
 
-        private void UpdateProviderState(ProviderReplyV2 reply)
+        private double Score(string provider)
         {
-            if (string.IsNullOrWhiteSpace(reply.Provider)
-                || reply.StatusCode == 499)
+            if (!scores.TryGetValue(provider, out ProviderScore? score))
             {
-                return;
+                return 0;
             }
+            return score.Successes - (score.Failures * 0.65);
+        }
 
-            ProviderScore score = GetScore(reply.Provider);
-            score.Attempts++;
+        private void RecordSuccess(string provider)
+        {
+            ProviderScore score = GetScore(provider);
+            score.Successes++;
+        }
 
-            if (reply.Success)
-            {
-                score.Successes++;
-                cooldownUntil.Remove(reply.Provider);
-                return;
-            }
-
+        private void RecordFailure(string provider)
+        {
+            ProviderScore score = GetScore(provider);
             score.Failures++;
-
-            if (reply.StatusCode == 429)
-            {
-                int seconds = reply.RetryAfterSeconds > 0
-                    ? Math.Clamp(reply.RetryAfterSeconds, 1, 86400)
-                    : 90;
-                cooldownUntil[reply.Provider] = DateTime.UtcNow.AddSeconds(seconds);
-                activity(
-                    "[V2 RATE LIMIT] " + reply.Provider
-                    + " cooldown " + seconds + "s; no blind retries"
-                );
-            }
         }
 
         private ProviderScore GetScore(string provider)
         {
-            if (!scores.TryGetValue(provider, out ProviderScore? score) || score == null)
+            if (!scores.TryGetValue(provider, out ProviderScore? score))
             {
                 score = new ProviderScore();
                 scores[provider] = score;
@@ -589,85 +542,29 @@ namespace AI_Assistant.AgentV2
             return score;
         }
 
-        private bool IsCoolingDown(string providerName)
-        {
-            if (!cooldownUntil.TryGetValue(providerName, out DateTime until))
-            {
-                return false;
-            }
-            if (DateTime.UtcNow >= until)
-            {
-                cooldownUntil.Remove(providerName);
-                return false;
-            }
-            return true;
-        }
-
-        private ProviderReplyV2 BuildUnavailableReply()
-        {
-            bool configured = new[] { openRouter, gemini, groq }.Any(p => p.IsConfigured);
-            if (!configured)
-            {
-                return new ProviderReplyV2
-                {
-                    Success = false,
-                    Error = "No Agent V2 provider is configured. Set OPENROUTER_API_KEY, GEMINI_API_KEY or GROQ_API_KEY."
-                };
-            }
-
-            int retry = 90;
-            if (cooldownUntil.Count > 0)
-            {
-                TimeSpan remaining = cooldownUntil.Values.Min() - DateTime.UtcNow;
-                retry = Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds));
-            }
-
-            return new ProviderReplyV2
-            {
-                Success = false,
-                Provider = "rate-limit-guard",
-                StatusCode = 429,
-                RetryAfterSeconds = retry,
-                Error = "All configured free providers are cooling down. Retry in about " + retry + " seconds."
-            };
-        }
-
-        private static ProviderReplyV2 CancelledReply(
-            string provider = "cancelled",
-            string model = ""
-        )
+        private static ProviderReplyV2 CancelledReply()
         {
             return new ProviderReplyV2
             {
                 Success = false,
-                Provider = provider,
-                Model = model,
                 StatusCode = 499,
-                Error = "Agent work was cancelled by the user."
+                Error = "Provider request was cancelled by the user."
             };
         }
 
-        private static bool ShouldFallback(int statusCode)
+        private static ProviderReplyV2 BuildUnavailableReply()
         {
-            return statusCode == 0
-                || statusCode == 400
-                || statusCode == 404
-                || statusCode == 408
-                || statusCode == 409
-                || statusCode == 422
-                || statusCode == 429
-                || statusCode == 500
-                || statusCode == 502
-                || statusCode == 503
-                || statusCode == 504;
+            return new ProviderReplyV2
+            {
+                Success = false,
+                Error = "No configured free provider is currently available."
+            };
         }
 
         private sealed class ProviderScore
         {
-            public int Attempts { get; set; }
-            public int Successes { get; set; }
-            public int Failures { get; set; }
-            public double SuccessRate => Attempts == 0 ? 0.5 : (double)Successes / Attempts;
+            public int Successes;
+            public int Failures;
         }
     }
 }
