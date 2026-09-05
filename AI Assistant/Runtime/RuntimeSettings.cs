@@ -129,7 +129,8 @@ namespace AI_Assistant.Runtime
                 @"C:\Program Files\Blender Foundation\Blender 4.3\blender.exe",
                 @"C:\Program Files\Blender Foundation\Blender 4.2\blender.exe",
                 @"C:\Program Files\Blender Foundation\Blender 4.1\blender.exe",
-                @"C:\Program Files\Blender Foundation\Blender 4.0\blender.exe"
+                @"C:\Program Files\Blender Foundation\Blender 4.0\blender.exe",
+                @"C:\Program Files\Blender Foundation\Blender 3.6\blender.exe"
             };
 
             foreach (string candidate in common)
