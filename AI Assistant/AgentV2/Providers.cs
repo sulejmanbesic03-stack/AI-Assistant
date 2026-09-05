@@ -453,8 +453,6 @@ namespace AI_Assistant.AgentV2
         {
             IEnumerable<IAIProviderV2> baseOrder;
 
-            // Corrections benefit from a stable strong reasoning model. Initial
-            // implementation can exploit OpenRouter's rotating zero-cost pool.
             if (task.Phase == AgentTaskPhaseV2.Correcting)
             {
                 baseOrder = new[] { groq, gemini, openRouter };
@@ -468,8 +466,6 @@ namespace AI_Assistant.AgentV2
                 .Where(p => p.IsConfigured && !IsCoolingDown(p.Name))
                 .ToList();
 
-            // Preserve a successful provider within a task unless we are in a
-            // correction phase, where escalation is intentional.
             if (task.Phase != AgentTaskPhaseV2.Correcting
                 && !string.IsNullOrWhiteSpace(task.ActiveProvider))
             {
@@ -559,7 +555,7 @@ namespace AI_Assistant.AgentV2
 
         private ProviderScore GetScore(string provider)
         {
-            if (!scores.TryGetValue(provider, out ProviderScore? score))
+            if (!scores.TryGetValue(provider, out ProviderScore? score) || score == null)
             {
                 score = new ProviderScore();
                 scores[provider] = score;
@@ -593,14 +589,12 @@ namespace AI_Assistant.AgentV2
                 };
             }
 
-            int retry = cooldownUntil.Count == 0
-                ? 90
-                : Math.Max(
-                    1,
-                    (int)Math.Ceiling(
-                        cooldownUntil.Values.Min() - DateTime.UtcNow
-                    ).TotalSeconds
-                );
+            int retry = 90;
+            if (cooldownUntil.Count > 0)
+            {
+                TimeSpan remaining = cooldownUntil.Values.Min() - DateTime.UtcNow;
+                retry = Math.Max(1, (int)Math.Ceiling(remaining.TotalSeconds));
+            }
 
             return new ProviderReplyV2
             {
