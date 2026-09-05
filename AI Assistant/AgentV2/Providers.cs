@@ -59,7 +59,7 @@ namespace AI_Assistant.AgentV2
             string model,
             string apiKeyEnvironmentVariable,
             int timeoutSeconds = 180,
-            int maxCompletionTokens = 0
+            int maxCompletionTokens = 12000
         )
         {
             Name = name;
@@ -102,9 +102,6 @@ namespace AI_Assistant.AgentV2
                 ["temperature"] = 0.1
             };
 
-            // Large structured Blender plans can exceed a provider's small implicit
-            // output budget and otherwise arrive as syntactically truncated JSON.
-            // Leave legacy providers unchanged unless a caller explicitly opts in.
             if (MaxCompletionTokens > 0)
             {
                 body["max_tokens"] = MaxCompletionTokens;
