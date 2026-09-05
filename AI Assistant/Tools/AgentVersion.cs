@@ -5,12 +5,12 @@ namespace AI_Assistant.Tools
     public static class AgentVersion
     {
         public const string Version =
-            "0.10.0-cowork-blender-prefab-rc";
+            "0.10.1-cowork-blender-prefab-rc";
 
         public const string RequiredContextRouterBuild =
             AIIntegration.ContextRouterBuild;
 
         public const string CoworkKernelBuild =
-            "ship-v1-blender-v3-parent-aware-aa-final-prefab-fbx-unity-1to1";
+            "ship-v1-blender-v3-parent-aware-aa-prefab-large-json-budget";
     }
 }
