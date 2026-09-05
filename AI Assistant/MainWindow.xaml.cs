@@ -41,6 +41,7 @@ namespace AI_Assistant
                     Color.FromRgb(69, 201, 142)
                 );
 
+                SetBusy(false);
                 RefreshLiveInspector();
 
                 AddMessage(
@@ -56,12 +57,27 @@ namespace AI_Assistant
                 AddMessage("System", ex.GetType().Name + ": " + ex.Message);
                 PromptTextBox.IsEnabled = false;
                 SendButton.IsEnabled = false;
+                StopButton.IsEnabled = false;
             }
         }
 
         private async void SendButton_Click(object sender, RoutedEventArgs e)
         {
             await SendCurrentPromptAsync();
+        }
+
+        private void StopButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (!isBusy || ai == null)
+            {
+                return;
+            }
+
+            ai.CancelCurrentWork();
+            latestActivity = "Stopping current task";
+            StopButton.IsEnabled = false;
+            SetStatus("Zaustavljam agenta...", Color.FromRgb(239, 95, 95));
+            RefreshLiveInspector();
         }
 
         private async void PromptTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
@@ -126,6 +142,8 @@ namespace AI_Assistant
             isBusy = busy;
             SendButton.IsEnabled = !busy;
             PromptTextBox.IsEnabled = !busy;
+            StopButton.Visibility = busy ? Visibility.Visible : Visibility.Collapsed;
+            StopButton.IsEnabled = busy;
 
             SetStatus(
                 busy ? "Agent radi..." : "Spreman · " + AgentVersion.Version,
@@ -144,8 +162,12 @@ namespace AI_Assistant
                 if (isBusy)
                 {
                     SetStatus(
-                        "Agent radi · " + ActivityStage(message),
-                        Color.FromRgb(240, 180, 41)
+                        message.StartsWith("[CANCEL]", StringComparison.OrdinalIgnoreCase)
+                            ? "Zaustavljam agenta..."
+                            : "Agent radi · " + ActivityStage(message),
+                        message.StartsWith("[CANCEL]", StringComparison.OrdinalIgnoreCase)
+                            ? Color.FromRgb(239, 95, 95)
+                            : Color.FromRgb(240, 180, 41)
                     );
                 }
 
@@ -184,6 +206,11 @@ namespace AI_Assistant
             if (string.IsNullOrWhiteSpace(raw))
             {
                 return "Working";
+            }
+
+            if (raw.StartsWith("[CANCEL]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Stopping current task";
             }
 
             if (raw.StartsWith("[V2 MODEL]", StringComparison.OrdinalIgnoreCase))
@@ -230,6 +257,16 @@ namespace AI_Assistant
                 return "Repairing Blender run · " + TrimPrefix(raw, "[BLENDER REPAIR]");
             }
 
+            if (raw.StartsWith("[BLENDER TOPOLOGY]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Inspecting topology · " + TrimPrefix(raw, "[BLENDER TOPOLOGY]");
+            }
+
+            if (raw.StartsWith("[BLENDER UNITY]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Building Unity scene · " + TrimPrefix(raw, "[BLENDER UNITY]");
+            }
+
             if (raw.StartsWith("[BLENDER VERIFY]", StringComparison.OrdinalIgnoreCase))
             {
                 return "Verifying Blender · " + TrimPrefix(raw, "[BLENDER VERIFY]");
@@ -250,6 +287,11 @@ namespace AI_Assistant
         {
             string raw = (message ?? "").ToUpperInvariant();
 
+            if (raw.Contains("TOPOLOGY"))
+            {
+                return "Inspect";
+            }
+
             if (raw.Contains("VERIFY") || raw.Contains("OBSERVE"))
             {
                 return "Verify";
@@ -261,7 +303,8 @@ namespace AI_Assistant
                 || raw.Contains("WRITE")
                 || raw.Contains("COMPILE")
                 || raw.Contains("ATTACH")
-                || raw.Contains("SAVE"))
+                || raw.Contains("SAVE")
+                || raw.Contains("UNITY"))
             {
                 return "Execute";
             }
