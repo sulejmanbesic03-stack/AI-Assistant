@@ -10,12 +10,6 @@ using System.Threading.Tasks;
 
 namespace AI_Assistant.AI
 {
-    /// <summary>
-    /// Top-level runtime router.
-    /// Unity engineering requests go through Cowork Agent V2.
-    /// Blender modeling requests go through the controlled headless Blender agent.
-    /// Legacy AIIntegration remains available for compatibility workflows.
-    /// </summary>
     public sealed class AssistantRuntime
     {
         private readonly AIIntegration legacy;
@@ -24,9 +18,9 @@ namespace AI_Assistant.AI
         private readonly RuntimeSettings settings;
 
         private string lastUnityV2Goal = "";
+        private string pendingHighRiskPrompt = "";
 
         public event Action<string>? Activity;
-
         public RuntimeSettings Settings => settings;
 
         public AssistantRuntime(
@@ -45,16 +39,13 @@ namespace AI_Assistant.AI
                 sourceRoot,
                 updaterProjectPath
             );
-
             legacy.Activity += ReportActivity;
 
             UnityBridgeTools unityTools = new UnityBridgeTools();
-
-            TempCapabilityManager tempCapabilities =
-                new TempCapabilityManager(
-                    sourceRoot,
-                    unityTools
-                );
+            TempCapabilityManager tempCapabilities = new TempCapabilityManager(
+                sourceRoot,
+                unityTools
+            );
 
             agentV2 = new AgentOrchestratorV2(
                 unityTools,
@@ -62,15 +53,44 @@ namespace AI_Assistant.AI
                 ReportActivity
             );
 
-            blenderV2 = new BlenderAgentV2(
-                settings,
-                ReportActivity
-            );
+            blenderV2 = new BlenderAgentV2(settings, ReportActivity);
         }
 
         public async Task<string> Ask(string prompt)
         {
             string normalizedPrompt = (prompt ?? "").Trim();
+
+            if (IsApproval(normalizedPrompt) && !string.IsNullOrWhiteSpace(pendingHighRiskPrompt))
+            {
+                string approved = pendingHighRiskPrompt;
+                pendingHighRiskPrompt = "";
+                ReportActivity("[RISK GATE] approved by user");
+                return await RouteApprovedAsync(approved);
+            }
+
+            if (IsCancellation(normalizedPrompt) && !string.IsNullOrWhiteSpace(pendingHighRiskPrompt))
+            {
+                pendingHighRiskPrompt = "";
+                ReportActivity("[RISK GATE] cancelled by user");
+                return "High-risk task cancelled. No execution was started.";
+            }
+
+            if (
+                settings.RequireApprovalForDestructiveChanges
+                && IsHighRisk(normalizedPrompt)
+                && !IsPlanOnly(normalizedPrompt)
+            )
+            {
+                pendingHighRiskPrompt = normalizedPrompt;
+                ReportActivity("[RISK GATE] destructive/high-impact task held for approval");
+                return "High-risk change detected. I have not executed it. Type APPROVE to run the held task, or CANCEL to discard it.";
+            }
+
+            return await RouteApprovedAsync(normalizedPrompt);
+        }
+
+        private async Task<string> RouteApprovedAsync(string normalizedPrompt)
+        {
             bool continuation = IsContinuation(normalizedPrompt);
 
             if (blenderV2.ShouldHandle(normalizedPrompt))
@@ -109,6 +129,7 @@ namespace AI_Assistant.AI
             agentV2.Reset();
             legacy.ResetConversationContext();
             lastUnityV2Goal = "";
+            pendingHighRiskPrompt = "";
         }
 
         public string BuildDiagnostics()
@@ -121,11 +142,54 @@ namespace AI_Assistant.AI
             lines.Add("OpenRouter: " + IsKeyConfigured("OPENROUTER_API_KEY"));
             lines.Add("Gemini: " + IsKeyConfigured("GEMINI_API_KEY"));
             lines.Add("Groq: " + IsKeyConfigured("GROQ_API_KEY"));
+            lines.Add("Risk gate: " + (settings.RequireApprovalForDestructiveChanges ? "on" : "off"));
             foreach (string issue in settings.Validate())
             {
                 lines.Add("Warning: " + issue);
             }
             return string.Join(Environment.NewLine, lines);
+        }
+
+        private static bool IsHighRisk(string prompt)
+        {
+            string p = (prompt ?? "").Trim().ToLowerInvariant();
+            string[] signals =
+            {
+                "delete ", "obrisi", "obriši", "remove all", "delete all",
+                "reset scene", "wipe", "overwrite", "replace entire", "replace all",
+                "remove script", "delete script", "delete folder", "remove folder",
+                "clear scene", "destroy all", "rename project", "move project"
+            };
+
+            foreach (string signal in signals)
+            {
+                if (p.Contains(signal))
+                {
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        private static bool IsPlanOnly(string prompt)
+        {
+            return (prompt ?? "").Trim().StartsWith("/plan ", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsApproval(string prompt)
+        {
+            string p = (prompt ?? "").Trim();
+            return p.Equals("approve", StringComparison.OrdinalIgnoreCase)
+                || p.Equals("odobri", StringComparison.OrdinalIgnoreCase)
+                || p.Equals("potvrdi", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsCancellation(string prompt)
+        {
+            string p = (prompt ?? "").Trim();
+            return p.Equals("cancel", StringComparison.OrdinalIgnoreCase)
+                || p.Equals("otkazi", StringComparison.OrdinalIgnoreCase)
+                || p.Equals("otkaži", StringComparison.OrdinalIgnoreCase);
         }
 
         private static string IsKeyConfigured(string name)
@@ -146,12 +210,8 @@ namespace AI_Assistant.AI
 
         private static bool IsContinuation(string prompt)
         {
-            string value = (prompt ?? "")
-                .Trim()
-                .ToLowerInvariant();
-
-            return
-                value == "nastavi"
+            string value = (prompt ?? "").Trim().ToLowerInvariant();
+            return value == "nastavi"
                 || value == "continue"
                 || value == "nastavi dalje"
                 || value == "probaj opet"
