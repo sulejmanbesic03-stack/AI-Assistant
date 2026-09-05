@@ -1,17 +1,17 @@
 <Window x:Class="AI_Assistant.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="AI Assistant"
-        Width="1120"
-        Height="760"
-        MinWidth="760"
-        MinHeight="560"
+        Title="AI Assistant · Beta"
+        Width="1180"
+        Height="800"
+        MinWidth="820"
+        MinHeight="600"
         WindowStartupLocation="CenterScreen"
         Background="{StaticResource WindowBrush}"
         Foreground="{StaticResource TextBrush}">
     <Grid>
         <Grid.RowDefinitions>
-            <RowDefinition Height="72" />
+            <RowDefinition Height="76" />
             <RowDefinition Height="*" />
             <RowDefinition Height="Auto" />
         </Grid.RowDefinitions>
@@ -27,10 +27,10 @@
                 </Grid.ColumnDefinitions>
 
                 <StackPanel VerticalAlignment="Center">
-                    <TextBlock Text="AI Assistant"
+                    <TextBlock Text="AI Assistant · Cowork Beta"
                                FontSize="22"
                                FontWeight="Bold" />
-                    <TextBlock Text="C# / .NET 8 · Groq · Unity Bridge"
+                    <TextBlock Text="Unity Agent V2 · Controlled Blender · Free-first provider router"
                                Margin="0,4,0,0"
                                FontSize="12"
                                Foreground="{StaticResource MutedTextBrush}" />
@@ -51,109 +51,121 @@
                     <Button Margin="18,0,0,0"
                             Padding="12,7"
                             Background="#263149"
+                            Click="SettingsButton_Click"
+                            Content="Settings" />
+                    <Button Margin="8,0,0,0"
+                            Padding="12,7"
+                            Background="#263149"
                             Click="ClearButton_Click"
                             Content="Očisti chat" />
                 </StackPanel>
             </Grid>
         </Border>
 
-        <ScrollViewer x:Name="MessagesScroll"
-                      Grid.Row="1"
-                      Padding="24,20"
-                      VerticalScrollBarVisibility="Auto">
-            <ItemsControl x:Name="MessagesList">
-                <ItemsControl.ItemTemplate>
-                    <DataTemplate>
-                        <Border x:Name="Bubble"
-                                MaxWidth="780"
-                                Margin="0,0,0,14"
-                                Padding="14,11"
-                                HorizontalAlignment="Left"
-                                Background="#182238"
-                                BorderBrush="#2B3956"
-                                BorderThickness="1"
-                                CornerRadius="12">
-                            <StackPanel>
-                                <TextBlock x:Name="RoleLabel"
-                                           Text="{Binding DisplayRole}"
-                                           Margin="0,0,0,5"
-                                           FontSize="11"
-                                           FontWeight="Bold"
-                                           Foreground="#9EAAFF" />
-                                <TextBlock x:Name="MessageText"
-                                           Text="{Binding Text}"
-                                           FontSize="14"
-                                           LineHeight="21"
-                                           TextWrapping="Wrap"
-                                           Foreground="{StaticResource TextBrush}" />
-                            </StackPanel>
-                        </Border>
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*" />
+                <ColumnDefinition Width="250" />
+            </Grid.ColumnDefinitions>
 
-                        <DataTemplate.Triggers>
-                            <DataTrigger Binding="{Binding Role}" Value="User">
-                                <Setter TargetName="Bubble"
-                                        Property="HorizontalAlignment"
-                                        Value="Right" />
-                                <Setter TargetName="Bubble"
-                                        Property="Background"
-                                        Value="#322C75" />
-                                <Setter TargetName="Bubble"
-                                        Property="BorderBrush"
-                                        Value="#665BE1" />
-                                <Setter TargetName="RoleLabel"
-                                        Property="Text"
-                                        Value="TI" />
-                            </DataTrigger>
+            <ScrollViewer x:Name="MessagesScroll"
+                          Grid.Column="0"
+                          Padding="24,20"
+                          VerticalScrollBarVisibility="Auto">
+                <ItemsControl x:Name="MessagesList">
+                    <ItemsControl.ItemTemplate>
+                        <DataTemplate>
+                            <Border x:Name="Bubble"
+                                    MaxWidth="780"
+                                    Margin="0,0,0,14"
+                                    Padding="14,11"
+                                    HorizontalAlignment="Left"
+                                    Background="#182238"
+                                    BorderBrush="#2B3956"
+                                    BorderThickness="1"
+                                    CornerRadius="12">
+                                <StackPanel>
+                                    <TextBlock x:Name="RoleLabel"
+                                               Text="{Binding DisplayRole}"
+                                               Margin="0,0,0,5"
+                                               FontSize="11"
+                                               FontWeight="Bold"
+                                               Foreground="#9EAAFF" />
+                                    <TextBlock x:Name="MessageText"
+                                               Text="{Binding Text}"
+                                               FontSize="14"
+                                               LineHeight="21"
+                                               TextWrapping="Wrap"
+                                               Foreground="{StaticResource TextBrush}" />
+                                </StackPanel>
+                            </Border>
 
-                            <DataTrigger Binding="{Binding Role}" Value="Activity">
-                                <Setter TargetName="Bubble"
-                                        Property="MaxWidth"
-                                        Value="920" />
-                                <Setter TargetName="Bubble"
-                                        Property="Padding"
-                                        Value="10,7" />
-                                <Setter TargetName="Bubble"
-                                        Property="Background"
-                                        Value="#0E1525" />
-                                <Setter TargetName="Bubble"
-                                        Property="BorderBrush"
-                                        Value="#202A40" />
-                                <Setter TargetName="RoleLabel"
-                                        Property="Text"
-                                        Value="TOOL" />
-                                <Setter TargetName="RoleLabel"
-                                        Property="Foreground"
-                                        Value="#58C9A8" />
-                                <Setter TargetName="MessageText"
-                                        Property="FontFamily"
-                                        Value="Consolas" />
-                                <Setter TargetName="MessageText"
-                                        Property="FontSize"
-                                        Value="12" />
-                                <Setter TargetName="MessageText"
-                                        Property="Foreground"
-                                        Value="#A9B5C9" />
-                            </DataTrigger>
+                            <DataTemplate.Triggers>
+                                <DataTrigger Binding="{Binding Role}" Value="User">
+                                    <Setter TargetName="Bubble" Property="HorizontalAlignment" Value="Right" />
+                                    <Setter TargetName="Bubble" Property="Background" Value="#322C75" />
+                                    <Setter TargetName="Bubble" Property="BorderBrush" Value="#665BE1" />
+                                    <Setter TargetName="RoleLabel" Property="Text" Value="TI" />
+                                </DataTrigger>
 
-                            <DataTrigger Binding="{Binding Role}" Value="System">
-                                <Setter TargetName="Bubble"
-                                        Property="Background"
-                                        Value="#30251A" />
-                                <Setter TargetName="Bubble"
-                                        Property="BorderBrush"
-                                        Value="#665036" />
-                                <Setter TargetName="RoleLabel"
-                                        Property="Text"
-                                        Value="SISTEM" />
-                                <Setter TargetName="RoleLabel"
-                                        Property="Foreground"
-                                        Value="#F0B429" />
-                            </DataTrigger>
-                        </DataTemplate.Triggers>
-                    </DataTemplate>
-                </ItemsControl.ItemTemplate>
-            </ItemsControl>
-        </ScrollViewer>
+                                <DataTrigger Binding="{Binding Role}" Value="Activity">
+                                    <Setter TargetName="Bubble" Property="MaxWidth" Value="920" />
+                                    <Setter TargetName="Bubble" Property="Padding" Value="10,7" />
+                                    <Setter TargetName="Bubble" Property="Background" Value="#0E1525" />
+                                    <Setter TargetName="Bubble" Property="BorderBrush" Value="#202A40" />
+                                    <Setter TargetName="RoleLabel" Property="Text" Value="TOOL" />
+                                    <Setter TargetName="RoleLabel" Property="Foreground" Value="#58C9A8" />
+                                    <Setter TargetName="MessageText" Property="FontFamily" Value="Consolas" />
+                                    <Setter TargetName="MessageText" Property="FontSize" Value="12" />
+                                    <Setter TargetName="MessageText" Property="Foreground" Value="#A9B5C9" />
+                                </DataTrigger>
+
+                                <DataTrigger Binding="{Binding Role}" Value="System">
+                                    <Setter TargetName="Bubble" Property="Background" Value="#30251A" />
+                                    <Setter TargetName="Bubble" Property="BorderBrush" Value="#665036" />
+                                    <Setter TargetName="RoleLabel" Property="Text" Value="SISTEM" />
+                                    <Setter TargetName="RoleLabel" Property="Foreground" Value="#F0B429" />
+                                </DataTrigger>
+                            </DataTemplate.Triggers>
+                        </DataTemplate>
+                    </ItemsControl.ItemTemplate>
+                </ItemsControl>
+            </ScrollViewer>
+
+            <Border Grid.Column="1"
+                    Margin="0,20,20,20"
+                    Padding="16"
+                    Background="#0E1525"
+                    BorderBrush="#202A40"
+                    BorderThickness="1"
+                    CornerRadius="12">
+                <StackPanel>
+                    <TextBlock Text="Runtime" FontSize="15" FontWeight="Bold" />
+                    <TextBlock x:Name="RuntimeDiagnosticsText"
+                               Margin="0,10,0,0"
+                               FontFamily="Consolas"
+                               FontSize="11"
+                               LineHeight="18"
+                               TextWrapping="Wrap"
+                               Foreground="#A9B5C9" />
+                    <Border Margin="0,18,0,0" Padding="10" Background="#11182A" CornerRadius="8">
+                        <StackPanel>
+                            <TextBlock Text="Commands" FontWeight="SemiBold" />
+                            <TextBlock Margin="0,7,0,0"
+                                       Text="/agent ...&#10;/plan ...&#10;/blender ..."
+                                       FontFamily="Consolas"
+                                       FontSize="11"
+                                       Foreground="#A9B5C9" />
+                        </StackPanel>
+                    </Border>
+                    <TextBlock Margin="0,18,0,0"
+                               Text="Blender tasks are headless and host-controlled: AI builds geometry; the host saves, exports and hands off to Unity."
+                               TextWrapping="Wrap"
+                               FontSize="11"
+                               Foreground="{StaticResource MutedTextBrush}" />
+                </StackPanel>
+            </Border>
+        </Grid>
 
         <Border Grid.Row="2"
                 Margin="20,8,20,20"
