@@ -102,6 +102,7 @@ namespace AI_Assistant.AI
             lines.Add("Blender model: " + (Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_MODEL") ?? "inclusionai/ling-3.0-flash-fin:free"));
             lines.Add("Blender quality default: Medium");
             lines.Add("Unity-aware Blender layout: on");
+            lines.Add("AA production quality floor: on");
             lines.Add("Raw bpy default path: off");
             lines.Add("OpenRouter: " + IsKeyConfigured("OPENROUTER_API_KEY"));
             lines.Add("Gemini: " + IsKeyConfigured("GEMINI_API_KEY"));
@@ -127,20 +128,20 @@ namespace AI_Assistant.AI
         {
             string qualityRules = BuildQualityRules(qualityProfile);
             string contextRules = string.IsNullOrWhiteSpace(unityContext)
-                ? "Live Unity context was unavailable. Keep scene instances conservatively spaced and centered around a neutral origin."
-                : "Use the LIVE UNITY CONTEXT below as authoritative placement context. Respect the existing Ground/terrain, current object locations and available space. Keep floor-standing assets aligned to the ground plane and avoid obvious intersections. Do not invent a disconnected coordinate system.";
+                ? "Live Unity context was unavailable. Keep the generated environment compact, grounded and logically grouped around a neutral origin. Do not scatter props over arbitrary coordinates."
+                : "Use the LIVE UNITY CONTEXT below as authoritative placement context. Respect the existing Ground/terrain and current scene scale. Treat floor-standing assets as grounded objects. Build one coherent composition, not a random cloud of props: establish a clear scene anchor, put the main building at that anchor, put related structures in physically meaningful relationships, keep repeated props in sensible rows/groups, and keep the whole generated environment inside a compact believable footprint unless the existing scene requires otherwise. Avoid floating objects, accidental intersections, duplicated coordinates, extreme offsets and disconnected placement. Do not invent a separate coordinate system.";
             return originalPrompt + "\n\n--- HOST QUALITY PROFILE ---\nQUALITY PROFILE: " + qualityProfile + "\n" + qualityRules
-                + "\nThe selected profile controls detail density, silhouette quality, bevel usage and primitive segmentation. Do not downgrade Medium/High/AA to low-poly."
+                + "\nThe selected profile is a HARD production requirement. Do not downgrade Medium/High/AA to low-poly. target_triangles is a real budget, not decorative metadata. For AA, a full environment under a few thousand triangles is invalid."
                 + "\n\n--- HOST UNITY-AWARE LAYOUT RULES ---\n" + contextRules
                 + (string.IsNullOrWhiteSpace(unityContext) ? "" : "\n\nLIVE UNITY CONTEXT:\n" + unityContext);
         }
 
         private static string BuildQualityRules(string profile) => profile switch
         {
-            "Low" => "Use economical low-poly geometry, strong silhouettes, minimal bevels and low segment counts.",
-            "High" => "Use refined real-time geometry, realistic proportions, selective bevels, higher segment counts and meaningful secondary details.",
-            "AA" => "Target AA / medium-high PC-console quality: polished silhouettes, realistic proportions, bevels on important hard edges, layered primary/secondary/tertiary geometry, smooth curved forms where appropriate and purposeful real-time detail.",
-            _ => "Use medium-quality production game assets: clearly more detailed than low-poly, good silhouettes, sensible bevels, moderate secondary detail and efficient real-time geometry."
+            "Low" => "Use economical low-poly geometry, strong silhouettes, minimal bevels and low segment counts. Keep the complete environment intentionally lightweight.",
+            "High" => "Use refined real-time geometry, realistic proportions, selective 2-4 segment bevels, higher segment counts and meaningful secondary details. For a multi-asset environment, target roughly 12k-30k triangles total depending on scope; major assets should receive thousands of triangles when visible up close.",
+            "AA" => "Target genuine AA / medium-high PC-console production quality. A full environment such as a gas station should normally use about 25k-60k purposeful triangles across 6-12 reusable assets, not hundreds or one thousand total. The main building should usually target roughly 6k-15k triangles, major hero props such as pumps/canopies roughly 2k-6k each, and secondary props roughly 500-2500 as appropriate. Use polished silhouettes, realistic proportions, 3-4 segment bevels on visible hard edges, 48-64 sided curved hero forms where useful, layered primary/secondary/tertiary geometry, frames, trims, seams, panels, handles, hoses, roof structure, curbs, supports and other physically readable construction details. Spend geometry where it changes silhouette, shading or close-range readability; do not inflate hidden surfaces.",
+            _ => "Use medium-quality production game assets: clearly more detailed than low-poly, good silhouettes, sensible bevels, moderate secondary detail and efficient real-time geometry. A complete environment should normally land in several thousand to low tens-of-thousands of triangles rather than a few hundred."
         };
 
         private static string DetectQualityProfile(string prompt)
