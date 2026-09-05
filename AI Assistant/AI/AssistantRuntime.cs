@@ -14,7 +14,7 @@ namespace AI_Assistant.AI
     {
         private readonly AIIntegration legacy;
         private readonly AgentOrchestratorV2 agentV2;
-        private readonly BlenderAgentV2 blenderV2;
+        private readonly BlenderAgentV3 blenderV3;
         private readonly RuntimeSettings settings;
         private readonly UnityBridgeTools unityTools;
 
@@ -24,166 +24,71 @@ namespace AI_Assistant.AI
         public event Action<string>? Activity;
         public RuntimeSettings Settings => settings;
 
-        public AssistantRuntime(
-            List<string> allowedRoots,
-            string projectFilePath,
-            string sourceRoot,
-            string updaterProjectPath
-        )
+        public AssistantRuntime(List<string> allowedRoots, string projectFilePath, string sourceRoot, string updaterProjectPath)
         {
             settings = RuntimeSettings.Load();
             settings.ApplyToProcessEnvironment();
-
-            legacy = new AIIntegration(
-                allowedRoots,
-                projectFilePath,
-                sourceRoot,
-                updaterProjectPath
-            );
+            legacy = new AIIntegration(allowedRoots, projectFilePath, sourceRoot, updaterProjectPath);
             legacy.Activity += ReportActivity;
-
             unityTools = new UnityBridgeTools();
-            TempCapabilityManager tempCapabilities = new TempCapabilityManager(
-                sourceRoot,
-                unityTools
-            );
-
-            agentV2 = new AgentOrchestratorV2(
-                unityTools,
-                tempCapabilities,
-                ReportActivity
-            );
-
-            blenderV2 = new BlenderAgentV2(settings, ReportActivity);
+            TempCapabilityManager tempCapabilities = new TempCapabilityManager(sourceRoot, unityTools);
+            agentV2 = new AgentOrchestratorV2(unityTools, tempCapabilities, ReportActivity);
+            blenderV3 = new BlenderAgentV3(settings, ReportActivity);
         }
 
         public async Task<string> Ask(string prompt)
         {
             AgentCancellationHub.BeginTask();
             string normalizedPrompt = (prompt ?? "").Trim();
-
             if (IsApproval(normalizedPrompt) && !string.IsNullOrWhiteSpace(pendingHighRiskPrompt))
             {
-                string approved = pendingHighRiskPrompt;
-                pendingHighRiskPrompt = "";
-                ReportActivity("[RISK GATE] approved by user");
-                return await RouteApprovedAsync(approved);
+                string approved = pendingHighRiskPrompt; pendingHighRiskPrompt = ""; ReportActivity("[RISK GATE] approved by user"); return await RouteApprovedAsync(approved);
             }
-
             if (IsCancellation(normalizedPrompt) && !string.IsNullOrWhiteSpace(pendingHighRiskPrompt))
             {
-                pendingHighRiskPrompt = "";
-                ReportActivity("[RISK GATE] cancelled by user");
-                return "High-risk task cancelled. No execution was started.";
+                pendingHighRiskPrompt = ""; ReportActivity("[RISK GATE] cancelled by user"); return "High-risk task cancelled. No execution was started.";
             }
-
-            if (
-                settings.RequireApprovalForDestructiveChanges
-                && IsHighRisk(normalizedPrompt)
-                && !IsPlanOnly(normalizedPrompt)
-            )
+            if (settings.RequireApprovalForDestructiveChanges && IsHighRisk(normalizedPrompt) && !IsPlanOnly(normalizedPrompt))
             {
-                pendingHighRiskPrompt = normalizedPrompt;
-                ReportActivity("[RISK GATE] destructive/high-impact task held for approval");
+                pendingHighRiskPrompt = normalizedPrompt; ReportActivity("[RISK GATE] destructive/high-impact task held for approval");
                 return "High-risk change detected. I have not executed it. Type APPROVE to run the held task, or CANCEL to discard it.";
             }
-
             return await RouteApprovedAsync(normalizedPrompt);
         }
 
-        public void CancelCurrentWork()
-        {
-            AgentCancellationHub.CancelCurrent();
-            ReportActivity("[CANCEL] stop requested by user");
-        }
+        public void CancelCurrentWork() { AgentCancellationHub.CancelCurrent(); ReportActivity("[CANCEL] stop requested by user"); }
 
         private async Task<string> RouteApprovedAsync(string normalizedPrompt)
         {
             bool continuation = IsContinuation(normalizedPrompt);
-
-            if (blenderV2.ShouldHandle(normalizedPrompt))
+            if (blenderV3.ShouldHandle(normalizedPrompt))
             {
                 string qualityProfile = DetectQualityProfile(normalizedPrompt);
                 string unityContext = CaptureLiveUnityContext();
-                string augmentedPrompt = BuildBlenderAugmentedPrompt(
-                    normalizedPrompt,
-                    qualityProfile,
-                    unityContext
-                );
-
-                ReportActivity("[ROUTER] Blender Agent V2");
+                string augmentedPrompt = BuildBlenderAugmentedPrompt(normalizedPrompt, qualityProfile, unityContext);
+                ReportActivity("[ROUTER] Blender Agent V3 deterministic builder");
                 ReportActivity("[BLENDER QUALITY] " + qualityProfile);
-                ReportActivity(
-                    string.IsNullOrWhiteSpace(unityContext)
-                        ? "[BLENDER UNITY CONTEXT] unavailable; planning without live Unity snapshot"
-                        : "[BLENDER UNITY CONTEXT] live scene snapshot attached before layout planning"
-                );
-
-                string result = await blenderV2.HandleAsync(augmentedPrompt);
-
-                if (IsMalformedBlenderScenePlan(result)
-                    && !AgentCancellationHub.Token.IsCancellationRequested)
-                {
-                    ReportActivity(
-                        "[BLENDER SCHEMA REPAIR] malformed scene plan detected; retrying once with strict asset/root schema"
-                    );
-
-                    string retryPrompt = augmentedPrompt
-                        + "\n\n--- HOST SCHEMA RECOVERY ---\n"
-                        + "Your previous scene plan was rejected because assets were empty or asset root_object entries were missing/invalid. Return a COMPLETE scene plan, not a partial plan. The JSON MUST contain a non-empty assets array. Every asset entry MUST contain non-empty asset_name and root_object, and the Python script MUST create that exact root_object. Every instances[].asset_name MUST match an assets[].asset_name exactly. Do not omit assets, root_object, script, or instances. Keep the same user goal, quality profile and Unity-aware placement context.";
-
-                    result = await blenderV2.HandleAsync(retryPrompt);
-                }
-
-                if (IsRecoverableBlenderRuntimeFailure(result)
-                    && !AgentCancellationHub.Token.IsCancellationRequested)
-                {
-                    ReportActivity(
-                        "[BLENDER HOST RECOVERY] unsafe/missing Blender world node access detected; retrying with world-node-safe rules"
-                    );
-
-                    string runtimeRetryPrompt = augmentedPrompt
-                        + "\n\n--- HOST BLENDER 3.6 RUNTIME RECOVERY ---\n"
-                        + "The previous execution failed because generated code assumed a Blender World shader node existed and accessed .inputs on a null result from nodes.get(...). Do NOT modify World/node_tree nodes unless absolutely required for the requested asset geometry. Environment/world lighting is not part of the exported reusable models and should be left to Unity. If any bpy data lookup uses .get(...), always store/check the returned object before accessing .inputs, .outputs, .data or other members. Never write code like nodes.get('Volume').inputs[...] without checking for None. Preserve the same user goal, quality profile, assets and Unity-aware layout.";
-
-                    result = await blenderV2.HandleAsync(runtimeRetryPrompt);
-                }
-
-                return result;
+                ReportActivity(string.IsNullOrWhiteSpace(unityContext) ? "[BLENDER UNITY CONTEXT] unavailable; planning around neutral origin" : "[BLENDER UNITY CONTEXT] live scene snapshot attached before layout planning");
+                return await blenderV3.HandleAsync(augmentedPrompt);
             }
-
             if (agentV2.ShouldHandle(normalizedPrompt))
             {
-                if (!continuation)
-                {
-                    lastUnityV2Goal = normalizedPrompt;
-                }
-
+                if (!continuation) lastUnityV2Goal = normalizedPrompt;
                 ReportActivity("[ROUTER] Unity Cowork Agent V2");
                 return await agentV2.HandleAsync(normalizedPrompt);
             }
-
-            if (
-                continuation
-                && IsAgentV2Enabled()
-                && !string.IsNullOrWhiteSpace(lastUnityV2Goal)
-            )
+            if (continuation && IsAgentV2Enabled() && !string.IsNullOrWhiteSpace(lastUnityV2Goal))
             {
                 ReportActivity("[ROUTER] Unity Cowork Agent V2 resume recovery");
                 return await agentV2.HandleAsync(lastUnityV2Goal);
             }
-
             ReportActivity("[ROUTER] Legacy compatibility path");
             return await legacy.Ask(normalizedPrompt);
         }
 
         public void ResetConversationContext()
         {
-            AgentCancellationHub.CancelCurrent();
-            agentV2.Reset();
-            legacy.ResetConversationContext();
-            lastUnityV2Goal = "";
-            pendingHighRiskPrompt = "";
+            AgentCancellationHub.CancelCurrent(); agentV2.Reset(); legacy.ResetConversationContext(); lastUnityV2Goal = ""; pendingHighRiskPrompt = "";
         }
 
         public string BuildDiagnostics()
@@ -193,19 +98,16 @@ namespace AI_Assistant.AI
             lines.Add("Unity root: " + (string.IsNullOrWhiteSpace(settings.UnityProjectRoot) ? "not configured" : settings.UnityProjectRoot));
             string blender = settings.ResolveBlenderExecutable();
             lines.Add("Blender: " + (string.IsNullOrWhiteSpace(blender) ? "not found" : blender));
+            lines.Add("Blender engine: V3 deterministic builder-first");
             lines.Add("Blender model: " + (Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_MODEL") ?? "inclusionai/ling-3.0-flash-fin:free"));
             lines.Add("Blender quality default: Medium");
             lines.Add("Unity-aware Blender layout: on");
-            lines.Add("Blender schema recovery: on");
-            lines.Add("Blender runtime recovery: on");
+            lines.Add("Raw bpy default path: off");
             lines.Add("OpenRouter: " + IsKeyConfigured("OPENROUTER_API_KEY"));
             lines.Add("Gemini: " + IsKeyConfigured("GEMINI_API_KEY"));
             lines.Add("Groq: " + IsKeyConfigured("GROQ_API_KEY"));
             lines.Add("Risk gate: " + (settings.RequireApprovalForDestructiveChanges ? "on" : "off"));
-            foreach (string issue in settings.Validate())
-            {
-                lines.Add("Warning: " + issue);
-            }
+            foreach (string issue in settings.Validate()) lines.Add("Warning: " + issue);
             return string.Join(Environment.NewLine, lines);
         }
 
@@ -215,258 +117,57 @@ namespace AI_Assistant.AI
             {
                 string activeScene = unityTools.GetActiveScene();
                 string hierarchy = unityTools.GetSceneHierarchy();
-
-                if (LooksLikeConnectionFailure(activeScene)
-                    && LooksLikeConnectionFailure(hierarchy))
-                {
-                    return "";
-                }
-
-                return Compact(
-                    "ACTIVE SCENE:\n" + activeScene
-                    + "\n\nLIVE HIERARCHY WITH CURRENT TRANSFORMS:\n" + hierarchy,
-                    9000
-                );
+                if (LooksLikeConnectionFailure(activeScene) && LooksLikeConnectionFailure(hierarchy)) return "";
+                return Compact("ACTIVE SCENE:\n" + activeScene + "\n\nLIVE HIERARCHY WITH CURRENT TRANSFORMS:\n" + hierarchy, 9000);
             }
-            catch
-            {
-                return "";
-            }
+            catch { return ""; }
         }
 
-        private static string BuildBlenderAugmentedPrompt(
-            string originalPrompt,
-            string qualityProfile,
-            string unityContext
-        )
+        private static string BuildBlenderAugmentedPrompt(string originalPrompt, string qualityProfile, string unityContext)
         {
             string qualityRules = BuildQualityRules(qualityProfile);
             string contextRules = string.IsNullOrWhiteSpace(unityContext)
                 ? "Live Unity context was unavailable. Keep scene instances conservatively spaced and centered around a neutral origin."
-                : "Use the LIVE UNITY CONTEXT below as authoritative placement context. Do not invent a completely separate coordinate system. Respect existing Ground/terrain position and scale, existing scene roots, current object locations and available space. Place generated instances so they integrate into the current Unity scene rather than blindly clustering around origin. Avoid obvious object intersections and keep floor-standing assets aligned to the scene ground plane.";
-
-            return originalPrompt
-                + "\n\n--- HOST QUALITY PROFILE ---\n"
-                + "QUALITY PROFILE: " + qualityProfile + "\n"
-                + qualityRules
-                + "\nThis explicit quality profile overrides any generic low-poly preference when the selected profile is Medium, High or AA. Preserve real-time game readiness, but do not downgrade requested detail just to reduce polygon count."
-                + "\n\n--- HOST BLENDER SAFETY RULES ---\n"
-                + "Do not modify Blender World/node_tree/environment shader nodes for model-generation tasks; Unity owns final scene lighting/environment. If you use any bpy collection or nodes.get(...) lookup, check the returned object for None before accessing inputs, outputs, data or properties."
-                + "\n\n--- HOST UNITY-AWARE LAYOUT RULES ---\n"
-                + contextRules
-                + (string.IsNullOrWhiteSpace(unityContext)
-                    ? ""
-                    : "\n\nLIVE UNITY CONTEXT:\n" + unityContext);
+                : "Use the LIVE UNITY CONTEXT below as authoritative placement context. Respect the existing Ground/terrain, current object locations and available space. Keep floor-standing assets aligned to the ground plane and avoid obvious intersections. Do not invent a disconnected coordinate system.";
+            return originalPrompt + "\n\n--- HOST QUALITY PROFILE ---\nQUALITY PROFILE: " + qualityProfile + "\n" + qualityRules
+                + "\nThe selected profile controls detail density, silhouette quality, bevel usage and primitive segmentation. Do not downgrade Medium/High/AA to low-poly."
+                + "\n\n--- HOST UNITY-AWARE LAYOUT RULES ---\n" + contextRules
+                + (string.IsNullOrWhiteSpace(unityContext) ? "" : "\n\nLIVE UNITY CONTEXT:\n" + unityContext);
         }
 
-        private static string BuildQualityRules(string profile)
+        private static string BuildQualityRules(string profile) => profile switch
         {
-            switch (profile)
-            {
-                case "Low":
-                    return "Use clearly low-poly/stylized game-ready geometry, strong silhouettes, minimal bevels and economical triangle budgets. Favor simple readable forms over small geometric detail.";
-
-                case "High":
-                    return "Use high-quality real-time geometry with refined silhouettes, physically believable proportions, selective bevels, smooth shading where appropriate, clean hard-surface edges, secondary geometric details and materially meaningful separations. Spend triangles on silhouette and visible detail, not hidden surfaces.";
-
-                case "AA":
-                    return "Target AA / medium-high production quality for a PC/console survival-horror game. Use polished silhouettes, realistic proportions, bevels on important hard edges, smooth shading/weighted-looking normals where appropriate, layered primary/secondary/tertiary geometric detail, sensible modular construction and clean topology. Triangle budgets may be substantially higher than low-poly assets, but geometry must remain purposeful and real-time game-ready. Do not make the asset look primitive merely to save triangles.";
-
-                default:
-                    return "Use medium-quality production game assets: cleaner and more detailed than low-poly, with good silhouettes, sensible bevels, realistic proportions, moderate secondary details and efficient real-time topology. This is the default profile.";
-            }
-        }
+            "Low" => "Use economical low-poly geometry, strong silhouettes, minimal bevels and low segment counts.",
+            "High" => "Use refined real-time geometry, realistic proportions, selective bevels, higher segment counts and meaningful secondary details.",
+            "AA" => "Target AA / medium-high PC-console quality: polished silhouettes, realistic proportions, bevels on important hard edges, layered primary/secondary/tertiary geometry, smooth curved forms where appropriate and purposeful real-time detail.",
+            _ => "Use medium-quality production game assets: clearly more detailed than low-poly, good silhouettes, sensible bevels, moderate secondary detail and efficient real-time geometry."
+        };
 
         private static string DetectQualityProfile(string prompt)
         {
             string p = (prompt ?? "").Trim().ToLowerInvariant();
-
-            if (ContainsAny(
-                    p,
-                    "aa quality",
-                    "aa-quality",
-                    "aa model",
-                    "medium-high",
-                    "medium high",
-                    "double a",
-                    "the forest style",
-                    "sons of the forest style"
-                ))
-            {
-                return "AA";
-            }
-
-            if (ContainsAny(
-                    p,
-                    "high quality",
-                    "high-quality",
-                    "high detail",
-                    "high-detail",
-                    "detailed model",
-                    "vrlo detalj"
-                ))
-            {
-                return "High";
-            }
-
-            if (ContainsAny(
-                    p,
-                    "low poly",
-                    "low-poly",
-                    "low detail",
-                    "low-detail",
-                    "mobile quality",
-                    "minimal detail"
-                ))
-            {
-                return "Low";
-            }
-
-            if (ContainsAny(
-                    p,
-                    "medium quality",
-                    "medium-quality",
-                    "medium detail",
-                    "medium-detail"
-                ))
-            {
-                return "Medium";
-            }
-
+            if (ContainsAny(p, "aa quality", "aa-quality", "aa model", "medium-high", "medium high", "double a", "the forest style", "sons of the forest style")) return "AA";
+            if (ContainsAny(p, "high quality", "high-quality", "high detail", "high-detail", "detailed model", "vrlo detalj")) return "High";
+            if (ContainsAny(p, "low poly", "low-poly", "low detail", "low-detail", "mobile quality", "minimal detail")) return "Low";
+            if (ContainsAny(p, "medium quality", "medium-quality", "medium detail", "medium-detail")) return "Medium";
             return "Medium";
         }
 
-        private static bool IsMalformedBlenderScenePlan(string result)
-        {
-            string text = (result ?? "").Trim();
-            return text.StartsWith(
-                    "Blender Agent received invalid scene JSON:",
-                    StringComparison.OrdinalIgnoreCase
-                )
-                && (
-                    text.Contains("assets array is empty", StringComparison.OrdinalIgnoreCase)
-                    || text.Contains("root_object", StringComparison.OrdinalIgnoreCase)
-                    || text.Contains("script is empty", StringComparison.OrdinalIgnoreCase)
-                );
-        }
-
-        private static bool IsRecoverableBlenderRuntimeFailure(string result)
-        {
-            string text = (result ?? "").ToLowerInvariant();
-            return text.Contains("nonetype")
-                    && text.Contains("inputs")
-                || text.Contains("nodes.get")
-                    && text.Contains("attributeerror")
-                || text.Contains("world.node_tree")
-                    && text.Contains("attributeerror");
-        }
-
-        private static bool ContainsAny(string text, params string[] values)
-        {
-            foreach (string value in values)
-            {
-                if (text.Contains(value, StringComparison.OrdinalIgnoreCase))
-                {
-                    return true;
-                }
-            }
-
-            return false;
-        }
-
-        private static bool LooksLikeConnectionFailure(string value)
-        {
-            string text = (value ?? "").ToLowerInvariant();
-            return string.IsNullOrWhiteSpace(text)
-                || text.Contains("connection")
-                || text.Contains("refused")
-                || text.Contains("timed out")
-                || text.Contains("unity bridge") && text.Contains("error");
-        }
-
-        private static string Compact(string value, int maxChars)
-        {
-            value ??= "";
-            if (value.Length <= maxChars)
-            {
-                return value;
-            }
-
-            return value.Substring(0, maxChars) + "\n...[Unity context truncated by host]";
-        }
-
+        private static bool ContainsAny(string text, params string[] values) { foreach (string value in values) if (text.Contains(value, StringComparison.OrdinalIgnoreCase)) return true; return false; }
+        private static bool LooksLikeConnectionFailure(string value) { string text = (value ?? "").ToLowerInvariant(); return string.IsNullOrWhiteSpace(text) || text.Contains("connection") || text.Contains("refused") || text.Contains("timed out") || (text.Contains("unity bridge") && text.Contains("error")); }
+        private static string Compact(string value, int maxChars) { value ??= ""; return value.Length <= maxChars ? value : value.Substring(0, maxChars) + "\n...[Unity context truncated by host]"; }
         private static bool IsHighRisk(string prompt)
         {
             string p = (prompt ?? "").Trim().ToLowerInvariant();
-            string[] signals =
-            {
-                "delete ", "obrisi", "obriši", "remove all", "delete all",
-                "reset scene", "wipe", "overwrite", "replace entire", "replace all",
-                "remove script", "delete script", "delete folder", "remove folder",
-                "clear scene", "destroy all", "rename project", "move project"
-            };
-
-            foreach (string signal in signals)
-            {
-                if (p.Contains(signal))
-                {
-                    return true;
-                }
-            }
-            return false;
+            string[] signals = { "delete ", "obrisi", "obriši", "remove all", "delete all", "reset scene", "wipe", "overwrite", "replace entire", "replace all", "remove script", "delete script", "delete folder", "remove folder", "clear scene", "destroy all", "rename project", "move project" };
+            foreach (string signal in signals) if (p.Contains(signal)) return true; return false;
         }
-
-        private static bool IsPlanOnly(string prompt)
-        {
-            return (prompt ?? "").Trim().StartsWith("/plan ", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool IsApproval(string prompt)
-        {
-            string p = (prompt ?? "").Trim();
-            return p.Equals("approve", StringComparison.OrdinalIgnoreCase)
-                || p.Equals("odobri", StringComparison.OrdinalIgnoreCase)
-                || p.Equals("potvrdi", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool IsCancellation(string prompt)
-        {
-            string p = (prompt ?? "").Trim();
-            return p.Equals("cancel", StringComparison.OrdinalIgnoreCase)
-                || p.Equals("otkazi", StringComparison.OrdinalIgnoreCase)
-                || p.Equals("otkaži", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static string IsKeyConfigured(string name)
-        {
-            return string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name))
-                ? "not configured"
-                : "configured";
-        }
-
-        private static bool IsAgentV2Enabled()
-        {
-            return !string.Equals(
-                Environment.GetEnvironmentVariable("AI_AGENT_V2"),
-                "0",
-                StringComparison.OrdinalIgnoreCase
-            );
-        }
-
-        private static bool IsContinuation(string prompt)
-        {
-            string value = (prompt ?? "").Trim().ToLowerInvariant();
-            return value == "nastavi"
-                || value == "continue"
-                || value == "nastavi dalje"
-                || value == "probaj opet"
-                || value == "try again"
-                || value == "opet";
-        }
-
-        private void ReportActivity(string message)
-        {
-            Activity?.Invoke(message);
-        }
+        private static bool IsPlanOnly(string prompt) => (prompt ?? "").Trim().StartsWith("/plan ", StringComparison.OrdinalIgnoreCase);
+        private static bool IsApproval(string prompt) { string p = (prompt ?? "").Trim(); return p.Equals("approve", StringComparison.OrdinalIgnoreCase) || p.Equals("odobri", StringComparison.OrdinalIgnoreCase) || p.Equals("potvrdi", StringComparison.OrdinalIgnoreCase); }
+        private static bool IsCancellation(string prompt) { string p = (prompt ?? "").Trim(); return p.Equals("cancel", StringComparison.OrdinalIgnoreCase) || p.Equals("otkazi", StringComparison.OrdinalIgnoreCase) || p.Equals("otkaži", StringComparison.OrdinalIgnoreCase); }
+        private static string IsKeyConfigured(string name) => string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable(name)) ? "not configured" : "configured";
+        private static bool IsAgentV2Enabled() => !string.Equals(Environment.GetEnvironmentVariable("AI_AGENT_V2"), "0", StringComparison.OrdinalIgnoreCase);
+        private static bool IsContinuation(string prompt) { string value = (prompt ?? "").Trim().ToLowerInvariant(); return value == "nastavi" || value == "continue" || value == "nastavi dalje" || value == "probaj opet" || value == "try again" || value == "opet"; }
+        private void ReportActivity(string message) => Activity?.Invoke(message);
     }
 }
