@@ -58,6 +58,7 @@ namespace AI_Assistant.AI
 
         public async Task<string> Ask(string prompt)
         {
+            AgentCancellationHub.BeginTask();
             string normalizedPrompt = (prompt ?? "").Trim();
 
             if (IsApproval(normalizedPrompt) && !string.IsNullOrWhiteSpace(pendingHighRiskPrompt))
@@ -87,6 +88,12 @@ namespace AI_Assistant.AI
             }
 
             return await RouteApprovedAsync(normalizedPrompt);
+        }
+
+        public void CancelCurrentWork()
+        {
+            AgentCancellationHub.CancelCurrent();
+            ReportActivity("[CANCEL] stop requested by user");
         }
 
         private async Task<string> RouteApprovedAsync(string normalizedPrompt)
@@ -126,6 +133,7 @@ namespace AI_Assistant.AI
 
         public void ResetConversationContext()
         {
+            AgentCancellationHub.CancelCurrent();
             agentV2.Reset();
             legacy.ResetConversationContext();
             lastUnityV2Goal = "";
@@ -139,6 +147,7 @@ namespace AI_Assistant.AI
             lines.Add("Unity root: " + (string.IsNullOrWhiteSpace(settings.UnityProjectRoot) ? "not configured" : settings.UnityProjectRoot));
             string blender = settings.ResolveBlenderExecutable();
             lines.Add("Blender: " + (string.IsNullOrWhiteSpace(blender) ? "not found" : blender));
+            lines.Add("Blender model: " + (Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_MODEL") ?? "inclusionai/ling-3.0-flash-fin:free"));
             lines.Add("OpenRouter: " + IsKeyConfigured("OPENROUTER_API_KEY"));
             lines.Add("Gemini: " + IsKeyConfigured("GEMINI_API_KEY"));
             lines.Add("Groq: " + IsKeyConfigured("GROQ_API_KEY"));
