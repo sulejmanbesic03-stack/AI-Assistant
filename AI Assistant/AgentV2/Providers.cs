@@ -452,7 +452,9 @@ namespace AI_Assistant.AgentV2
             AgentTaskStateV2 task,
             string systemPrompt,
             string userPrompt,
-            CancellationToken cancellationToken = default
+            CancellationToken cancellationToken = default,
+            Func<ProviderReplyV2, bool>? acceptReply = null,
+            ISet<string>? excludedProviders = null
         )
         {
             if (AgentCancellationHub.IsCancellationRequested)
@@ -495,7 +497,9 @@ namespace AI_Assistant.AgentV2
                     };
                 }
 
-                if (!provider.IsConfigured || IsCoolingDown(provider.Name))
+                if (!provider.IsConfigured
+                    || IsCoolingDown(provider.Name)
+                    || (excludedProviders?.Contains(provider.Name) ?? false))
                 {
                     continue;
                 }
@@ -513,8 +517,24 @@ namespace AI_Assistant.AgentV2
 
                 if (reply.Success)
                 {
-                    RecordSuccess(provider.Name);
-                    return reply;
+                    if (acceptReply == null || acceptReply(reply))
+                    {
+                        RecordSuccess(provider.Name);
+                        return reply;
+                    }
+
+                    reply = new ProviderReplyV2
+                    {
+                        Success = false,
+                        Provider = reply.Provider,
+                        Model = reply.Model,
+                        StatusCode = (int)HttpStatusCode.BadGateway,
+                        Error = "Provider returned an unusable structured response. Trying the next provider."
+                    };
+                    last = reply;
+                    RecordFailure(provider.Name);
+                    activity("[V2 PROVIDER] " + provider.Name + " returned malformed structured output; trying next provider");
+                    continue;
                 }
 
                 RecordFailure(provider.Name);

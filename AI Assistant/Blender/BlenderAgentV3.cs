@@ -333,6 +333,7 @@ namespace AI_Assistant.Blender
             int maxCalls = int.TryParse(Environment.GetEnvironmentVariable("AI_MAX_MODEL_CALLS"), out int configuredCalls)
                 ? Math.Clamp(configuredCalls, 1, 20)
                 : 8;
+            HashSet<string> excludedProviders = new(StringComparer.OrdinalIgnoreCase);
             if (primary.IsConfigured)
             {
                 if (task.ModelCalls >= maxCalls)
@@ -341,10 +342,30 @@ namespace AI_Assistant.Blender
                 task.ModelCalls++;
                 activity("[V2 MODEL] " + primary.Name + " / " + primary.ModelName + " call " + task.ModelCalls);
                 ProviderReplyV2 r = await primary.CompleteAsync(system, user, token);
-                if (r.Success || r.StatusCode == 499) return r;
-                activity("[V2 PROVIDER] Blender Gemini unavailable; using fallback chain");
+                if (r.StatusCode == 499) return r;
+                if (r.Success && IsUsableBuilderPlanReply(r)) return r;
+
+                excludedProviders.Add(primary.Name);
+                activity(
+                    r.Success
+                        ? "[BLENDER V3 SCHEMA] Gemini returned malformed/truncated builder JSON; using independent fallback"
+                        : "[V2 PROVIDER] Blender Gemini unavailable; using fallback chain"
+                );
             }
-            return await providers.CompleteAsync(task, system, user, token);
+            return await providers.CompleteAsync(
+                task,
+                system,
+                user,
+                token,
+                acceptReply: IsUsableBuilderPlanReply,
+                excludedProviders: excludedProviders
+            );
+        }
+
+        private static bool IsUsableBuilderPlanReply(ProviderReplyV2 reply)
+        {
+            return reply.Success
+                && TryParsePlan(reply.Content, out _, out _);
         }
 
         private static string BuildSystemPrompt(string version)
