@@ -80,6 +80,20 @@ namespace AI_Assistant.Blender
             py.AppendLine("        if metal is not None: metal.default_value = metallic");
             py.AppendLine("        rough = bsdf.inputs.get('Roughness')");
             py.AppendLine("        if rough is not None: rough.default_value = roughness");
+            py.AppendLine("        detail_name = name.lower()");
+            py.AppendLine("        if not any(token in detail_name for token in ('eye', 'metal')):");
+            py.AppendLine("            noise = m.node_tree.nodes.new('ShaderNodeTexNoise')");
+            py.AppendLine("            noise.name = 'AIA_SurfaceDetail'");
+            py.AppendLine("            scale = 20.0 if 'skin' in detail_name else (38.0 if 'leather' in detail_name else 85.0)");
+            py.AppendLine("            noise.inputs['Scale'].default_value = scale");
+            py.AppendLine("            noise.inputs['Detail'].default_value = 3.0");
+            py.AppendLine("            noise.inputs['Roughness'].default_value = 0.65");
+            py.AppendLine("            bump = m.node_tree.nodes.new('ShaderNodeBump')");
+            py.AppendLine("            bump.name = 'AIA_MicroSurface'");
+            py.AppendLine("            bump.inputs['Strength'].default_value = 0.08 if 'skin' in detail_name else 0.16");
+            py.AppendLine("            bump.inputs['Distance'].default_value = 0.025");
+            py.AppendLine("            m.node_tree.links.new(noise.outputs['Fac'], bump.inputs['Height'])");
+            py.AppendLine("            m.node_tree.links.new(bump.outputs['Normal'], bsdf.inputs['Normal'])");
             py.AppendLine("    return m");
             py.AppendLine();
             py.AppendLine("def aia_finish(obj, name, parent, pos, rot, dims, mat, bevel, bevel_segments, smooth):");
@@ -320,7 +334,9 @@ def aia_join(objects, name):
 def aia_parent_details(body, objects):
     for obj in objects:
         if obj is not None:
+            world = obj.matrix_world.copy()
             obj.parent = body
+            obj.matrix_world = world
 
 def aia_humanoid(name, shoulder_width, body_depth, height, mats, style, quality):
     # Semantic blueprint -> deterministic Blender API character. The model never authors topology.
@@ -362,6 +378,10 @@ def aia_humanoid(name, shoulder_width, body_depth, height, mats, style, quality)
 
     body = aia_join(body_parts, name)
     bpy.context.view_layer.objects.active = body
+    body.select_set(True)
+    # Join keeps the first pelvis object's origin. Bake it before parenting details,
+    # otherwise Blender adds the pelvis offset to every garment a second time.
+    bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
     try:
         remesh = body.modifiers.new(name='AIA_ConnectedAnatomy', type='REMESH')
         remesh.mode = 'VOXEL'
@@ -396,6 +416,9 @@ def aia_humanoid(name, shoulder_width, body_depth, height, mats, style, quality)
     for side, sign in (('L',-1.0),('R',1.0)):
         details.append(aia_segment(name + '_' + side + '_Sleeve', (sign*0.205*w,0,1.47*s), (sign*0.395*w,0.004*d,1.28*s), 0.086*w,0.069*w,shirt,segments))
         details.append(aia_uv(name + '_' + side + '_Glove', (sign*0.535*w,-0.016*d,1.015*s), (0.057*w,0.037*d,0.087*s), leather, segments))
+        for finger, y in enumerate((-0.030,-0.010,0.010,0.030)):
+            details.append(aia_segment(name + '_' + side + '_Finger' + str(finger+1), (sign*0.552*w,y*d,1.005*s), (sign*0.602*w,y*d,(0.985-finger*0.004)*s), 0.010*w,0.008*w,leather,max(16,segments//3)))
+        details.append(aia_segment(name + '_' + side + '_Thumb', (sign*0.535*w,-0.038*d,1.035*s), (sign*0.575*w,-0.058*d,1.000*s), 0.012*w,0.009*w,leather,max(16,segments//3)))
 
     # Cargo pants, reinforced knees and boots.
     details.append(aia_uv(name + '_PantsWaist', (0,0.004*d,0.99*s), (0.205*w,0.145*d,0.175*s), pants, segments))
@@ -409,8 +432,12 @@ def aia_humanoid(name, shoulder_width, body_depth, height, mats, style, quality)
     # Face, ears and layered hair masses.
     details.append(aia_uv(name + '_Nose', (0,-0.096*d,1.735*s), (0.024*w,0.027*d,0.040*s), skin, max(24,segments//2)))
     for side, sign in (('L',-1.0),('R',1.0)):
-        details.append(aia_uv(name + '_' + side + '_Eye', (sign*0.041*w,-0.088*d,1.775*s), (0.016*w,0.010*d,0.012*s), eyes, max(24,segments//2)))
+        details.append(aia_uv(name + '_' + side + '_Eye', (sign*0.041*w,-0.093*d,1.775*s), (0.016*w,0.011*d,0.012*s), eyes, max(24,segments//2)))
         details.append(aia_uv(name + '_' + side + '_Ear', (sign*0.108*w,-0.001*d,1.745*s), (0.015*w,0.012*d,0.036*s), skin, max(20,segments//2)))
+        details.append(aia_segment(name + '_' + side + '_Eyebrow', (sign*0.020*w,-0.096*d,1.805*s), (sign*0.065*w,-0.092*d,1.802*s), 0.006*w,0.005*w,hair,max(14,segments//3)))
+    details.append(aia_segment(name + '_Mouth', (-0.034*w,-0.096*d,1.686*s), (0.034*w,-0.096*d,1.686*s), 0.006*w,0.005*w,hair,max(14,segments//3)))
+    details.append(aia_box(name + '_ShirtCollarL', (-0.055*w,-0.143*d,1.57*s), (0.050*w,0.010*d,0.085*s), shirt, 0.006*s))
+    details.append(aia_box(name + '_ShirtCollarR', (0.055*w,-0.143*d,1.57*s), (0.050*w,0.010*d,0.085*s), shirt, 0.006*s))
     for i, (x,y,z,sx,sy,sz) in enumerate(((-0.065,0.015,1.845,0.065,0.074,0.052),(0,0.025,1.866,0.075,0.078,0.052),(0.065,0.015,1.845,0.065,0.074,0.052),(-0.075,0.045,1.79,0.052,0.070,0.070),(0.075,0.045,1.79,0.052,0.070,0.070))):
         details.append(aia_uv(name + '_Hair_' + str(i+1), (x*w,y*d,z*s), (sx*w,sy*d,sz*s), hair, max(24,segments//2)))
 

@@ -722,11 +722,15 @@ namespace AI_Assistant.Blender
                     .Any(p => p.Type.Equals("humanoid", StringComparison.OrdinalIgnoreCase));
                 if (!hostHumanoid || plan.Assets.Count != 1 || plan.Instances.Count != 1) return false;
                 Topology character = topology[0];
+                BlenderBuilderPart blueprint = plan.Assets[0].Builder.Parts[0];
+                float expectedHeight = blueprint.Dimensions.Length >= 3 ? blueprint.Dimensions[2] : 1.8f;
                 int minimumMeshes = quality.Equals("AA", StringComparison.OrdinalIgnoreCase) ? 14 : 9;
                 int minimumMaterials = quality.Equals("AA", StringComparison.OrdinalIgnoreCase) ? 10 : 6;
                 if (character.MeshObjects < minimumMeshes
                     || character.MaterialSlots < minimumMaterials
-                    || character.BodyComponents != 1) return false;
+                    || character.BodyComponents != 1
+                    || character.BoundsZ < expectedHeight * 0.88f
+                    || character.BoundsZ > expectedHeight * 1.18f) return false;
             }
             return true;
         }
@@ -766,6 +770,12 @@ namespace AI_Assistant.Blender
                 int target = assets.TryGetValue(item.AssetName, out BuilderAssetPlan? asset)
                     ? asset.TargetTriangles
                     : 0;
+                string characterScale = plan.RequestKind.Equals("character", StringComparison.OrdinalIgnoreCase)
+                    && asset != null
+                    && asset.Builder.Parts.Count > 0
+                    && asset.Builder.Parts[0].Dimensions.Length >= 3
+                        ? ", expectedHeight=" + asset.Builder.Parts[0].Dimensions[2].ToString("0.###", CultureInfo.InvariantCulture)
+                        : "";
                 lines.Add(
                     "- " + item.AssetName
                     + ": " + item.Triangles + "/" + target + " tris, score " + item.Score + "/100"
@@ -774,6 +784,7 @@ namespace AI_Assistant.Blender
                     + ", nonManifold=" + item.NonManifoldEdges
                     + ", degenerate=" + item.DegenerateFaces
                     + ", bodyComponents=" + item.BodyComponents
+                    + characterScale
                     + ", bounds=" + item.BoundsX.ToString("0.###", CultureInfo.InvariantCulture)
                     + "x" + item.BoundsY.ToString("0.###", CultureInfo.InvariantCulture)
                     + "x" + item.BoundsZ.ToString("0.###", CultureInfo.InvariantCulture)
