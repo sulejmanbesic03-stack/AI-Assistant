@@ -26,14 +26,12 @@ namespace AI_Assistant.Blender
         private readonly IAIProviderV2 blenderPrimary;
         private readonly RuntimeSettings settings;
         private readonly Action<string> activity;
-        private readonly BlenderVisualQualityGate visualQuality;
 
         public BlenderAgentV2(RuntimeSettings settings, Action<string> activity)
         {
             this.settings = settings;
             this.activity = activity;
             providers = new ProviderRouterV2(activity);
-            visualQuality = new BlenderVisualQualityGate(activity);
 
             blenderPrimary = new OpenAiCompatibleProviderV2(
                 "Blender-InclusionAI",
@@ -41,8 +39,7 @@ namespace AI_Assistant.Blender
                 Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_MODEL")
                     ?? "inclusionai/ling-3.0-flash-fin:free",
                 "OPENROUTER_API_KEY",
-                180,
-                16000
+                150
             );
         }
 
@@ -64,7 +61,6 @@ namespace AI_Assistant.Blender
         {
             CancellationToken cancellationToken = AgentCancellationHub.Token;
             string goal = CleanGoal(prompt);
-            string quality = DetectQuality(goal);
 
             if (string.IsNullOrWhiteSpace(goal))
             {
@@ -88,7 +84,6 @@ namespace AI_Assistant.Blender
             }
 
             activity("[BLENDER] target " + blenderVersion);
-            activity("[BLENDER ORGANIC] controlled direct mesh · " + quality);
 
             string workspace = settings.BlenderWorkspace;
             Directory.CreateDirectory(workspace);
@@ -110,7 +105,7 @@ namespace AI_Assistant.Blender
 
             ProviderReplyV2 reply = await CompleteBlenderModelAsync(
                 task,
-                BuildSystemPrompt(blenderVersion, goal),
+                BuildSystemPrompt(blenderVersion),
                 BuildUserPrompt(goal, blenderVersion),
                 cancellationToken
             );
@@ -130,29 +125,6 @@ namespace AI_Assistant.Blender
                 return "Blender Agent received invalid scene JSON: " + parseError;
             }
 
-            if (IsCharacterGoal(goal))
-            {
-                if (plan.Assets.Count != 1)
-                {
-                    return "Blender character planner was rejected: expected exactly one complete character asset, received "
-                        + plan.Assets.Count + ". No partial model was imported.";
-                }
-
-                BlenderAssetPlan characterAsset = plan.Assets[0];
-                characterAsset.TargetTriangles = Math.Clamp(characterAsset.TargetTriangles, 15000, 45000);
-                plan.Instances = new List<BlenderInstancePlan>
-                {
-                    new BlenderInstancePlan
-                    {
-                        AssetName = characterAsset.AssetName,
-                        Name = characterAsset.AssetName,
-                        Position = new[] { 0f, 0f, 0f },
-                        Rotation = new[] { 0f, 0f, 0f },
-                        Scale = new[] { 1f, 1f, 1f }
-                    }
-                };
-            }
-
             if (!IsSafeScript(plan.Script, out string safetyError))
             {
                 return "Blender Agent blocked generated script: " + safetyError;
@@ -167,8 +139,6 @@ namespace AI_Assistant.Blender
                 cancellationToken
             );
 
-            await ApplyVisualQualityAsync(first, goal, quality, cancellationToken);
-
             if (first.Cancelled || cancellationToken.IsCancellationRequested)
             {
                 return "Blender task cancelled by user. Any unfinished export was discarded.";
@@ -179,12 +149,12 @@ namespace AI_Assistant.Blender
                 return BuildSuccessReply(first, plan, reply);
             }
 
-            activity("[BLENDER REPAIR] one focused correction from execution/topology/visual report");
+            activity("[BLENDER REPAIR] correcting failed execution/topology from host report");
             task.Phase = AgentTaskPhaseV2.Correcting;
 
             ProviderReplyV2 repairReply = await CompleteBlenderModelAsync(
                 task,
-                BuildSystemPrompt(blenderVersion, goal),
+                BuildSystemPrompt(blenderVersion),
                 BuildRepairPrompt(goal, blenderVersion, plan, first),
                 cancellationToken
             );
@@ -198,7 +168,7 @@ namespace AI_Assistant.Blender
             {
                 return BuildFailureReply(
                     first,
-                    "Blender character failed verification and the single repair model was unavailable: "
+                    "Blender run failed and the repair model was unavailable: "
                     + repairReply.Error
                 );
             }
@@ -207,7 +177,7 @@ namespace AI_Assistant.Blender
             {
                 return BuildFailureReply(
                     first,
-                    "Blender character failed verification and repair JSON was invalid: " + repairParseError
+                    "Blender run failed and repair scene JSON was invalid: " + repairParseError
                 );
             }
 
@@ -228,8 +198,6 @@ namespace AI_Assistant.Blender
                 cancellationToken
             );
 
-            await ApplyVisualQualityAsync(repaired, goal, quality, cancellationToken);
-
             if (repaired.Cancelled || cancellationToken.IsCancellationRequested)
             {
                 return "Blender task cancelled by user. Any unfinished export was discarded.";
@@ -239,7 +207,7 @@ namespace AI_Assistant.Blender
             {
                 return BuildFailureReply(
                     repaired,
-                    "Blender character generation and its single focused repair both failed verification. No model was imported."
+                    "Blender execution and one automatic repair pass both failed verification."
                 );
             }
 
@@ -310,41 +278,6 @@ namespace AI_Assistant.Blender
             );
         }
 
-        private async Task ApplyVisualQualityAsync(
-            BlenderAttemptResult attempt,
-            string goal,
-            string quality,
-            CancellationToken cancellationToken
-        )
-        {
-            bool requiresVisual = quality.Equals("High", StringComparison.OrdinalIgnoreCase)
-                || quality.Equals("AA", StringComparison.OrdinalIgnoreCase);
-
-            if (!requiresVisual || !attempt.ExecutionHealthy || cancellationToken.IsCancellationRequested)
-            {
-                attempt.VisualQualityOk = !requiresVisual;
-                attempt.Success = attempt.ExecutionHealthy && !attempt.TopologyCritical && attempt.VisualQualityOk;
-                return;
-            }
-
-            BlenderVisualQualityResult review = await visualQuality.EvaluateAsync(
-                goal,
-                quality,
-                JsonSerializer.Serialize(attempt.Topology),
-                attempt.PreviewPaths,
-                cancellationToken
-            );
-            attempt.VisualReviewAvailable = review.Available;
-            attempt.VisualScore = review.Score;
-            attempt.VisualFeedback = review.Feedback;
-            attempt.VisualQualityOk = review.Available && review.Passed;
-            attempt.Success = attempt.ExecutionHealthy && !attempt.TopologyCritical && attempt.VisualQualityOk;
-
-            activity(review.Available
-                ? "[BLENDER VISUAL QA] " + review.Score + "/100 · " + (review.Passed ? "PASS" : "REJECT")
-                : "[BLENDER VISUAL QA] unavailable · High/AA character will not be imported");
-        }
-
         private async Task<BlenderAttemptResult> ExecutePlanAsync(
             BlenderScenePlan plan,
             string runRoot,
@@ -356,12 +289,6 @@ namespace AI_Assistant.Blender
         {
             string safeSceneName = SanitizeFileName(plan.SceneName);
             string blendPath = Path.Combine(runRoot, safeSceneName + ".blend");
-            List<string> previewPaths = new List<string>
-            {
-                Path.Combine(runRoot, safeSceneName + "_preview_iso.png"),
-                Path.Combine(runRoot, safeSceneName + "_preview_front.png"),
-                Path.Combine(runRoot, safeSceneName + "_preview_side.png")
-            };
             string scriptPath = Path.Combine(runRoot, scriptFileName);
             string logPath = Path.Combine(runRoot, logFileName);
 
@@ -402,8 +329,7 @@ namespace AI_Assistant.Blender
             string finalScript = BuildExecutableScript(
                 hardenedBody,
                 blendPath,
-                runtimeAssets,
-                previewPaths
+                runtimeAssets
             );
 
             File.WriteAllText(
@@ -472,16 +398,9 @@ namespace AI_Assistant.Blender
                 BlendExists = blendExists,
                 PythonFailure = pythonFailure,
                 HostAdjusted = hostAdjusted,
-                ExecutionHealthy = execution.ExitCode == 0
-                    && !execution.TimedOut
-                    && !execution.Cancelled
-                    && !pythonFailure
-                    && blendExists
-                    && everyExportExists,
                 TopologyCritical = topologyCritical,
                 RuntimeAssets = runtimeAssets,
-                Topology = topology,
-                PreviewPaths = previewPaths
+                Topology = topology
             };
 
             if (execution.Cancelled)
@@ -547,13 +466,6 @@ namespace AI_Assistant.Blender
                 + " triangles total, minimum topology score "
                 + minScore + "/100."
             );
-            if (attempt.VisualReviewAvailable)
-            {
-                result.AppendLine(
-                    "Visual QA: " + attempt.VisualScore + "/100 · "
-                    + Compact(attempt.VisualFeedback, 320)
-                );
-            }
             result.AppendLine("Blend: " + attempt.BlendPath);
 
             if (!string.IsNullOrWhiteSpace(unityManifest))
@@ -581,16 +493,7 @@ namespace AI_Assistant.Blender
                 + ", pythonFailure=" + attempt.PythonFailure
                 + ", blend=" + attempt.BlendExists
                 + ", topologyCritical=" + attempt.TopologyCritical
-                + ", visual=" + attempt.VisualQualityOk
             );
-
-            if (!string.IsNullOrWhiteSpace(attempt.VisualFeedback))
-            {
-                builder.AppendLine(
-                    "Visual QA: " + attempt.VisualScore + "/100 · "
-                    + Compact(attempt.VisualFeedback, 900)
-                );
-            }
 
             if (attempt.Topology.Count > 0)
             {
@@ -883,8 +786,7 @@ namespace AI_Assistant.Blender
         private static string BuildExecutableScript(
             string generatedScript,
             string blendPath,
-            List<AssetRuntimeSpec> assets,
-            List<string> previewPaths
+            List<AssetRuntimeSpec> assets
         )
         {
             string pyBlend = PythonLiteral(blendPath);
@@ -922,7 +824,7 @@ namespace AI_Assistant.Blender
             script.AppendLine("    topology = []");
             script.AppendLine("    for spec in asset_specs:");
             script.AppendLine("        root = bpy.data.objects.get(spec['root'])");
-            script.AppendLine("        item = {'asset_name': spec['name'], 'root_object': spec['root'], 'triangles': 0, 'vertices': 0, 'edges': 0, 'polygons': 0, 'mesh_objects': 0, 'material_slots': 0, 'nonmanifold_edges': 0, 'loose_vertices': 0, 'degenerate_faces': 0, 'dimensions': [0.0,0.0,0.0], 'target_triangles': spec['target'], 'score': 100, 'warnings': [], 'missing_root': False}");
+            script.AppendLine("        item = {'asset_name': spec['name'], 'root_object': spec['root'], 'triangles': 0, 'vertices': 0, 'edges': 0, 'polygons': 0, 'nonmanifold_edges': 0, 'loose_vertices': 0, 'degenerate_faces': 0, 'dimensions': [0.0,0.0,0.0], 'target_triangles': spec['target'], 'score': 100, 'warnings': [], 'missing_root': False}");
             script.AppendLine("        if root is None:");
             script.AppendLine("            item['missing_root'] = True");
             script.AppendLine("            item['score'] = 0");
@@ -938,8 +840,6 @@ namespace AI_Assistant.Blender
             script.AppendLine("            objs.append(current)");
             script.AppendLine("            stack.extend(list(current.children))");
             script.AppendLine("        mesh_objs = [o for o in objs if o.type == 'MESH']");
-            script.AppendLine("        item['mesh_objects'] = len(mesh_objs)");
-            script.AppendLine("        item['material_slots'] = sum(len(o.material_slots) for o in mesh_objs)");
             script.AppendLine("        coords = []");
             script.AppendLine("        for obj in mesh_objs:");
             script.AppendLine("            mesh = obj.data");
@@ -989,36 +889,6 @@ namespace AI_Assistant.Blender
             script.AppendLine("        else:");
             script.AppendLine("            bpy.ops.export_scene.fbx(filepath=spec['path'], use_selection=True)");
             script.AppendLine("        topology.append(item)");
-            script.AppendLine("    # Host-controlled multi-angle preview; generated code cannot fake or skip visual QA.");
-            script.AppendLine("    bpy.context.view_layer.update()");
-            script.AppendLine("    preview_objects = [o for o in bpy.context.scene.objects if o.type in {'MESH','CURVE','FONT'}]");
-            script.AppendLine("    preview_corners = []");
-            script.AppendLine("    for obj in preview_objects:");
-            script.AppendLine("        preview_corners.extend([obj.matrix_world @ Vector(corner) for corner in obj.bound_box])");
-            script.AppendLine("    if preview_corners:");
-            script.AppendLine("        preview_min = Vector((min(v.x for v in preview_corners), min(v.y for v in preview_corners), min(v.z for v in preview_corners)))");
-            script.AppendLine("        preview_max = Vector((max(v.x for v in preview_corners), max(v.y for v in preview_corners), max(v.z for v in preview_corners)))");
-            script.AppendLine("        preview_center = (preview_min + preview_max) * 0.5");
-            script.AppendLine("        preview_radius = max(1.5, (preview_max - preview_min).length * 0.62)");
-            script.AppendLine("        scene = bpy.context.scene");
-            script.AppendLine("        scene.render.resolution_x = 768; scene.render.resolution_y = 768; scene.render.resolution_percentage = 100");
-            script.AppendLine("        scene.render.image_settings.file_format = 'PNG'");
-            script.AppendLine("        scene.world.color = (0.045, 0.055, 0.075)");
-            script.AppendLine("        try: scene.render.engine = 'BLENDER_EEVEE_NEXT'");
-            script.AppendLine("        except: scene.render.engine = 'BLENDER_EEVEE'");
-            script.AppendLine("        camera_data = bpy.data.cameras.new('AIA_QA_Camera')");
-            script.AppendLine("        camera = bpy.data.objects.new('AIA_QA_Camera', camera_data)");
-            script.AppendLine("        scene.collection.objects.link(camera); scene.camera = camera");
-            script.AppendLine("        key_data = bpy.data.lights.new('AIA_QA_Key', 'AREA'); key_data.energy = 1400; key_data.size = max(4.0, preview_radius)");
-            script.AppendLine("        key = bpy.data.objects.new('AIA_QA_Key', key_data); scene.collection.objects.link(key); key.location = preview_center + Vector((preview_radius*0.7, -preview_radius*0.8, preview_radius*1.2))");
-            script.AppendLine("        fill_data = bpy.data.lights.new('AIA_QA_Fill', 'AREA'); fill_data.energy = 800; fill_data.size = max(3.0, preview_radius)");
-            script.AppendLine("        fill = bpy.data.objects.new('AIA_QA_Fill', fill_data); scene.collection.objects.link(fill); fill.location = preview_center + Vector((-preview_radius*0.8, preview_radius*0.3, preview_radius*0.6))");
-            script.AppendLine("        for lamp in (key, fill): lamp.rotation_euler = ((preview_center-lamp.location).to_track_quat('-Z','Y')).to_euler()");
-            script.AppendLine("        preview_views = [((1.15,-1.35,0.85), " + PythonLiteral(previewPaths[0]) + "), ((0.0,-1.8,0.35), " + PythonLiteral(previewPaths[1]) + "), ((1.8,0.0,0.35), " + PythonLiteral(previewPaths[2]) + ")]");
-            script.AppendLine("        for direction, path in preview_views:");
-            script.AppendLine("            camera.location = preview_center + Vector(direction) * preview_radius");
-            script.AppendLine("            camera.rotation_euler = ((preview_center-camera.location).to_track_quat('-Z','Y')).to_euler(); camera.data.lens = 52");
-            script.AppendLine("            scene.render.filepath = path; bpy.ops.render.render(write_still=True)");
             script.AppendLine("    print('AI_TOPOLOGY_JSON:' + json.dumps(topology, separators=(',', ':')))");
             script.AppendLine("    print('AI_ASSET_EXPORT_OK')");
             script.AppendLine("except Exception:");
@@ -1126,38 +996,21 @@ namespace AI_Assistant.Blender
             return builder.ToString();
         }
 
-        private static string BuildSystemPrompt(string blenderVersion, string goal)
+        private static string BuildSystemPrompt(string blenderVersion)
         {
-            bool character = IsCharacterGoal(goal);
-            string schemaExample = character
-                ? "{\"scene_name\":\"SurvivalCharacter\",\"summary\":\"short\",\"script\":\"complete Python\",\"assets\":[{\"asset_name\":\"SurvivalCharacter\",\"root_object\":\"AIA_SurvivalCharacter\",\"export_format\":\"fbx\",\"target_triangles\":25000}],\"instances\":[{\"asset_name\":\"SurvivalCharacter\",\"name\":\"SurvivalCharacter\",\"position\":[0,0,0],\"rotation\":[0,0,0],\"scale\":[1,1,1]}]}"
-                : "{\"scene_name\":\"Name\",\"summary\":\"short\",\"script\":\"complete Python\",\"assets\":[{\"asset_name\":\"Pump\",\"root_object\":\"AIA_Pump\",\"export_format\":\"fbx\",\"target_triangles\":600}],\"instances\":[{\"asset_name\":\"Pump\",\"name\":\"Pump_01\",\"position\":[0,0,0],\"rotation\":[0,0,0],\"scale\":[1,1,1]}]}";
-            string common =
+            return
                 "You are the Blender implementation engine for a controlled autonomous game-scene pipeline. "
                 + "Target runtime is " + blenderVersion + ". "
                 + "Return strict JSON only with this schema: "
-                + schemaExample + ". "
+                + "{\"scene_name\":\"Name\",\"summary\":\"short\",\"script\":\"complete Python\",\"assets\":[{\"asset_name\":\"Pump\",\"root_object\":\"AIA_Pump\",\"export_format\":\"fbx\",\"target_triangles\":600}],\"instances\":[{\"asset_name\":\"Pump\",\"name\":\"Pump_01\",\"position\":[0,0,0],\"rotation\":[0,0,0],\"scale\":[1,1,1]}]}. "
+                + "The script must create ALL UNIQUE reusable models requested by the user in one Blender run. A request such as a 1990s gas station should become a coherent asset kit such as station building, canopy, pump, sign and useful small props, then instances should lay out the complete scene. "
+                + "Reuse assets through instances instead of generating four separate identical pumps. Use at most 12 unique assets and 48 instances. "
                 + "Every asset MUST have one exact root object named by root_object. Parent every mesh/material object belonging to that asset under that root. Keep each reusable asset root at world origin with identity rotation/scale; scene placement belongs ONLY in the instances array so Unity can assemble it correctly. "
-                + "script must be Python using only bpy, bmesh, math and mathutils. It constructs geometry/materials only and MUST NOT save or export; the host owns save/export and topology inspection. "
+                + "script must be Python using only bpy, math and mathutils. It constructs geometry/materials only and MUST NOT save or export; the host owns save/export and topology inspection. "
                 + "The host starts clean, so do not clear the scene or delete unrelated datablocks. Never mutate an RNA collection while directly iterating it; use list(collection) snapshots. "
                 + "For Blender 3.6 use current 3.x APIs only: use empty_display_type/empty_display_size (never empty_draw_type/empty_draw_size), bpy.data.lights (not lamps), object.select_set(...), bpy.context.view_layer.objects.active and scene.collection.objects.link(...). Do not use Blender 4-only node socket names or APIs. "
+                + "Prefer deterministic low-poly game-ready geometry, sensible proportions, clean silhouettes, applied transforms where useful, named objects and simple Principled BSDF materials. "
                 + "Set realistic target_triangles per UNIQUE asset. Use FBX unless GLB is materially better. No markdown fences and no prose outside JSON.";
-
-            if (!character)
-            {
-                return common
-                    + " The script must create all unique reusable models requested by the user in one Blender run. For a complete environment, make a coherent asset kit and define the final layout through instances. Reuse assets instead of duplicating identical geometry. Use at most 12 unique assets and 48 instances."
-                    + " Create purposeful game-ready geometry with sensible proportions, clean silhouettes, applied transforms where useful, named objects and Principled BSDF materials.";
-            }
-
-            return common
-                + " This is an ORGANIC CHARACTER build, not a primitive asset kit. Return exactly ONE character asset and exactly ONE identity instance at the origin. "
-                + "Create a complete 1.7-1.9 meter humanoid in a neutral A-pose, facing Blender -Y/front, with believable approximately 7.5-head proportions. "
-                + "The anatomical base must read as one continuous connected body: head, neck, torso, shoulders, arms, hands, pelvis, legs and feet. Clothing, hair and equipment may be separate fitted child meshes, but must sit on the body without floating gaps or obvious intersections. "
-                + "Do not use cubes, capsules, spheres or cylinders as finished visible anatomy. Do not make a mannequin assembled from disconnected primitive objects. Use authored mesh vertices/faces, bmesh operations, connected cross-section loops, skin/subdivision workflows, or curves converted and joined into purposeful continuous surfaces. "
-                + "Include readable hands and feet, facial planes/features, joint transitions, layered shirt/jacket/pants/boots as appropriate, hair, seams/panels and several intentionally different materials. Smooth shading alone is not detail. "
-                + "For AA or High quality target roughly 15,000-35,000 purposeful final triangles and at least 8 meaningful material slots across the complete character; do not inflate counts with hidden or duplicated geometry. "
-                + "Apply transforms and relevant modifiers before export. Parent every character object beneath the exact root_object. Keep loose vertices at zero and non-manifold geometry minimal. The host will render three angles and reject incomplete, primitive-looking or visually weak results before Unity import.";
         }
 
         private static string BuildUserPrompt(
@@ -1165,15 +1018,6 @@ namespace AI_Assistant.Blender
             string blenderVersion
         )
         {
-            if (IsCharacterGoal(goal))
-            {
-                return
-                    "Build only the requested standalone character from this ONE instruction. Do not include or reconstruct any environment from Unity.\n"
-                    + "USER GOAL:\n" + goal
-                    + "\nRUNTIME:\n" + blenderVersion
-                    + "\nProduce one complete character asset, one root and one origin instance. The host—not your script—will save, inspect topology, render visual QA, export FBX and import it into Unity. A technically valid primitive mannequin is a failed result.";
-            }
-
             return
                 "Build the complete requested result from this ONE user instruction. Do not require a second prompt to export or place assets in Unity.\n"
                 + "USER GOAL:\n" + goal
@@ -1189,7 +1033,7 @@ namespace AI_Assistant.Blender
         )
         {
             return
-                "The controlled Blender character build failed execution, topology, or visual verification. Return one corrected COMPLETE scene JSON object only. Preserve the user's goal while directly fixing the reported geometry/API/root/topology/visual issue. Do not repeat the same failure and do not add an environment. "
+                "The controlled Blender scene build failed execution or topology verification. Return a corrected COMPLETE scene JSON object only. Preserve the user's visual goal and asset layout while fixing the failing geometry/API/root/topology issue. Do not repeat the same failure. "
                 + "If an asset root is missing, create the exact root_object and parent that asset beneath it. If topology reports zero triangles or a very low score, repair that asset. If the log mentions structure changed during iteration, snapshot the collection with list(collection). For Blender 3.6 use empty_display_type/empty_display_size, never legacy empty_draw_type/empty_draw_size. Do not perform scene cleanup; the host already starts clean.\n\n"
                 + "GOAL:\n" + goal
                 + "\n\nTARGET RUNTIME:\n" + blenderVersion
@@ -1200,9 +1044,7 @@ namespace AI_Assistant.Blender
                 + ", blend=" + attempt.BlendExists
                 + ", pythonFailure=" + attempt.PythonFailure
                 + ", topologyCritical=" + attempt.TopologyCritical
-                + ", visualQuality=" + attempt.VisualQualityOk
                 + "\nTOPOLOGY:\n" + Compact(JsonSerializer.Serialize(attempt.Topology), 5000)
-                + "\n\nVISUAL QA:\nscore=" + attempt.VisualScore + "/100\n" + Compact(attempt.VisualFeedback, 3500)
                 + "\n\nBLENDER LOG:\n" + Compact(attempt.Output, 4500)
                 + "\n\nReturn the same strict scene_name, summary, script, assets, instances schema. The host owns save/export/Unity assembly.";
         }
@@ -1452,7 +1294,7 @@ namespace AI_Assistant.Blender
                 if (item == null
                     || item.MissingRoot
                     || item.Triangles <= 0
-                    || item.Score < 60)
+                    || item.Score < 45)
                 {
                     return true;
                 }
@@ -1559,32 +1401,6 @@ namespace AI_Assistant.Blender
             }
 
             return p;
-        }
-
-        private static bool IsCharacterGoal(string goal)
-        {
-            string value = (goal ?? "").ToLowerInvariant();
-            return value.Contains("request kind hint: character", StringComparison.Ordinal)
-                || value.Contains("humanoid", StringComparison.Ordinal)
-                || value.Contains("character", StringComparison.Ordinal)
-                || value.Contains("karakter", StringComparison.Ordinal)
-                || value.Contains("body mesh", StringComparison.Ordinal)
-                || value.Contains("npc", StringComparison.Ordinal);
-        }
-
-        private static string DetectQuality(string goal)
-        {
-            string value = (goal ?? "").ToLowerInvariant();
-            if (value.Contains("quality profile: aa", StringComparison.Ordinal)
-                || value.Contains("aa-quality", StringComparison.Ordinal)
-                || value.Contains("aa quality", StringComparison.Ordinal)) return "AA";
-            if (value.Contains("quality profile: high", StringComparison.Ordinal)
-                || value.Contains("high-quality", StringComparison.Ordinal)
-                || value.Contains("high quality", StringComparison.Ordinal)) return "High";
-            if (value.Contains("quality profile: low", StringComparison.Ordinal)
-                || value.Contains("low-poly", StringComparison.Ordinal)
-                || value.Contains("low poly", StringComparison.Ordinal)) return "Low";
-            return "Medium";
         }
 
         private static string NormalizeFormat(string format)
@@ -1705,7 +1521,6 @@ namespace AI_Assistant.Blender
         private sealed class BlenderAttemptResult
         {
             public bool Success { get; set; }
-            public bool ExecutionHealthy { get; set; }
             public int ExitCode { get; set; }
             public bool TimedOut { get; set; }
             public bool Cancelled { get; set; }
@@ -1718,11 +1533,6 @@ namespace AI_Assistant.Blender
             public bool PythonFailure { get; set; }
             public bool HostAdjusted { get; set; }
             public bool TopologyCritical { get; set; }
-            public bool VisualReviewAvailable { get; set; }
-            public bool VisualQualityOk { get; set; }
-            public int VisualScore { get; set; }
-            public string VisualFeedback { get; set; } = "";
-            public List<string> PreviewPaths { get; set; } = new List<string>();
             public List<AssetRuntimeSpec> RuntimeAssets { get; set; } = new List<AssetRuntimeSpec>();
             public List<TopologyItem> Topology { get; set; } = new List<TopologyItem>();
 
@@ -1763,12 +1573,6 @@ namespace AI_Assistant.Blender
 
             [JsonPropertyName("polygons")]
             public int Polygons { get; set; }
-
-            [JsonPropertyName("mesh_objects")]
-            public int MeshObjects { get; set; }
-
-            [JsonPropertyName("material_slots")]
-            public int MaterialSlots { get; set; }
 
             [JsonPropertyName("nonmanifold_edges")]
             public int NonmanifoldEdges { get; set; }

@@ -85,7 +85,7 @@ namespace AI_Assistant.Blender
 
             ProviderReplyV2 reply = await CompleteAsync(
                 task,
-                BuildSystemPrompt(version),
+                BuildSystemPrompt(version, goal),
                 BuildUserPrompt(goal),
                 token
             );
@@ -96,7 +96,7 @@ namespace AI_Assistant.Blender
                 activity("[BLENDER V3 SCHEMA] repairing malformed structured plan");
                 ProviderReplyV2 retry = await CompleteAsync(
                     task,
-                    BuildSystemPrompt(version),
+                    BuildSystemPrompt(version, goal),
                     BuildUserPrompt(goal)
                         + "\nPrevious output was rejected: " + error
                         + "\nReturn the COMPLETE strict builder JSON schema with non-empty assets, meaningful parts, parent relationships where parts attach, and instances.",
@@ -107,7 +107,7 @@ namespace AI_Assistant.Blender
                 reply = retry;
             }
 
-            NormalizePlan(plan, quality);
+            NormalizePlan(plan, quality, IsCharacterGoal(goal));
 
             List<string> spatialWarnings = InspectSpatialIntegrity(plan);
             if (spatialWarnings.Count > 0 && !token.IsCancellationRequested)
@@ -116,14 +116,14 @@ namespace AI_Assistant.Blender
                 task.Phase = AgentTaskPhaseV2.Correcting;
                 ProviderReplyV2 repair = await CompleteAsync(
                     task,
-                    BuildSystemPrompt(version),
+                    BuildSystemPrompt(version, goal),
                     BuildSpatialRepairPrompt(goal, plan, spatialWarnings),
                     token
                 );
                 if (repair.Success && TryParsePlan(repair.Content, out BuilderScenePlan repaired, out _))
                 {
                     plan = repaired;
-                    NormalizePlan(plan, quality);
+                    NormalizePlan(plan, quality, IsCharacterGoal(goal));
                     reply = repair;
                     spatialWarnings = InspectSpatialIntegrity(plan);
                 }
@@ -152,13 +152,13 @@ namespace AI_Assistant.Blender
                 task.Phase = AgentTaskPhaseV2.Correcting;
                 ProviderReplyV2 qualityReply = await CompleteAsync(
                     task,
-                    BuildSystemPrompt(version),
+                    BuildSystemPrompt(version, goal),
                     BuildQualityRepairPrompt(goal, plan, first.Topology, quality),
                     token
                 );
                 if (qualityReply.Success && TryParsePlan(qualityReply.Content, out BuilderScenePlan qualityPlan, out _))
                 {
-                    NormalizePlan(qualityPlan, quality);
+                    NormalizePlan(qualityPlan, quality, IsCharacterGoal(goal));
                     List<string> qualitySpatial = InspectSpatialIntegrity(qualityPlan);
                     if (qualitySpatial.Count == 0)
                     {
@@ -377,8 +377,15 @@ namespace AI_Assistant.Blender
                 && TryParsePlan(reply.Content, out _, out _);
         }
 
-        private static string BuildSystemPrompt(string version)
+        private static string BuildSystemPrompt(string version, string goal)
         {
+            if (IsCharacterGoal(goal))
+            {
+                return "You are a senior character art director producing a compact semantic blueprint for a host-owned Blender generator. You DO NOT write Python, bpy, vertices, faces, skin graphs, or primitive body parts. Target runtime is " + version + ". Return strict JSON only. "
+                    + "Use exactly this shape: {\"request_kind\":\"character\",\"scene_name\":\"SurvivalCharacter\",\"summary\":\"short visual direction including outfit and equipment\",\"assets\":[{\"asset_name\":\"SurvivalCharacter\",\"root_object\":\"AIA_SurvivalCharacter\",\"target_triangles\":28000,\"materials\":[{\"name\":\"Skin\",\"color\":[0.48,0.28,0.18,1],\"metallic\":0,\"roughness\":0.62},{\"name\":\"Shirt\",\"color\":[0.10,0.16,0.12,1],\"metallic\":0,\"roughness\":0.8},{\"name\":\"Pants\",\"color\":[0.08,0.09,0.07,1],\"metallic\":0,\"roughness\":0.86},{\"name\":\"Leather\",\"color\":[0.12,0.07,0.035,1],\"metallic\":0,\"roughness\":0.72},{\"name\":\"Hair\",\"color\":[0.035,0.025,0.02,1],\"metallic\":0,\"roughness\":0.7},{\"name\":\"Eyes\",\"color\":[0.08,0.14,0.12,1],\"metallic\":0,\"roughness\":0.25},{\"name\":\"Metal\",\"color\":[0.18,0.2,0.19,1],\"metallic\":0.75,\"roughness\":0.3}],\"parts\":[{\"type\":\"humanoid\",\"name\":\"CharacterBody\",\"position\":[0,0,0],\"rotation\":[0,0,0],\"dimensions\":[0.48,0.30,1.80],\"material\":\"Skin\",\"text\":\"survival outfit, layered shirt, cargo pants, boots, backpack\",\"shade_smooth\":true,\"subdivision_levels\":1}]}],\"instances\":[{\"asset_name\":\"SurvivalCharacter\",\"name\":\"SurvivalCharacter\",\"position\":[0,0,0],\"rotation\":[0,0,0],\"scale\":[1,1,1]}]}. "
+                    + "Reason about the requested identity, physique, clothing layers, palette and practical equipment, then express those decisions only through summary, dimensions, material names/colors and the humanoid text/style descriptor. Use one asset, one humanoid part and one neutral-origin instance. Height must be 1.6-2.0m, shoulder width 0.38-0.65m and depth 0.22-0.40m. For High/AA use 18k-40k target triangles and at least Skin, Shirt, Pants, Leather, Hair, Eyes and Metal materials. The host owns anatomical topology, Blender API execution, rendering, export and Unity import. No markdown and no prose outside JSON.";
+            }
+
             return "You are a production 3D asset architect with strong spatial and anatomical reasoning. You DO NOT write Python or bpy. Target runtime is " + version + ". Return strict JSON only. "
                 + "Schema: {\"request_kind\":\"environment|hard_surface|character|prop\",\"scene_name\":\"GasStation\",\"summary\":\"short\",\"assets\":[{\"asset_name\":\"LightPole\",\"root_object\":\"AIA_LightPole\",\"target_triangles\":3500,\"materials\":[{\"name\":\"Metal\",\"color\":[0.15,0.15,0.15,1],\"metallic\":0.7,\"roughness\":0.35}],\"parts\":[{\"type\":\"cylinder\",\"name\":\"Pole\",\"parent\":\"\",\"position\":[0,0,2.5],\"rotation\":[0,0,0],\"dimensions\":[0.22,0.22,5],\"material\":\"Metal\",\"vertices\":48,\"bevel\":0.02,\"bevel_segments\":3,\"shade_smooth\":true,\"subdivision_levels\":0}]}],\"instances\":[{\"asset_name\":\"LightPole\",\"name\":\"LightPole_01\",\"position\":[4,0,8],\"rotation\":[0,0,0],\"scale\":[1,1,1]}]}. "
                 + "Allowed part types: cube, plane, cylinder, cone, sphere, uv_sphere, torus, curve, extruded_polygon, mesh, skin, text. Common fields: name, parent, position, rotation, dimensions, material, radius, radius2, depth, vertices, major_segments, minor_segments, bevel, bevel_segments, shade_smooth, subdivision_levels. curve requires points:[[x,y,z],...] and radius. extruded_polygon requires at least 3 points:[[x,y],...] and extrude. mesh requires points and faces:[[index,...],...]. skin requires points, edges:[[a,b],...], radii:[...] and subdivision_levels; use it as a connected organic base. text uses text and extrude. "
@@ -418,6 +425,15 @@ namespace AI_Assistant.Blender
         )
         {
             int total = topology.Sum(t => t.Triangles);
+            if (plan.RequestKind.Equals("character", StringComparison.OrdinalIgnoreCase))
+            {
+                return "The host-built humanoid was technically generated but failed the " + quality + " visual review. Return the COMPLETE compact character blueprint JSON again with exactly one humanoid part. Improve only semantic art direction: believable shoulder/depth/height proportions, explicit layered outfit, practical footwear/equipment, strong material separation and color contrast. Put the full corrected clothing/equipment direction in the humanoid text field. Do not add body primitives, vertices, Python or extra assets.\nUSER GOAL:\n"
+                    + goal
+                    + "\nCURRENT TRIANGLES: " + total
+                    + "\nVISUAL QA FEEDBACK: " + Compact(plan.LastVisualFeedback, 2400)
+                    + "\nCURRENT BLUEPRINT:\n" + Compact(SerializePlanForModel(plan), 12000);
+            }
+
             return "The deterministic build is technically valid but did not meet the requested " + quality + " visual-fidelity geometry gate. Return the COMPLETE builder JSON again with substantially richer PURPOSEFUL geometry while preserving layout and [1,1,1] instance scales. Add silhouette detail, bevel-supporting forms, trim, frames, panels, supports, housings, handles, seams and smoother curved components where visually meaningful. Use parent relationships for attached sub-parts. Do not add hidden/random geometry.\nUSER GOAL:\n"
                 + goal
                 + "\nCURRENT TOTAL TRIANGLES: " + total
@@ -426,8 +442,14 @@ namespace AI_Assistant.Blender
                 + "\nCURRENT PLAN:\n" + Compact(SerializePlanForModel(plan), 28000);
         }
 
-        private static void NormalizePlan(BuilderScenePlan plan, string quality)
+        private static void NormalizePlan(BuilderScenePlan plan, string quality, bool forceCharacter)
         {
+            if (forceCharacter) plan.RequestKind = "character";
+            if (plan.RequestKind.Equals("character", StringComparison.OrdinalIgnoreCase))
+            {
+                NormalizeCharacterPlan(plan, quality);
+            }
+
             foreach (BuilderInstance instance in plan.Instances)
             {
                 instance.Scale = new[] { 1f, 1f, 1f };
@@ -456,6 +478,87 @@ namespace AI_Assistant.Blender
                     }
                 }
             }
+        }
+
+        private static void NormalizeCharacterPlan(BuilderScenePlan plan, string quality)
+        {
+            BuilderAssetPlan asset = plan.Assets[0];
+            BlenderBuilderPart blueprint = asset.Builder.Parts.FirstOrDefault(
+                part => part.Type.Equals("humanoid", StringComparison.OrdinalIgnoreCase)
+            ) ?? new BlenderBuilderPart
+            {
+                Type = "humanoid",
+                Name = "CharacterBody",
+                Dimensions = new[] { 0.48f, 0.30f, 1.80f },
+                Material = "Skin",
+                Text = plan.Summary
+            };
+
+            float[] dimensions = blueprint.Dimensions.Length >= 3
+                ? blueprint.Dimensions
+                : new[] { 0.48f, 0.30f, 1.80f };
+            blueprint.Type = "humanoid";
+            blueprint.Name = string.IsNullOrWhiteSpace(blueprint.Name) ? "CharacterBody" : blueprint.Name;
+            blueprint.ParentPart = "";
+            blueprint.Position = new[] { 0f, 0f, 0f };
+            blueprint.Rotation = new[] { 0f, 0f, 0f };
+            blueprint.Dimensions = new[]
+            {
+                Math.Clamp(dimensions[0], 0.38f, 0.65f),
+                Math.Clamp(dimensions[1], 0.22f, 0.40f),
+                Math.Clamp(dimensions[2], 1.60f, 2.00f)
+            };
+            blueprint.Material = "Skin";
+            blueprint.Text = string.IsNullOrWhiteSpace(blueprint.Text)
+                ? plan.Summary + ", layered clothing, boots and practical equipment"
+                : blueprint.Text;
+            blueprint.ShadeSmooth = true;
+            blueprint.SubdivisionLevels = quality.Equals("AA", StringComparison.OrdinalIgnoreCase) ? 1 : 0;
+
+            asset.Builder.Parts = new List<BlenderBuilderPart> { blueprint };
+            EnsureCharacterMaterial(asset.Builder.Materials, "Skin", new[] { 0.48f, 0.28f, 0.18f, 1f }, 0f, 0.62f);
+            EnsureCharacterMaterial(asset.Builder.Materials, "Shirt", new[] { 0.10f, 0.16f, 0.12f, 1f }, 0f, 0.80f);
+            EnsureCharacterMaterial(asset.Builder.Materials, "Pants", new[] { 0.08f, 0.09f, 0.07f, 1f }, 0f, 0.86f);
+            EnsureCharacterMaterial(asset.Builder.Materials, "Leather", new[] { 0.12f, 0.07f, 0.035f, 1f }, 0f, 0.72f);
+            EnsureCharacterMaterial(asset.Builder.Materials, "Hair", new[] { 0.035f, 0.025f, 0.02f, 1f }, 0f, 0.70f);
+            EnsureCharacterMaterial(asset.Builder.Materials, "Eyes", new[] { 0.08f, 0.14f, 0.12f, 1f }, 0f, 0.25f);
+            EnsureCharacterMaterial(asset.Builder.Materials, "Metal", new[] { 0.18f, 0.20f, 0.19f, 1f }, 0.75f, 0.30f);
+
+            asset.TargetTriangles = Math.Clamp(
+                Math.Max(asset.TargetTriangles, quality.Equals("AA", StringComparison.OrdinalIgnoreCase) ? 18000 : 8000),
+                8000,
+                45000
+            );
+            plan.Assets = new List<BuilderAssetPlan> { asset };
+            plan.Instances = new List<BuilderInstance>
+            {
+                new BuilderInstance
+                {
+                    AssetName = asset.AssetName,
+                    Name = asset.AssetName,
+                    Position = new[] { 0f, 0f, 0f },
+                    Rotation = new[] { 0f, 0f, 0f },
+                    Scale = new[] { 1f, 1f, 1f }
+                }
+            };
+        }
+
+        private static void EnsureCharacterMaterial(
+            List<BlenderBuilderMaterial> materials,
+            string name,
+            float[] color,
+            float metallic,
+            float roughness
+        )
+        {
+            if (materials.Any(material => material.Name.Equals(name, StringComparison.OrdinalIgnoreCase))) return;
+            materials.Add(new BlenderBuilderMaterial
+            {
+                Name = name,
+                Color = color,
+                Metallic = metallic,
+                Roughness = roughness
+            });
         }
 
         private static List<string> InspectSpatialIntegrity(BuilderScenePlan plan)
@@ -602,25 +705,39 @@ namespace AI_Assistant.Blender
                 if (item.BoundsX < 0.005f || item.BoundsY < 0.005f || item.BoundsZ < 0.005f) return false;
                 if (quality.Equals("AA", StringComparison.OrdinalIgnoreCase) && item.Triangles < target * 0.45f)
                     return false;
-                if (quality.Equals("AA", StringComparison.OrdinalIgnoreCase) && target >= 4000 && asset.Builder.Parts.Count < 6) return false;
+                if (!plan.RequestKind.Equals("character", StringComparison.OrdinalIgnoreCase)
+                    && quality.Equals("AA", StringComparison.OrdinalIgnoreCase)
+                    && target >= 4000
+                    && asset.Builder.Parts.Count < 6) return false;
                 if (quality.Equals("AA", StringComparison.OrdinalIgnoreCase) && target >= 4000 && asset.Builder.Materials.Count < 2) return false;
             }
 
-            if (quality.Equals("AA", StringComparison.OrdinalIgnoreCase)
+            if (!plan.RequestKind.Equals("character", StringComparison.OrdinalIgnoreCase)
+                && quality.Equals("AA", StringComparison.OrdinalIgnoreCase)
                 && plan.Assets.Sum(a => a.Builder.Parts.Count) < Math.Max(10, plan.Assets.Count * 4)) return false;
 
             if (plan.RequestKind.Equals("character", StringComparison.OrdinalIgnoreCase))
             {
-                int parts = plan.Assets.Sum(a => a.Builder.Parts.Count);
-                bool connectedBase = plan.Assets.SelectMany(a => a.Builder.Parts)
-                    .Any(p => p.Type.Equals("skin", StringComparison.OrdinalIgnoreCase) || p.Type.Equals("mesh", StringComparison.OrdinalIgnoreCase));
-                if (!connectedBase || parts < 10) return false;
+                bool hostHumanoid = plan.Assets.SelectMany(a => a.Builder.Parts)
+                    .Any(p => p.Type.Equals("humanoid", StringComparison.OrdinalIgnoreCase));
+                if (!hostHumanoid || plan.Assets.Count != 1 || plan.Instances.Count != 1) return false;
+                Topology character = topology[0];
+                int minimumMeshes = quality.Equals("AA", StringComparison.OrdinalIgnoreCase) ? 14 : 9;
+                int minimumMaterials = quality.Equals("AA", StringComparison.OrdinalIgnoreCase) ? 10 : 6;
+                if (character.MeshObjects < minimumMeshes
+                    || character.MaterialSlots < minimumMaterials
+                    || character.BodyComponents != 1) return false;
             }
             return true;
         }
 
         private static int QualityTriangleFloor(BuilderScenePlan plan, string quality)
         {
+            if (plan.RequestKind.Equals("character", StringComparison.OrdinalIgnoreCase))
+                return quality.Equals("AA", StringComparison.OrdinalIgnoreCase) ? 12000
+                    : quality.Equals("High", StringComparison.OrdinalIgnoreCase) ? 7000
+                    : quality.Equals("Low", StringComparison.OrdinalIgnoreCase) ? 1200
+                    : 4000;
             if (quality.Equals("AA", StringComparison.OrdinalIgnoreCase))
                 return plan.Assets.Count >= 4 ? 15000 : plan.Assets.Count >= 2 ? 7000 : 1800;
             if (quality.Equals("High", StringComparison.OrdinalIgnoreCase))
@@ -656,6 +773,7 @@ namespace AI_Assistant.Blender
                     + ", loose=" + item.LooseVertices
                     + ", nonManifold=" + item.NonManifoldEdges
                     + ", degenerate=" + item.DegenerateFaces
+                    + ", bodyComponents=" + item.BodyComponents
                     + ", bounds=" + item.BoundsX.ToString("0.###", CultureInfo.InvariantCulture)
                     + "x" + item.BoundsY.ToString("0.###", CultureInfo.InvariantCulture)
                     + "x" + item.BoundsZ.ToString("0.###", CultureInfo.InvariantCulture)
@@ -838,7 +956,7 @@ namespace AI_Assistant.Blender
             s.AppendLine("    topo=[]");
             s.AppendLine("    for spec in specs:");
             s.AppendLine("        root=bpy.data.objects.get(spec['root'])");
-            s.AppendLine("        item={'AssetName':spec['name'],'Triangles':0,'Vertices':0,'Edges':0,'Faces':0,'MeshObjects':0,'MaterialSlots':0,'LooseVertices':0,'NonManifoldEdges':0,'DegenerateFaces':0,'BoundsX':0.0,'BoundsY':0.0,'BoundsZ':0.0,'Score':100}");
+            s.AppendLine("        item={'AssetName':spec['name'],'Triangles':0,'Vertices':0,'Edges':0,'Faces':0,'MeshObjects':0,'MaterialSlots':0,'LooseVertices':0,'NonManifoldEdges':0,'DegenerateFaces':0,'BodyComponents':-1,'BoundsX':0.0,'BoundsY':0.0,'BoundsZ':0.0,'Score':100}");
             s.AppendLine("        if root is None: item['Score']=0; topo.append(item); continue");
             s.AppendLine("        objs=[]; stack=[root]");
             s.AppendLine("        while stack:");
@@ -859,6 +977,17 @@ namespace AI_Assistant.Blender
             s.AppendLine("                item['LooseVertices'] += sum(1 for v in bm.verts if len(v.link_edges)==0)");
             s.AppendLine("                item['NonManifoldEdges'] += sum(1 for e in bm.edges if not e.is_manifold)");
             s.AppendLine("                item['DegenerateFaces'] += sum(1 for f in bm.faces if f.calc_area() < 1e-8)");
+            s.AppendLine("                if o.get('aia_topology_owner','') == 'host_semantic_humanoid_v1':");
+            s.AppendLine("                    bm.verts.ensure_lookup_table(); visited=set(); components=0");
+            s.AppendLine("                    for seed in bm.verts:");
+            s.AppendLine("                        if seed.index in visited: continue");
+            s.AppendLine("                        components += 1; pending=[seed]; visited.add(seed.index)");
+            s.AppendLine("                        while pending:");
+            s.AppendLine("                            current=pending.pop()");
+            s.AppendLine("                            for edge in current.link_edges:");
+            s.AppendLine("                                other=edge.other_vert(current)");
+            s.AppendLine("                                if other.index not in visited: visited.add(other.index); pending.append(other)");
+            s.AppendLine("                    item['BodyComponents']=components");
             s.AppendLine("                bm.free()");
             s.AppendLine("            finally:");
             s.AppendLine("                eo.to_mesh_clear()");
@@ -1122,7 +1251,11 @@ namespace AI_Assistant.Blender
             (s ?? "").Contains("Traceback (most recent call last)", StringComparison.OrdinalIgnoreCase)
             || (s ?? "").Contains("AI_SCENE_PREFAB_EXPORT_FAILED", StringComparison.OrdinalIgnoreCase);
 
-        private static bool AllowedType(string t) => t is "cube" or "plane" or "cylinder" or "cone" or "sphere" or "uv_sphere" or "torus" or "curve" or "extruded_polygon" or "mesh" or "skin" or "text";
+        private static bool AllowedType(string t) => t is "cube" or "plane" or "cylinder" or "cone" or "sphere" or "uv_sphere" or "torus" or "curve" or "extruded_polygon" or "mesh" or "skin" or "humanoid" or "text";
+        private static bool IsCharacterGoal(string goal) => (goal ?? "").Contains("REQUEST KIND HINT: CHARACTER", StringComparison.OrdinalIgnoreCase)
+            || (goal ?? "").Contains("humanoid", StringComparison.OrdinalIgnoreCase)
+            || (goal ?? "").Contains("character", StringComparison.OrdinalIgnoreCase)
+            || (goal ?? "").Contains("karakter", StringComparison.OrdinalIgnoreCase);
         private static string CleanGoal(string p)
         {
             string value = (p ?? "").Trim();
@@ -1247,6 +1380,7 @@ namespace AI_Assistant.Blender
             public int LooseVertices { get; set; }
             public int NonManifoldEdges { get; set; }
             public int DegenerateFaces { get; set; }
+            public int BodyComponents { get; set; }
             public float BoundsX { get; set; }
             public float BoundsY { get; set; }
             public float BoundsZ { get; set; }
