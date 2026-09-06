@@ -31,7 +31,15 @@ namespace AI_Assistant.Blender
             this.settings = settings;
             this.activity = activity;
             providers = new ProviderRouterV2(activity);
-            primary = new GeminiProviderV2();
+            primary = new OpenAiCompatibleProviderV2(
+                "Blender-InclusionAI",
+                "https://openrouter.ai/api/v1/chat/completions",
+                Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_MODEL")
+                    ?? "inclusionai/ling-3.0-flash-fin:free",
+                "OPENROUTER_API_KEY",
+                180,
+                16000
+            );
             visualQuality = new BlenderVisualQualityGate(activity);
         }
 
@@ -181,9 +189,10 @@ namespace AI_Assistant.Blender
                     + ", blend=" + first.BlendExists
                     + ", prefabBundle=" + first.SceneBundleExists
                     + ", exports=" + first.ExportsOk
-                    + ", topology=" + first.TopologyOk
+                + ", topology=" + first.TopologyOk
                 + ", quality=" + first.QualityOk
                 + ", visual=" + first.VisualQualityOk
+                + "\nVerification details:\n" + BuildVerificationDetails(first, plan, quality)
                 + "\n" + Compact(first.Output, 1800);
             }
 
@@ -348,8 +357,8 @@ namespace AI_Assistant.Blender
                 excludedProviders.Add(primary.Name);
                 activity(
                     r.Success
-                        ? "[BLENDER V3 SCHEMA] Gemini returned malformed/truncated builder JSON; using independent fallback"
-                        : "[V2 PROVIDER] Blender Gemini unavailable; using fallback chain"
+                        ? "[BLENDER V3 SCHEMA] InclusionAI returned malformed/truncated builder JSON; using independent fallback"
+                        : "[V2 PROVIDER] Blender InclusionAI unavailable; using fallback chain"
                 );
             }
             return await providers.CompleteAsync(
@@ -378,14 +387,15 @@ namespace AI_Assistant.Blender
                 + "INSTANCE scale should ALWAYS be [1,1,1]. If an object needs a different physical size, make a correctly sized unique asset; never use scene-instance downscaling as a layout shortcut. "
                 + "Create up to 12 reusable assets and 48 instances. Reuse identical assets through instances. Every major environment request should include enough reusable architecture and props to read clearly as the requested place. "
                 + "For AA quality, target production-ready medium-high detail: important props commonly 2k-8k triangles, hero architecture commonly 8k-25k triangles, and a complete multi-asset environment should normally exceed 15k triangles before instancing. Spend geometry on silhouette, bevels, curved forms, frames, trim, panels, handles, housings, supports, seams and era-specific details. Do not fake AA with a few primitive boxes and do not inflate invisible geometry. "
-                + "CHARACTERS: never build a disconnected mannequin from floating cubes/cylinders/spheres. Use one connected skin or authored mesh as the body base, human proportions (about 7.5 heads tall), bilateral symmetry, joined shoulders/hips/limbs, recognizable hands/feet/head silhouette, then layer clothing, hair, facial masses and accessories. A character without a connected body base is invalid. "
+                + "CHARACTERS: never build a disconnected mannequin from floating cubes/cylinders/spheres. Use exactly one reusable character asset containing one connected skin or authored mesh body base plus clothing/accessory child parts, and exactly one neutral-origin instance. Use human proportions (about 7.5 heads tall), bilateral symmetry, joined shoulders/hips/limbs, recognizable hands/feet/head silhouette, then layer clothing, hair, facial masses and accessories. A character without a connected body base is invalid. "
                 + "ENVIRONMENTS: first establish a readable footprint and functional zones. Keep buildings, canopy, pumps, roads and props grounded; preserve believable clearance and relationships. Do not stack all instances at the origin. "
+                + "SCOPE: for a standalone character or prop, output only the requested subject at neutral origin. Do not recreate unrelated objects mentioned only in live Unity context. A full multi-asset composition is required only when the user explicitly requests an environment or scene. "
                 + "Every asset root stays at local origin. Do not output code, nodes, world settings, lights, cameras, file paths, save/export calls or unsupported operations. No markdown and no prose outside JSON.";
         }
 
         private static string BuildUserPrompt(string goal)
         {
-            return "Turn this ONE instruction into a complete reusable asset kit AND a finished scene composition. The host will build every asset deterministically in Blender, spatially verify it, assemble all instances in Blender, export the complete hierarchy as one prefab FBX, and Unity will import that prefab without rebuilding the layout.\nUSER GOAL:\n" + goal;
+            return "Turn this ONE instruction into the requested reusable asset or asset kit. Build a full scene composition only when the user explicitly asks for an environment/scene. A standalone character or prop must contain only that subject, with one neutral-origin instance. The host will build every asset deterministically in Blender, verify it, export one final prefab FBX, and Unity will import it without rebuilding the layout.\nUSER GOAL:\n" + goal;
         }
 
         private static string BuildSpatialRepairPrompt(
@@ -578,15 +588,7 @@ namespace AI_Assistant.Blender
         {
             if (topology.Count == 0 || topology.Any(t => t.Score < 70 || t.Triangles <= 0 || t.Vertices <= 0 || t.MeshObjects <= 0)) return false;
             int total = topology.Sum(t => t.Triangles);
-            int floor;
-            if (quality.Equals("AA", StringComparison.OrdinalIgnoreCase))
-                floor = plan.Assets.Count >= 4 ? 15000 : plan.Assets.Count >= 2 ? 7000 : 1800;
-            else if (quality.Equals("High", StringComparison.OrdinalIgnoreCase))
-                floor = plan.Assets.Count >= 4 ? 7000 : plan.Assets.Count >= 2 ? 3000 : 900;
-            else if (quality.Equals("Low", StringComparison.OrdinalIgnoreCase))
-                floor = 1;
-            else
-                floor = plan.Assets.Count >= 4 ? 2500 : 500;
+            int floor = QualityTriangleFloor(plan, quality);
 
             if (total < floor) return false;
 
@@ -615,6 +617,57 @@ namespace AI_Assistant.Blender
                 if (!connectedBase || parts < 10) return false;
             }
             return true;
+        }
+
+        private static int QualityTriangleFloor(BuilderScenePlan plan, string quality)
+        {
+            if (quality.Equals("AA", StringComparison.OrdinalIgnoreCase))
+                return plan.Assets.Count >= 4 ? 15000 : plan.Assets.Count >= 2 ? 7000 : 1800;
+            if (quality.Equals("High", StringComparison.OrdinalIgnoreCase))
+                return plan.Assets.Count >= 4 ? 7000 : plan.Assets.Count >= 2 ? 3000 : 900;
+            if (quality.Equals("Low", StringComparison.OrdinalIgnoreCase))
+                return 1;
+            return plan.Assets.Count >= 4 ? 2500 : 500;
+        }
+
+        private static string BuildVerificationDetails(
+            BuildOutcome outcome,
+            BuilderScenePlan plan,
+            string quality
+        )
+        {
+            List<string> lines = new();
+            if (!outcome.ExecutionHealthy) lines.Add("- Blender execution or required export bundle was incomplete.");
+            if (outcome.Topology.Count != outcome.RuntimeAssets.Count)
+                lines.Add("- Topology records: " + outcome.Topology.Count + "/" + outcome.RuntimeAssets.Count + " expected assets.");
+
+            int total = outcome.Topology.Sum(t => t.Triangles);
+            lines.Add("- Triangle total: " + total + "; " + quality + " floor: " + QualityTriangleFloor(plan, quality) + ".");
+            Dictionary<string, BuilderAssetPlan> assets = plan.Assets.ToDictionary(a => a.AssetName, StringComparer.OrdinalIgnoreCase);
+            foreach (Topology item in outcome.Topology)
+            {
+                int target = assets.TryGetValue(item.AssetName, out BuilderAssetPlan? asset)
+                    ? asset.TargetTriangles
+                    : 0;
+                lines.Add(
+                    "- " + item.AssetName
+                    + ": " + item.Triangles + "/" + target + " tris, score " + item.Score + "/100"
+                    + ", meshObjects=" + item.MeshObjects
+                    + ", loose=" + item.LooseVertices
+                    + ", nonManifold=" + item.NonManifoldEdges
+                    + ", degenerate=" + item.DegenerateFaces
+                    + ", bounds=" + item.BoundsX.ToString("0.###", CultureInfo.InvariantCulture)
+                    + "x" + item.BoundsY.ToString("0.###", CultureInfo.InvariantCulture)
+                    + "x" + item.BoundsZ.ToString("0.###", CultureInfo.InvariantCulture)
+                );
+            }
+
+            if (outcome.VisualReviewAvailable)
+                lines.Add("- Visual QA: " + outcome.VisualScore + "/100. " + Compact(outcome.VisualFeedback, 360));
+            else if (quality.Equals("AA", StringComparison.OrdinalIgnoreCase) || quality.Equals("High", StringComparison.OrdinalIgnoreCase))
+                lines.Add("- Visual QA was unavailable, so High/AA import was blocked.");
+
+            return string.Join("\n", lines);
         }
 
         private static bool TryParsePlan(string text, out BuilderScenePlan plan, out string error)

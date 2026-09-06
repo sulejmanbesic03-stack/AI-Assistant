@@ -115,7 +115,7 @@ namespace AI_Assistant.AI
             string blender = settings.ResolveBlenderExecutable();
             lines.Add("Blender: " + (string.IsNullOrWhiteSpace(blender) ? "not found" : blender));
             lines.Add("Blender engine: V3 deterministic builder-first");
-            lines.Add("Blender planning model: " + (Environment.GetEnvironmentVariable("GEMINI_MODEL") ?? "gemini-3.7-flash") + " (Gemini first; Groq/OpenRouter fallback)");
+            lines.Add("Blender planning model: " + (Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_MODEL") ?? "inclusionai/ling-3.0-flash-fin:free") + " (InclusionAI first; Gemini/Groq/OpenRouter fallback)");
             lines.Add("Blender quality default: Medium");
             lines.Add("Unity-aware Blender layout: on");
             lines.Add("AA production quality floor: on");
@@ -142,23 +142,62 @@ namespace AI_Assistant.AI
 
         private static string BuildBlenderAugmentedPrompt(string originalPrompt, string qualityProfile, string unityContext)
         {
-            string qualityRules = BuildQualityRules(qualityProfile);
-            string contextRules = string.IsNullOrWhiteSpace(unityContext)
-                ? "Live Unity context was unavailable. Keep the generated environment compact, grounded and logically grouped around a neutral origin. Do not scatter props over arbitrary coordinates."
-                : "Use the LIVE UNITY CONTEXT below as authoritative placement context. Respect the existing Ground/terrain and current scene scale. Treat floor-standing assets as grounded objects. Build one coherent composition, not a random cloud of props: establish a clear scene anchor, put the main building at that anchor, put related structures in physically meaningful relationships, keep repeated props in sensible rows/groups, and keep the whole generated environment inside a compact believable footprint unless the existing scene requires otherwise. Avoid floating objects, accidental intersections, duplicated coordinates, extreme offsets and disconnected placement. Do not invent a separate coordinate system.";
+            string requestKind = DetectBlenderRequestKind(originalPrompt);
+            bool environmentRequest = requestKind == "environment";
+            string qualityRules = BuildQualityRules(qualityProfile, requestKind);
+            string contextRules = environmentRequest
+                ? string.IsNullOrWhiteSpace(unityContext)
+                    ? "Live Unity context was unavailable. Keep the generated environment compact, grounded and logically grouped around a neutral origin. Do not scatter props over arbitrary coordinates."
+                    : "Use the LIVE UNITY CONTEXT below only as placement context. Respect the existing Ground/terrain and current scene scale, but do not recreate existing objects unless the user explicitly asks for them. Build one coherent composition with believable functional zones, grounding, clearance and relationships. Avoid floating objects, intersections, duplicated coordinates, extreme offsets and disconnected placement."
+                : "This is a standalone " + requestKind + " request. Generate only the requested subject at neutral origin with one scene instance. Do not copy, recreate or include buildings, pumps, props or characters from the existing Unity hierarchy; that hierarchy is unrelated import context.";
             return originalPrompt + "\n\n--- HOST QUALITY PROFILE ---\nQUALITY PROFILE: " + qualityProfile + "\n" + qualityRules
-                + "\nThe selected profile is a HARD production requirement. Do not downgrade Medium/High/AA to low-poly. target_triangles is a real budget, not decorative metadata. For AA, a full environment under a few thousand triangles is invalid."
-                + "\n\n--- HOST UNITY-AWARE LAYOUT RULES ---\n" + contextRules
-                + (string.IsNullOrWhiteSpace(unityContext) ? "" : "\n\nLIVE UNITY CONTEXT:\n" + unityContext);
+                + "\nThe selected profile is a HARD production requirement. Do not downgrade Medium/High/AA to low-poly. target_triangles is a real budget, not decorative metadata."
+                + "\n\n--- HOST REQUEST SCOPE ---\nREQUEST KIND HINT: " + requestKind.ToUpperInvariant()
+                + "\n" + contextRules
+                + (environmentRequest && !string.IsNullOrWhiteSpace(unityContext) ? "\n\nLIVE UNITY CONTEXT:\n" + unityContext : "");
         }
 
-        private static string BuildQualityRules(string profile) => profile switch
+        private static string BuildQualityRules(string profile, string requestKind)
         {
-            "Low" => "Use economical low-poly geometry, strong silhouettes, minimal bevels and low segment counts. Keep the complete environment intentionally lightweight.",
-            "High" => "Use refined real-time geometry, realistic proportions, selective 2-4 segment bevels, higher segment counts and meaningful secondary details. For a multi-asset environment, target roughly 12k-30k triangles total depending on scope; major assets should receive thousands of triangles when visible up close.",
-            "AA" => "Target genuine AA / medium-high PC-console production quality. A full environment such as a gas station should normally use about 25k-60k purposeful triangles across 6-12 reusable assets, not hundreds or one thousand total. The main building should usually target roughly 6k-15k triangles, major hero props such as pumps/canopies roughly 2k-6k each, and secondary props roughly 500-2500 as appropriate. Use polished silhouettes, realistic proportions, 3-4 segment bevels on visible hard edges, 48-64 sided curved hero forms where useful, layered primary/secondary/tertiary geometry, frames, trims, seams, panels, handles, hoses, roof structure, curbs, supports and other physically readable construction details. Spend geometry where it changes silhouette, shading or close-range readability; do not inflate hidden surfaces.",
-            _ => "Use medium-quality production game assets: clearly more detailed than low-poly, good silhouettes, sensible bevels, moderate secondary detail and efficient real-time geometry. A complete environment should normally land in several thousand to low tens-of-thousands of triangles rather than a few hundred."
-        };
+            if (requestKind == "character")
+            {
+                return profile switch
+                {
+                    "Low" => "Create one connected lightweight character with readable anatomy and clothing silhouette, roughly 1k-4k purposeful triangles.",
+                    "High" => "Create one connected detailed real-time character, roughly 8k-25k purposeful triangles, with believable anatomy, face/head masses, hands, feet and layered clothing.",
+                    "AA" => "Create one connected AA character, roughly 15k-45k purposeful triangles. Use a continuous skin/mesh body base, about 7.5-head human proportions, joined shoulders/hips/limbs, recognizable hands/feet/head, layered fitted clothing, footwear, hair and meaningful surface/silhouette detail. Never use floating primitives or include an environment.",
+                    _ => "Create one connected game-ready character, roughly 4k-12k purposeful triangles, with believable proportions, joined anatomy and readable clothing."
+                };
+            }
+
+            if (requestKind is "prop" or "hard_surface")
+            {
+                return profile switch
+                {
+                    "Low" => "Use economical low-poly geometry and a strong readable silhouette for the single requested asset.",
+                    "High" => "Create one refined real-time asset with realistic proportions, selective 2-4 segment bevels and meaningful secondary construction detail.",
+                    "AA" => "Create one AA hero asset with polished silhouette, realistic proportions, purposeful bevels, layered construction, seams, panels, fasteners, handles and material separation where appropriate; normally 4k-20k purposeful triangles depending on size.",
+                    _ => "Create one medium-quality game-ready asset with good silhouette, sensible bevels and moderate secondary detail."
+                };
+            }
+
+            return profile switch
+            {
+                "Low" => "Use economical low-poly geometry, strong silhouettes, minimal bevels and low segment counts. Keep the complete environment intentionally lightweight.",
+                "High" => "Use refined real-time geometry, realistic proportions, selective 2-4 segment bevels, higher segment counts and meaningful secondary details. Target roughly 12k-30k triangles total depending on scope.",
+                "AA" => "Target genuine AA / medium-high PC-console production quality. A full environment such as a gas station should normally use about 25k-60k purposeful triangles across 6-12 reusable assets. Use polished silhouettes, realistic proportions, 3-4 segment bevels, layered geometry, frames, trims, seams, panels, supports and other physically readable construction details.",
+                _ => "Use medium-quality production geometry with good silhouettes, sensible bevels, moderate secondary detail and several thousand to low tens-of-thousands of triangles for the complete environment."
+            };
+        }
+
+        private static string DetectBlenderRequestKind(string prompt)
+        {
+            string p = (prompt ?? "").Trim().ToLowerInvariant();
+            if (ContainsAny(p, "humanoid", "character", "karakter", "npc", "person", "osoba", "covjek", "čovjek", "body mesh", "enemy", "neprijatelj")) return "character";
+            if (ContainsAny(p, "scene", "scena", "environment", "okruzenje", "okruženje", "level", "benzinsk", "gas station", "building", "zgrada", "house", "kuca", "kuća", "room", "soba", "forest", "suma", "šuma", "city", "grad")) return "environment";
+            if (ContainsAny(p, "vehicle", "vozilo", "car", "auto", "weapon", "oruzje", "oružje", "gun", "puska", "puška", "machine", "masina", "mašina", "tool", "alat")) return "hard_surface";
+            return "prop";
+        }
 
         private static string DetectQualityProfile(string prompt)
         {
