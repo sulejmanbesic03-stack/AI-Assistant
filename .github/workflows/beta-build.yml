@@ -30,10 +30,10 @@ jobs:
         run: dotnet build "AI Assistant/AI Assistant.csproj" -c Release --no-restore --warnaserror
 
       - name: Publish desktop app
-        run: dotnet publish "AI Assistant/AI Assistant.csproj" -c Release -r win-x64 --self-contained false --no-restore -o artifacts/AI-Assistant
+        run: dotnet publish "AI Assistant/AI Assistant.csproj" -c Release -r win-x64 --self-contained false -o artifacts/AI-Assistant
 
       - name: Publish updater
-        run: dotnet publish "AI Assistant Updater/AI Assistant Updater.csproj" -c Release -r win-x64 --self-contained false --no-restore -o artifacts/AI-Assistant-Updater
+        run: dotnet publish "AI Assistant Updater/AI Assistant Updater.csproj" -c Release -r win-x64 --self-contained false -o artifacts/AI-Assistant-Updater
 
       - name: Upload beta artifacts
         uses: actions/upload-artifact@v4
