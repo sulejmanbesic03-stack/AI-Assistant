@@ -14,6 +14,7 @@ namespace AI_Assistant.AI
     {
         private readonly AIIntegration legacy;
         private readonly AgentOrchestratorV2 agentV2;
+        private readonly BlenderAgentV2 blenderOrganic;
         private readonly BlenderAgentV3 blenderV3;
         private readonly RuntimeSettings settings;
         private readonly UnityBridgeTools unityTools;
@@ -34,6 +35,7 @@ namespace AI_Assistant.AI
             unityTools = new UnityBridgeTools();
             TempCapabilityManager tempCapabilities = new TempCapabilityManager(sourceRoot, unityTools);
             agentV2 = new AgentOrchestratorV2(unityTools, tempCapabilities, ReportActivity);
+            blenderOrganic = new BlenderAgentV2(settings, ReportActivity);
             blenderV3 = new BlenderAgentV3(settings, ReportActivity);
         }
 
@@ -82,8 +84,16 @@ namespace AI_Assistant.AI
                 string qualityProfile = DetectQualityProfile(blenderPrompt);
                 string unityContext = CaptureLiveUnityContext();
                 string augmentedPrompt = BuildBlenderAugmentedPrompt(blenderPrompt, qualityProfile, unityContext);
-                ReportActivity("[ROUTER] Blender Agent V3 deterministic builder");
+                string requestKind = DetectBlenderRequestKind(blenderPrompt);
                 ReportActivity("[BLENDER QUALITY] " + qualityProfile);
+                if (requestKind == "character")
+                {
+                    ReportActivity("[ROUTER] Blender organic direct-mesh path");
+                    ReportActivity("[BLENDER SCOPE] standalone character at neutral origin; Unity hierarchy excluded");
+                    return await blenderOrganic.HandleAsync(augmentedPrompt);
+                }
+
+                ReportActivity("[ROUTER] Blender V3 deterministic hard-surface/environment builder");
                 ReportActivity(string.IsNullOrWhiteSpace(unityContext) ? "[BLENDER UNITY CONTEXT] unavailable; planning around neutral origin" : "[BLENDER UNITY CONTEXT] live scene snapshot attached before layout planning");
                 return await blenderV3.HandleAsync(augmentedPrompt);
             }
@@ -114,12 +124,12 @@ namespace AI_Assistant.AI
             lines.Add("Unity root: " + (string.IsNullOrWhiteSpace(settings.UnityProjectRoot) ? "not configured" : settings.UnityProjectRoot));
             string blender = settings.ResolveBlenderExecutable();
             lines.Add("Blender: " + (string.IsNullOrWhiteSpace(blender) ? "not found" : blender));
-            lines.Add("Blender engine: V3 deterministic builder-first");
+            lines.Add("Blender engine: split pipeline (direct-mesh characters; deterministic props/environments)");
             lines.Add("Blender planning model: " + (Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_MODEL") ?? "inclusionai/ling-3.0-flash-fin:free") + " (InclusionAI first; Gemini/Groq/OpenRouter fallback)");
             lines.Add("Blender quality default: Medium");
             lines.Add("Unity-aware Blender layout: on");
             lines.Add("AA production quality floor: on");
-            lines.Add("Raw bpy default path: off");
+            lines.Add("Controlled bpy character path: on");
             lines.Add("OpenRouter: " + IsKeyConfigured("OPENROUTER_API_KEY"));
             lines.Add("Gemini: " + IsKeyConfigured("GEMINI_API_KEY"));
             lines.Add("Groq: " + IsKeyConfigured("GROQ_API_KEY"));
