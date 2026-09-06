@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Net.Http;
 using System.Text;
+using System.Threading;
 
 
 namespace AI_Assistant.Tools
@@ -25,7 +26,8 @@ namespace AI_Assistant.Tools
 
         public static string ExecuteBatch(
             this UnityBridgeTools unity,
-            string operationsJson
+            string operationsJson,
+            CancellationToken cancellationToken = default
         )
         {
             try
@@ -53,7 +55,8 @@ namespace AI_Assistant.Tools
                     client
                         .PostAsync(
                             BatchUrl,
-                            content
+                            content,
+                            cancellationToken
                         )
                         .GetAwaiter()
                         .GetResult();

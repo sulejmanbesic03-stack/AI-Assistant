@@ -1,5 +1,6 @@
 using AI_Assistant.TempCapabilities;
 using AI_Assistant.Tools;
+using AI_Assistant.Runtime;
 
 using System;
 using System.Collections.Generic;
@@ -12,7 +13,15 @@ namespace AI_Assistant.AgentV2
 {
     public sealed class AgentOrchestratorV2
     {
-        private const int MaxModelCallsPerTask = 8;
+        private static int MaxModelCallsPerTask
+        {
+            get
+            {
+                return int.TryParse(Environment.GetEnvironmentVariable("AI_MAX_MODEL_CALLS"), out int configured)
+                    ? Math.Clamp(configured, 1, 20)
+                    : 8;
+            }
+        }
         private const int MaxExecutionAttempts = 3;
 
         private readonly UnityContextServiceV2 contextService;
@@ -211,7 +220,7 @@ namespace AI_Assistant.AgentV2
 
                 if (activeSnapshot == null)
                 {
-                    activeSnapshot = await contextService.CaptureAsync(goal);
+                    activeSnapshot = await contextService.CaptureAsync(goal, AgentCancellationHub.Token);
                     task.CompletedSteps.Add(
                         "Captured live Unity project context"
                     );
@@ -321,7 +330,7 @@ namespace AI_Assistant.AgentV2
                         );
 
                         activeSnapshot =
-                            await contextService.CaptureAsync(goal);
+                            await contextService.CaptureAsync(goal, AgentCancellationHub.Token);
 
                         string duplicateObservation =
                             "HOST_REJECTED_DUPLICATE_PLAN: "
@@ -387,7 +396,8 @@ namespace AI_Assistant.AgentV2
                     AgentExecutionReportV2 report =
                         await executor.ExecuteAsync(
                             implementation,
-                            goal
+                            goal,
+                            AgentCancellationHub.Token
                         );
 
                     RegisterChangedFiles(task, report);
@@ -435,7 +445,7 @@ namespace AI_Assistant.AgentV2
                     activity("[V2 CORRECT] refreshing live state");
 
                     activeSnapshot =
-                        await contextService.CaptureAsync(goal);
+                        await contextService.CaptureAsync(goal, AgentCancellationHub.Token);
 
                     ProviderReplyV2 correctionReply =
                         await providers.CompleteAsync(
@@ -481,6 +491,11 @@ namespace AI_Assistant.AgentV2
 
                 task.Phase = AgentTaskPhaseV2.Failed;
                 return "Agent V2 reached its execution-attempt limit.";
+            }
+            catch (OperationCanceledException) when (AgentCancellationHub.IsCancellationRequested)
+            {
+                task.Phase = AgentTaskPhaseV2.Failed;
+                return "Agent V2 task cancelled by user.";
             }
             catch (Exception ex)
             {

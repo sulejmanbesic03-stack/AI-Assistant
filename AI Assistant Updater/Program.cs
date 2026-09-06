@@ -140,16 +140,43 @@ Console.WriteLine(
     "Kopiram novu verziju..."
 );
 
+string stagingCopy =
+    targetDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+    + ".staging-" + parentPid;
+string backupDirectory =
+    targetDirectory.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
+    + ".backup-" + parentPid;
 
 try
 {
+    if (Directory.Exists(stagingCopy)) Directory.Delete(stagingCopy, true);
+    if (Directory.Exists(backupDirectory)) Directory.Delete(backupDirectory, true);
     CopyDirectory(
         stagingDirectory,
-        targetDirectory
+        stagingCopy
     );
+
+    string stagedExecutable = Path.Combine(stagingCopy, executableName);
+    if (!File.Exists(stagedExecutable))
+        throw new FileNotFoundException("Staging executable nije pronađen.", stagedExecutable);
+
+    if (Directory.Exists(targetDirectory)) Directory.Move(targetDirectory, backupDirectory);
+    Directory.Move(stagingCopy, targetDirectory);
 }
 catch (Exception ex)
 {
+    try
+    {
+        if (Directory.Exists(targetDirectory) && Directory.Exists(backupDirectory))
+            Directory.Delete(targetDirectory, true);
+        if (!Directory.Exists(targetDirectory) && Directory.Exists(backupDirectory))
+            Directory.Move(backupDirectory, targetDirectory);
+        if (Directory.Exists(stagingCopy)) Directory.Delete(stagingCopy, true);
+    }
+    catch (Exception rollback)
+    {
+        Console.WriteLine($"ROLLBACK FAILED: {rollback}");
+    }
     Console.WriteLine(
         $"UPDATE FAILED:\n{ex}"
     );
@@ -215,6 +242,15 @@ if (newProcess == null)
     );
 
     return;
+}
+
+try
+{
+    if (Directory.Exists(backupDirectory)) Directory.Delete(backupDirectory, true);
+}
+catch (Exception cleanup)
+{
+    Console.WriteLine("Old installation backup retained for recovery: " + cleanup.Message);
 }
 
 

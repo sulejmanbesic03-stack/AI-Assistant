@@ -7,6 +7,7 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using System.Threading;
 
 namespace AI_Assistant.AgentV2
 {
@@ -33,14 +34,15 @@ namespace AI_Assistant.AgentV2
             docs = new UnityDocumentationTools();
         }
 
-        public Task<UnityProjectSnapshotV2> CaptureAsync(string goal)
+        public Task<UnityProjectSnapshotV2> CaptureAsync(string goal, CancellationToken cancellationToken = default)
         {
-            return Task.Run(() => Capture(goal));
+            return Task.Run(() => Capture(goal, cancellationToken), cancellationToken);
         }
 
-        private UnityProjectSnapshotV2 Capture(string goal)
+        private UnityProjectSnapshotV2 Capture(string goal, CancellationToken cancellationToken)
         {
             activity("[V2 INSPECT] compact project snapshot");
+            cancellationToken.ThrowIfCancellationRequested();
 
             UnityProjectSnapshotV2 snapshot =
                 new UnityProjectSnapshotV2
@@ -65,6 +67,7 @@ namespace AI_Assistant.AgentV2
 
             foreach (string term in searchTerms.Take(3))
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 string result = unity.FindUnityScripts(term);
 
                 indexBuilder.Append("SEARCH: ");
@@ -89,6 +92,7 @@ namespace AI_Assistant.AgentV2
                 in scriptPaths.Take(MaxRelevantScripts)
             )
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 activity("[V2 INSPECT] read " + scriptPath);
 
                 string source = unity.ReadUnityScript(

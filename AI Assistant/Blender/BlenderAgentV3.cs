@@ -24,20 +24,15 @@ namespace AI_Assistant.Blender
         private readonly Action<string> activity;
         private readonly ProviderRouterV2 providers;
         private readonly IAIProviderV2 primary;
+        private readonly BlenderVisualQualityGate visualQuality;
 
         public BlenderAgentV3(RuntimeSettings settings, Action<string> activity)
         {
             this.settings = settings;
             this.activity = activity;
             providers = new ProviderRouterV2(activity);
-            primary = new OpenAiCompatibleProviderV2(
-                "Blender-InclusionAI",
-                "https://openrouter.ai/api/v1/chat/completions",
-                Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_MODEL")
-                    ?? "inclusionai/ling-3.0-flash-fin:free",
-                "OPENROUTER_API_KEY",
-                180
-            );
+            primary = new GeminiProviderV2();
+            visualQuality = new BlenderVisualQualityGate(activity);
         }
 
         public bool ShouldHandle(string prompt)
@@ -136,6 +131,9 @@ namespace AI_Assistant.Blender
                 token
             );
 
+            await ApplyVisualQualityAsync(first, goal, quality, token);
+            plan.LastVisualFeedback = first.VisualFeedback;
+
             if (first.Cancelled || token.IsCancellationRequested) return "Blender task cancelled by user.";
 
             if (!first.Success && first.ExecutionHealthy && !token.IsCancellationRequested)
@@ -163,6 +161,7 @@ namespace AI_Assistant.Blender
                             "blender_quality_retry.log",
                             token
                         );
+                        await ApplyVisualQualityAsync(second, goal, quality, token);
                         if (second.Success)
                         {
                             plan = qualityPlan;
@@ -181,11 +180,16 @@ namespace AI_Assistant.Blender
                     + ", prefabBundle=" + first.SceneBundleExists
                     + ", exports=" + first.ExportsOk
                     + ", topology=" + first.TopologyOk
-                    + ", quality=" + first.QualityOk
-                    + "\n" + Compact(first.Output, 1800);
+                + ", quality=" + first.QualityOk
+                + ", visual=" + first.VisualQualityOk
+                + "\n" + Compact(first.Output, 1800);
             }
 
-            string? manifest = Handoff(plan, first.RuntimeAssets, first.Topology, first.SceneBundlePath);
+            HandoffResult handoff = await HandoffAsync(plan, first.RuntimeAssets, first.Topology, first.SceneBundlePath, token);
+            if (!handoff.Success)
+            {
+                return "Blender build passed local verification, but Unity handoff failed: " + handoff.Message;
+            }
             int totalTris = first.Topology.Sum(t => t.Triangles);
             int minScore = first.Topology.Count == 0 ? 0 : first.Topology.Min(t => t.Score);
 
@@ -197,11 +201,48 @@ namespace AI_Assistant.Blender
             result.AppendLine("Quality: " + quality);
             result.AppendLine("Assets: " + plan.Assets.Count + " reusable model(s), " + plan.Instances.Count + " assembled instance(s).");
             result.AppendLine("Topology: " + totalTris + " triangles total, minimum score " + minScore + "/100.");
+            if (first.VisualReviewAvailable)
+                result.AppendLine("Visual QA: " + first.VisualScore + "/100 · " + Compact(first.VisualFeedback, 320));
             result.AppendLine("Blend: " + first.BlendPath);
             result.AppendLine("Final prefab FBX: " + first.SceneBundlePath);
-            if (!string.IsNullOrWhiteSpace(manifest)) result.AppendLine("Unity prefab handoff: " + manifest);
+            if (!string.IsNullOrWhiteSpace(handoff.ManifestPath)) result.AppendLine("Unity prefab handoff: " + handoff.ManifestPath);
             result.AppendLine("Provider: " + reply.Provider + " / " + reply.Model);
             return result.ToString().Trim();
+        }
+
+        private async Task ApplyVisualQualityAsync(
+            BuildOutcome outcome,
+            string goal,
+            string quality,
+            CancellationToken token
+        )
+        {
+            bool requiresVisual = quality.Equals("High", StringComparison.OrdinalIgnoreCase)
+                || quality.Equals("AA", StringComparison.OrdinalIgnoreCase);
+            if (!requiresVisual || !outcome.ExecutionHealthy || token.IsCancellationRequested)
+            {
+                outcome.VisualQualityOk = !requiresVisual || outcome.QualityOk;
+                outcome.Success = outcome.ExecutionHealthy && outcome.TopologyOk && outcome.QualityOk && outcome.VisualQualityOk;
+                return;
+            }
+
+            BlenderVisualQualityResult review = await visualQuality.EvaluateAsync(
+                goal,
+                quality,
+                JsonSerializer.Serialize(outcome.Topology),
+                outcome.PreviewPaths,
+                token
+            );
+            outcome.VisualReviewAvailable = review.Available;
+            outcome.VisualScore = review.Score;
+            outcome.VisualFeedback = review.Feedback;
+            outcome.VisualQualityOk = review.Available && review.Passed;
+            outcome.QualityOk = outcome.QualityOk && outcome.VisualQualityOk;
+            outcome.Success = outcome.ExecutionHealthy && outcome.TopologyOk && outcome.QualityOk;
+
+            activity(review.Available
+                ? "[BLENDER VISUAL QA] " + review.Score + "/100 · " + (review.Passed ? "PASS" : "REJECT")
+                : "[BLENDER VISUAL QA] unavailable · High/AA output will not be claimed or imported");
         }
 
         private async Task<BuildOutcome> ExecutePlanAsync(
@@ -217,6 +258,12 @@ namespace AI_Assistant.Blender
             string safeScene = Safe(plan.SceneName);
             string blendPath = Path.Combine(runRoot, safeScene + ".blend");
             string sceneBundlePath = Path.Combine(runRoot, safeScene + "_Prefab.fbx");
+            List<string> previewPaths = new()
+            {
+                Path.Combine(runRoot, safeScene + "_preview_iso.png"),
+                Path.Combine(runRoot, safeScene + "_preview_front.png"),
+                Path.Combine(runRoot, safeScene + "_preview_side.png")
+            };
             string scriptPath = Path.Combine(runRoot, scriptName);
             string logPath = Path.Combine(runRoot, logName);
 
@@ -233,7 +280,7 @@ namespace AI_Assistant.Blender
 
             File.WriteAllText(
                 scriptPath,
-                BuildExecutableScript(generated, blendPath, sceneBundlePath, runtimeAssets, plan),
+                BuildExecutableScript(generated, blendPath, sceneBundlePath, previewPaths, runtimeAssets, plan),
                 new UTF8Encoding(false)
             );
 
@@ -269,7 +316,8 @@ namespace AI_Assistant.Blender
                 TopologyOk = topologyOk,
                 QualityOk = qualityOk,
                 RuntimeAssets = runtimeAssets,
-                Topology = topology
+                Topology = topology,
+                PreviewPaths = previewPaths
             };
         }
 
@@ -280,28 +328,35 @@ namespace AI_Assistant.Blender
             CancellationToken token
         )
         {
+            int maxCalls = int.TryParse(Environment.GetEnvironmentVariable("AI_MAX_MODEL_CALLS"), out int configuredCalls)
+                ? Math.Clamp(configuredCalls, 1, 20)
+                : 8;
             if (primary.IsConfigured)
             {
+                if (task.ModelCalls >= maxCalls)
+                    return new ProviderReplyV2 { Success = false, Error = "Blender model-call budget exhausted (AI_MAX_MODEL_CALLS=" + maxCalls + ")." };
                 task.ActiveProvider = primary.Name;
                 task.ModelCalls++;
                 activity("[V2 MODEL] " + primary.Name + " / " + primary.ModelName + " call " + task.ModelCalls);
                 ProviderReplyV2 r = await primary.CompleteAsync(system, user, token);
                 if (r.Success || r.StatusCode == 499) return r;
-                activity("[V2 PROVIDER] Blender InclusionAI unavailable; using free fallback chain");
+                activity("[V2 PROVIDER] Blender Gemini unavailable; using fallback chain");
             }
             return await providers.CompleteAsync(task, system, user, token);
         }
 
         private static string BuildSystemPrompt(string version)
         {
-            return "You are a production 3D asset architect. You DO NOT write Python or bpy. Target runtime is " + version + ". Return strict JSON only. "
-                + "Schema: {\"scene_name\":\"GasStation\",\"summary\":\"short\",\"assets\":[{\"asset_name\":\"LightPole\",\"root_object\":\"AIA_LightPole\",\"target_triangles\":3500,\"materials\":[{\"name\":\"Metal\",\"color\":[0.15,0.15,0.15,1],\"metallic\":0.7,\"roughness\":0.35}],\"parts\":[{\"type\":\"cylinder\",\"name\":\"Pole\",\"parent\":\"\",\"position\":[0,0,2.5],\"rotation\":[0,0,0],\"dimensions\":[0.22,0.22,5],\"material\":\"Metal\",\"vertices\":48,\"bevel\":0.02,\"bevel_segments\":3,\"shade_smooth\":true},{\"type\":\"cube\",\"name\":\"Arm\",\"parent\":\"Pole\",\"position\":[0,0,2.35],\"rotation\":[0,0,0],\"dimensions\":[1.2,0.12,0.12],\"material\":\"Metal\",\"bevel\":0.03,\"bevel_segments\":3,\"shade_smooth\":false}]}],\"instances\":[{\"asset_name\":\"LightPole\",\"name\":\"LightPole_01\",\"position\":[4,0,8],\"rotation\":[0,0,0],\"scale\":[1,1,1]}]}. "
-                + "Allowed part types only: cube, plane, cylinder, cone, sphere, uv_sphere, torus. Allowed fields: name, parent, position, rotation, dimensions, material, radius, radius2, depth, vertices, major_segments, minor_segments, bevel, bevel_segments, shade_smooth. "
+            return "You are a production 3D asset architect with strong spatial and anatomical reasoning. You DO NOT write Python or bpy. Target runtime is " + version + ". Return strict JSON only. "
+                + "Schema: {\"request_kind\":\"environment|hard_surface|character|prop\",\"scene_name\":\"GasStation\",\"summary\":\"short\",\"assets\":[{\"asset_name\":\"LightPole\",\"root_object\":\"AIA_LightPole\",\"target_triangles\":3500,\"materials\":[{\"name\":\"Metal\",\"color\":[0.15,0.15,0.15,1],\"metallic\":0.7,\"roughness\":0.35}],\"parts\":[{\"type\":\"cylinder\",\"name\":\"Pole\",\"parent\":\"\",\"position\":[0,0,2.5],\"rotation\":[0,0,0],\"dimensions\":[0.22,0.22,5],\"material\":\"Metal\",\"vertices\":48,\"bevel\":0.02,\"bevel_segments\":3,\"shade_smooth\":true,\"subdivision_levels\":0}]}],\"instances\":[{\"asset_name\":\"LightPole\",\"name\":\"LightPole_01\",\"position\":[4,0,8],\"rotation\":[0,0,0],\"scale\":[1,1,1]}]}. "
+                + "Allowed part types: cube, plane, cylinder, cone, sphere, uv_sphere, torus, curve, extruded_polygon, mesh, skin, text. Common fields: name, parent, position, rotation, dimensions, material, radius, radius2, depth, vertices, major_segments, minor_segments, bevel, bevel_segments, shade_smooth, subdivision_levels. curve requires points:[[x,y,z],...] and radius. extruded_polygon requires at least 3 points:[[x,y],...] and extrude. mesh requires points and faces:[[index,...],...]. skin requires points, edges:[[a,b],...], radii:[...] and subdivision_levels; use it as a connected organic base. text uses text and extrude. "
                 + "PART COORDINATES are Blender-local Z-up. If parent is non-empty, position/rotation are LOCAL TO THAT PARENT. Use parent relationships for attached structures: lamp housing -> arm -> pole, nozzle -> pump body, canopy fascia -> canopy roof, handles -> doors, etc. Attached parts must physically touch or overlap their parent enough to look constructed, never float meters away. "
                 + "INSTANCE positions are Unity world coordinates [x,y,z]. The host converts them into Blender coordinates and exports the entire assembled hierarchy as one final prefab FBX, so you must design the COMPLETE scene composition here. "
                 + "INSTANCE scale should ALWAYS be [1,1,1]. If an object needs a different physical size, make a correctly sized unique asset; never use scene-instance downscaling as a layout shortcut. "
                 + "Create up to 12 reusable assets and 48 instances. Reuse identical assets through instances. Every major environment request should include enough reusable architecture and props to read clearly as the requested place. "
                 + "For AA quality, target production-ready medium-high detail: important props commonly 2k-8k triangles, hero architecture commonly 8k-25k triangles, and a complete multi-asset environment should normally exceed 15k triangles before instancing. Spend geometry on silhouette, bevels, curved forms, frames, trim, panels, handles, housings, supports, seams and era-specific details. Do not fake AA with a few primitive boxes and do not inflate invisible geometry. "
+                + "CHARACTERS: never build a disconnected mannequin from floating cubes/cylinders/spheres. Use one connected skin or authored mesh as the body base, human proportions (about 7.5 heads tall), bilateral symmetry, joined shoulders/hips/limbs, recognizable hands/feet/head silhouette, then layer clothing, hair, facial masses and accessories. A character without a connected body base is invalid. "
+                + "ENVIRONMENTS: first establish a readable footprint and functional zones. Keep buildings, canopy, pumps, roads and props grounded; preserve believable clearance and relationships. Do not stack all instances at the origin. "
                 + "Every asset root stays at local origin. Do not output code, nodes, world settings, lights, cameras, file paths, save/export calls or unsupported operations. No markdown and no prose outside JSON.";
         }
 
@@ -319,7 +374,7 @@ namespace AI_Assistant.Blender
             return "Repair ONLY structural/spatial awareness problems in this complete builder plan and return the full strict JSON again. Preserve style, asset set and intended scene composition. Use parent relationships so attached sub-parts use sensible local offsets and physically connect. Do not solve attachment problems by shrinking whole instances. All instance scales must remain [1,1,1].\nUSER GOAL:\n"
                 + goal
                 + "\nSTRUCTURAL WARNINGS:\n- " + string.Join("\n- ", warnings.Take(24))
-                + "\nCURRENT PLAN:\n" + Compact(JsonSerializer.Serialize(plan), 16000);
+                + "\nCURRENT PLAN:\n" + Compact(SerializePlanForModel(plan), 28000);
         }
 
         private static string BuildQualityRepairPrompt(
@@ -333,8 +388,9 @@ namespace AI_Assistant.Blender
             return "The deterministic build is technically valid but did not meet the requested " + quality + " visual-fidelity geometry gate. Return the COMPLETE builder JSON again with substantially richer PURPOSEFUL geometry while preserving layout and [1,1,1] instance scales. Add silhouette detail, bevel-supporting forms, trim, frames, panels, supports, housings, handles, seams and smoother curved components where visually meaningful. Use parent relationships for attached sub-parts. Do not add hidden/random geometry.\nUSER GOAL:\n"
                 + goal
                 + "\nCURRENT TOTAL TRIANGLES: " + total
+                + "\nVISUAL QA FEEDBACK: " + Compact(plan.LastVisualFeedback, 2400)
                 + "\nTOPOLOGY: " + JsonSerializer.Serialize(topology)
-                + "\nCURRENT PLAN:\n" + Compact(JsonSerializer.Serialize(plan), 16000);
+                + "\nCURRENT PLAN:\n" + Compact(SerializePlanForModel(plan), 28000);
         }
 
         private static void NormalizePlan(BuilderScenePlan plan, string quality)
@@ -414,12 +470,90 @@ namespace AI_Assistant.Blender
                     }
                 }
             }
+
+            if (plan.Instances.Count > 1)
+            {
+                Dictionary<string, int> positions = new(StringComparer.Ordinal);
+                foreach (BuilderInstance instance in plan.Instances)
+                {
+                    float[] p = instance.Position;
+                    string key = Math.Round(p[0], 1).ToString(CultureInfo.InvariantCulture) + "|"
+                        + Math.Round(p[1], 1).ToString(CultureInfo.InvariantCulture) + "|"
+                        + Math.Round(p[2], 1).ToString(CultureInfo.InvariantCulture);
+                    positions[key] = positions.TryGetValue(key, out int count) ? count + 1 : 1;
+                    if (Math.Abs(p[0]) > 250f || Math.Abs(p[1]) > 250f || Math.Abs(p[2]) > 250f)
+                        warnings.Add("Instance '" + instance.Name + "' uses an extreme world position; keep the composition inside a believable footprint.");
+                }
+                foreach (KeyValuePair<string, int> duplicate in positions.Where(pair => pair.Value > 1))
+                    warnings.Add(duplicate.Value + " instances share effectively the same world position " + duplicate.Key + "; separate them unless exact stacking is intentional.");
+
+                if (positions.Count <= Math.Max(1, plan.Instances.Count / 3))
+                    warnings.Add("Most scene instances collapse onto too few positions; create a functional readable layout instead of a central pile.");
+            }
             return warnings;
+        }
+
+        private static string SerializePlanForModel(BuilderScenePlan plan)
+        {
+            object dto = new
+            {
+                request_kind = plan.RequestKind,
+                scene_name = plan.SceneName,
+                summary = plan.Summary,
+                assets = plan.Assets.Select(asset => new
+                {
+                    asset_name = asset.AssetName,
+                    root_object = asset.RootObject,
+                    target_triangles = asset.TargetTriangles,
+                    materials = asset.Builder.Materials.Select(material => new
+                    {
+                        name = material.Name,
+                        color = material.Color,
+                        metallic = material.Metallic,
+                        roughness = material.Roughness
+                    }),
+                    parts = asset.Builder.Parts.Select(part => new
+                    {
+                        type = part.Type,
+                        name = part.Name,
+                        parent = part.ParentPart,
+                        position = part.Position,
+                        rotation = part.Rotation,
+                        dimensions = part.Dimensions,
+                        material = part.Material,
+                        radius = part.Radius,
+                        radius2 = part.Radius2,
+                        depth = part.Depth,
+                        vertices = part.Vertices,
+                        major_segments = part.MajorSegments,
+                        minor_segments = part.MinorSegments,
+                        bevel = part.Bevel,
+                        bevel_segments = part.BevelSegments,
+                        shade_smooth = part.ShadeSmooth,
+                        subdivision_levels = part.SubdivisionLevels,
+                        text = part.Text,
+                        extrude = part.Extrude,
+                        points = part.Points,
+                        edges = part.Edges,
+                        faces = part.Faces,
+                        radii = part.Radii
+                    })
+                }),
+                instances = plan.Instances.Select(instance => new
+                {
+                    asset_name = instance.AssetName,
+                    name = instance.Name,
+                    position = instance.Position,
+                    rotation = instance.Rotation,
+                    scale = new[] { 1f, 1f, 1f }
+                })
+            };
+            return JsonSerializer.Serialize(dto);
         }
 
         private static bool PassQualityGate(BuilderScenePlan plan, List<Topology> topology, string quality)
         {
-            if (topology.Count == 0) return false;
+            if (topology.Count == 0 || topology.Any(t => t.Score < 70 || t.Triangles <= 0 || t.Vertices <= 0 || t.MeshObjects <= 0)) return false;
             int total = topology.Sum(t => t.Triangles);
             int floor;
             if (quality.Equals("AA", StringComparison.OrdinalIgnoreCase))
@@ -438,8 +572,24 @@ namespace AI_Assistant.Blender
             {
                 if (!assets.TryGetValue(item.AssetName, out BuilderAssetPlan? asset)) continue;
                 int target = Math.Max(1, asset.TargetTriangles);
-                if (quality.Equals("AA", StringComparison.OrdinalIgnoreCase) && item.Triangles < target * 0.30f)
+                if (item.DegenerateFaces > Math.Max(4, item.Faces / 100)) return false;
+                if (item.LooseVertices > Math.Max(4, item.Vertices / 100)) return false;
+                if (item.BoundsX < 0.005f || item.BoundsY < 0.005f || item.BoundsZ < 0.005f) return false;
+                if (quality.Equals("AA", StringComparison.OrdinalIgnoreCase) && item.Triangles < target * 0.45f)
                     return false;
+                if (quality.Equals("AA", StringComparison.OrdinalIgnoreCase) && target >= 4000 && asset.Builder.Parts.Count < 6) return false;
+                if (quality.Equals("AA", StringComparison.OrdinalIgnoreCase) && target >= 4000 && asset.Builder.Materials.Count < 2) return false;
+            }
+
+            if (quality.Equals("AA", StringComparison.OrdinalIgnoreCase)
+                && plan.Assets.Sum(a => a.Builder.Parts.Count) < Math.Max(10, plan.Assets.Count * 4)) return false;
+
+            if (plan.RequestKind.Equals("character", StringComparison.OrdinalIgnoreCase))
+            {
+                int parts = plan.Assets.Sum(a => a.Builder.Parts.Count);
+                bool connectedBase = plan.Assets.SelectMany(a => a.Builder.Parts)
+                    .Any(p => p.Type.Equals("skin", StringComparison.OrdinalIgnoreCase) || p.Type.Equals("mesh", StringComparison.OrdinalIgnoreCase));
+                if (!connectedBase || parts < 10) return false;
             }
             return true;
         }
@@ -453,6 +603,7 @@ namespace AI_Assistant.Blender
                 string json = AgentJsonV2.ExtractObject(text);
                 using JsonDocument doc = JsonDocument.Parse(json);
                 JsonElement root = doc.RootElement;
+                plan.RequestKind = Str(root, "request_kind").Trim().ToLowerInvariant();
                 plan.SceneName = Str(root, "scene_name");
                 plan.Summary = Str(root, "summary");
 
@@ -509,7 +660,14 @@ namespace AI_Assistant.Blender
                                     MinorSegments = Int(p, "minor_segments", 12),
                                     Bevel = Num(p, "bevel", 0f),
                                     BevelSegments = Int(p, "bevel_segments", 2),
-                                    ShadeSmooth = Bool(p, "shade_smooth")
+                                    ShadeSmooth = Bool(p, "shade_smooth"),
+                                    SubdivisionLevels = Int(p, "subdivision_levels", 0),
+                                    Text = Str(p, "text"),
+                                    Extrude = Num(p, "extrude", 0.08f),
+                                    Points = FloatVectors(p, "points", 3),
+                                    Edges = IntVectors(p, "edges", 2),
+                                    Faces = IntVectors(p, "faces", 3),
+                                    Radii = FloatValues(p, "radii")
                                 });
                             }
                         }
@@ -557,6 +715,19 @@ namespace AI_Assistant.Blender
                 }
 
                 if (string.IsNullOrWhiteSpace(plan.SceneName)) plan.SceneName = "AI_Scene";
+                if (string.IsNullOrWhiteSpace(plan.RequestKind)) plan.RequestKind = "prop";
+                foreach (BuilderAssetPlan asset in plan.Assets)
+                {
+                    foreach (BlenderBuilderPart part in asset.Builder.Parts)
+                    {
+                        if (part.Type == "curve" && part.Points.Count < 2) { error = asset.AssetName + ": curve requires at least 2 points"; return false; }
+                        if (part.Type == "extruded_polygon" && part.Points.Count < 3) { error = asset.AssetName + ": extruded_polygon requires at least 3 points"; return false; }
+                        if (part.Type == "mesh" && (part.Points.Count < 3 || part.Faces.Count == 0)) { error = asset.AssetName + ": mesh requires points and faces"; return false; }
+                        if (part.Type == "skin" && (part.Points.Count < 2 || part.Edges.Count == 0)) { error = asset.AssetName + ": skin requires points and edges"; return false; }
+                        if (part.Type == "mesh" && part.Faces.Any(face => face.Any(index => index >= part.Points.Count))) { error = asset.AssetName + ": mesh face index is outside points"; return false; }
+                        if (part.Type == "skin" && part.Edges.Any(edge => edge.Any(index => index >= part.Points.Count))) { error = asset.AssetName + ": skin edge index is outside points"; return false; }
+                    }
+                }
                 return true;
             }
             catch (Exception ex)
@@ -570,12 +741,14 @@ namespace AI_Assistant.Blender
             string generated,
             string blendPath,
             string sceneBundlePath,
+            List<string> previewPaths,
             List<RuntimeAsset> assets,
             BuilderScenePlan plan
         )
         {
             StringBuilder s = new StringBuilder();
-            s.AppendLine("import bpy, json, math, traceback");
+            s.AppendLine("import bpy, bmesh, json, math, traceback");
+            s.AppendLine("from mathutils import Vector");
             s.AppendLine("try:");
             s.AppendLine("    bpy.ops.object.select_all(action='SELECT')");
             s.AppendLine("    bpy.ops.object.delete(use_global=False)");
@@ -589,25 +762,45 @@ namespace AI_Assistant.Blender
             s.AppendLine("    topo=[]");
             s.AppendLine("    for spec in specs:");
             s.AppendLine("        root=bpy.data.objects.get(spec['root'])");
-            s.AppendLine("        item={'asset_name':spec['name'],'triangles':0,'score':100}");
-            s.AppendLine("        if root is None: item['score']=0; topo.append(item); continue");
+            s.AppendLine("        item={'AssetName':spec['name'],'Triangles':0,'Vertices':0,'Edges':0,'Faces':0,'MeshObjects':0,'MaterialSlots':0,'LooseVertices':0,'NonManifoldEdges':0,'DegenerateFaces':0,'BoundsX':0.0,'BoundsY':0.0,'BoundsZ':0.0,'Score':100}");
+            s.AppendLine("        if root is None: item['Score']=0; topo.append(item); continue");
             s.AppendLine("        objs=[]; stack=[root]");
             s.AppendLine("        while stack:");
             s.AppendLine("            o=stack.pop()");
             s.AppendLine("            if o in objs: continue");
             s.AppendLine("            objs.append(o); stack.extend(list(o.children))");
-            s.AppendLine("        for o in [x for x in objs if x.type=='MESH']:");
+            s.AppendLine("        world_corners=[]");
+            s.AppendLine("        for o in [x for x in objs if x.type in {'MESH','CURVE','FONT'}]:");
+            s.AppendLine("            item['MeshObjects'] += 1");
+            s.AppendLine("            item['MaterialSlots'] += len(getattr(o.data,'materials',[]))");
+            s.AppendLine("            world_corners.extend([o.matrix_world @ Vector(c) for c in o.bound_box])");
             s.AppendLine("            eo=o.evaluated_get(depsgraph); mesh=eo.to_mesh()");
             s.AppendLine("            try:");
-            s.AppendLine("                mesh.calc_loop_triangles(); item['triangles'] += len(mesh.loop_triangles)");
+            s.AppendLine("                if mesh is None: continue");
+            s.AppendLine("                mesh.calc_loop_triangles(); item['Triangles'] += len(mesh.loop_triangles)");
+            s.AppendLine("                item['Vertices'] += len(mesh.vertices); item['Edges'] += len(mesh.edges); item['Faces'] += len(mesh.polygons)");
+            s.AppendLine("                bm=bmesh.new(); bm.from_mesh(mesh)");
+            s.AppendLine("                item['LooseVertices'] += sum(1 for v in bm.verts if len(v.link_edges)==0)");
+            s.AppendLine("                item['NonManifoldEdges'] += sum(1 for e in bm.edges if not e.is_manifold)");
+            s.AppendLine("                item['DegenerateFaces'] += sum(1 for f in bm.faces if f.calc_area() < 1e-8)");
+            s.AppendLine("                bm.free()");
             s.AppendLine("            finally:");
             s.AppendLine("                eo.to_mesh_clear()");
-            s.AppendLine("        if item['triangles']<=0: item['score']=0");
-            s.AppendLine("        if spec['target']>0 and item['triangles']>0:");
-            s.AppendLine("            ratio=item['triangles']/float(spec['target'])");
-            s.AppendLine("            if ratio<0.25: item['score']-=35");
-            s.AppendLine("            elif ratio<0.45: item['score']-=15");
-            s.AppendLine("            elif ratio>4.0: item['score']-=10");
+            s.AppendLine("        if world_corners:");
+            s.AppendLine("            mn=Vector((min(v.x for v in world_corners),min(v.y for v in world_corners),min(v.z for v in world_corners)))");
+            s.AppendLine("            mx=Vector((max(v.x for v in world_corners),max(v.y for v in world_corners),max(v.z for v in world_corners)))");
+            s.AppendLine("            size=mx-mn; item['BoundsX']=round(size.x,5); item['BoundsY']=round(size.y,5); item['BoundsZ']=round(size.z,5)");
+            s.AppendLine("        if item['Triangles']<=0 or item['Vertices']<=0: item['Score']=0");
+            s.AppendLine("        if item['LooseVertices']>max(4,item['Vertices']//100): item['Score']-=25");
+            s.AppendLine("        if item['DegenerateFaces']>max(4,item['Faces']//100): item['Score']-=25");
+            s.AppendLine("        if item['NonManifoldEdges']>max(12,int(item['Edges']*0.35)): item['Score']-=15");
+            s.AppendLine("        if min(item['BoundsX'],item['BoundsY'],item['BoundsZ'])<0.005: item['Score']-=20");
+            s.AppendLine("        if item['MaterialSlots']==0: item['Score']-=10");
+            s.AppendLine("        if spec['target']>0 and item['Triangles']>0:");
+            s.AppendLine("            ratio=item['Triangles']/float(spec['target'])");
+            s.AppendLine("            if ratio<0.25: item['Score']-=35");
+            s.AppendLine("            elif ratio<0.45: item['Score']-=15");
+            s.AppendLine("            elif ratio>4.0: item['Score']-=10");
             s.AppendLine("        bpy.ops.object.select_all(action='DESELECT')");
             s.AppendLine("        for o in objs: o.select_set(True)");
             s.AppendLine("        bpy.context.view_layer.objects.active=root");
@@ -640,6 +833,36 @@ namespace AI_Assistant.Blender
                 s.AppendLine("        inst.scale=(1.0,1.0,1.0)");
             }
 
+            s.AppendLine("    # Host-authored multi-angle preview for visual quality validation.");
+            s.AppendLine("    bpy.context.view_layer.update()");
+            s.AppendLine("    preview_objs=[]; stack=[scene_root]");
+            s.AppendLine("    while stack:");
+            s.AppendLine("        o=stack.pop()");
+            s.AppendLine("        if o in preview_objs: continue");
+            s.AppendLine("        preview_objs.append(o); stack.extend(list(o.children))");
+            s.AppendLine("    corners=[]");
+            s.AppendLine("    for o in [x for x in preview_objs if x.type in {'MESH','CURVE','FONT'}]: corners.extend([o.matrix_world @ Vector(c) for c in o.bound_box])");
+            s.AppendLine("    if corners:");
+            s.AppendLine("        mn=Vector((min(v.x for v in corners),min(v.y for v in corners),min(v.z for v in corners)))");
+            s.AppendLine("        mx=Vector((max(v.x for v in corners),max(v.y for v in corners),max(v.z for v in corners)))");
+            s.AppendLine("        center=(mn+mx)*0.5; radius=max(1.5,(mx-mn).length*0.62)");
+            s.AppendLine("        scene=bpy.context.scene");
+            s.AppendLine("        scene.render.resolution_x=768; scene.render.resolution_y=768; scene.render.resolution_percentage=100");
+            s.AppendLine("        scene.render.image_settings.file_format='PNG'");
+            s.AppendLine("        scene.world.color=(0.045,0.055,0.075)");
+            s.AppendLine("        try: scene.render.engine='BLENDER_EEVEE_NEXT'");
+            s.AppendLine("        except: scene.render.engine='BLENDER_EEVEE'");
+            s.AppendLine("        cam_data=bpy.data.cameras.new('AIA_QA_Camera'); cam=bpy.data.objects.new('AIA_QA_Camera',cam_data); scene.collection.objects.link(cam); scene.camera=cam");
+            s.AppendLine("        key_data=bpy.data.lights.new('AIA_QA_Key','AREA'); key_data.energy=1400; key_data.shape='DISK'; key_data.size=max(4.0,radius)");
+            s.AppendLine("        key=bpy.data.objects.new('AIA_QA_Key',key_data); scene.collection.objects.link(key); key.location=center+Vector((radius*0.7,-radius*0.8,radius*1.2))");
+            s.AppendLine("        fill_data=bpy.data.lights.new('AIA_QA_Fill','AREA'); fill_data.energy=800; fill_data.size=max(3.0,radius)");
+            s.AppendLine("        fill=bpy.data.objects.new('AIA_QA_Fill',fill_data); scene.collection.objects.link(fill); fill.location=center+Vector((-radius*0.8,radius*0.3,radius*0.6))");
+            s.AppendLine("        for lamp in (key,fill): lamp.rotation_euler=((center-lamp.location).to_track_quat('-Z','Y')).to_euler()");
+            s.AppendLine("        views=[((1.15,-1.35,0.85)," + Py(previewPaths[0]) + "),((0.0,-1.8,0.35)," + Py(previewPaths[1]) + "),((1.8,0.0,0.35)," + Py(previewPaths[2]) + ")]");
+            s.AppendLine("        for direction,path in views:");
+            s.AppendLine("            cam.location=center+Vector(direction)*radius; cam.rotation_euler=((center-cam.location).to_track_quat('-Z','Y')).to_euler(); cam.data.lens=52");
+            s.AppendLine("            scene.render.filepath=path; bpy.ops.render.render(write_still=True)");
+
             s.AppendLine("    bpy.ops.wm.save_as_mainfile(filepath=" + Py(blendPath) + ")");
             s.AppendLine("    bpy.ops.object.select_all(action='DESELECT')");
             s.AppendLine("    scene_objs=[]; stack=[scene_root]");
@@ -657,20 +880,28 @@ namespace AI_Assistant.Blender
             return s.ToString();
         }
 
-        private string? Handoff(
+        private async Task<HandoffResult> HandoffAsync(
             BuilderScenePlan plan,
             List<RuntimeAsset> assets,
             List<Topology> topology,
-            string sceneBundlePath
+            string sceneBundlePath,
+            CancellationToken token
         )
         {
             string root = settings.UnityProjectRoot;
-            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(Path.Combine(root, "Assets"))) return null;
+            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(Path.Combine(root, "Assets")))
+                return new HandoffResult { Success = false, Message = "Unity project root is not configured." };
 
             string safeScene = Safe(plan.SceneName);
             string modelDir = Path.Combine(root, "Assets", "AI_Generated", "Models", safeScene);
             string bundleDir = Path.Combine(root, "Assets", "AI_Generated", "SceneBundles");
             string sceneDir = Path.Combine(root, "Assets", "AI_Generated", "Scenes");
+            string requestId = Guid.NewGuid().ToString("N");
+            string resultRelativePath = "Library/AI_Assistant/Handoffs/" + requestId + ".airesult.json";
+            string resultAbsolutePath = Path.Combine(root, resultRelativePath.Replace('/', Path.DirectorySeparatorChar));
+            string? resultDirectory = Path.GetDirectoryName(resultAbsolutePath);
+            if (!string.IsNullOrWhiteSpace(resultDirectory)) Directory.CreateDirectory(resultDirectory);
+            if (File.Exists(resultAbsolutePath)) File.Delete(resultAbsolutePath);
             Directory.CreateDirectory(modelDir);
             Directory.CreateDirectory(bundleDir);
             Directory.CreateDirectory(sceneDir);
@@ -692,6 +923,9 @@ namespace AI_Assistant.Blender
                     new
                     {
                         version = 3,
+                        requestId,
+                        resultPath = resultRelativePath,
+                        importScale = 100f,
                         sceneName = plan.SceneName,
                         rootName = "AI_Generated_" + safeScene,
                         replaceExisting = true,
@@ -708,7 +942,25 @@ namespace AI_Assistant.Blender
             );
 
             activity("[BLENDER UNITY] full Blender-authored prefab bundle copied; Unity layout assembly disabled");
-            return manifest;
+            DateTime deadline = DateTime.UtcNow.AddSeconds(120);
+            while (DateTime.UtcNow < deadline)
+            {
+                token.ThrowIfCancellationRequested();
+                if (File.Exists(resultAbsolutePath))
+                {
+                    try
+                    {
+                        using JsonDocument result = JsonDocument.Parse(File.ReadAllText(resultAbsolutePath));
+                        JsonElement rootElement = result.RootElement;
+                        bool success = rootElement.TryGetProperty("success", out JsonElement successElement) && successElement.GetBoolean();
+                        string message = rootElement.TryGetProperty("message", out JsonElement messageElement) ? messageElement.GetString() ?? "" : "";
+                        return new HandoffResult { Success = success, Message = message, ManifestPath = manifest };
+                    }
+                    catch (JsonException) { }
+                }
+                await Task.Delay(500, token);
+            }
+            return new HandoffResult { Success = false, Message = "Unity did not acknowledge prefab import within 120 seconds.", ManifestPath = manifest };
         }
 
         private async Task<ProcessResult> RunAsync(string exe, string script, string log, CancellationToken token)
@@ -784,7 +1036,7 @@ namespace AI_Assistant.Blender
         private static string DetectQuality(string goal)
         {
             string p = (goal ?? "").ToLowerInvariant();
-            if (p.Contains("quality profile: aa") || p.Contains("aa quality") || p.Contains("medium-high") || p.Contains("double a")) return "AA";
+            if (p.Contains("quality profile: aa") || p.Contains("aa quality") || p.Contains("aa model") || p.Contains("medium-high") || p.Contains("medium high") || p.Contains("double a") || p.Contains("the forest style") || p.Contains("sons of the forest style")) return "AA";
             if (p.Contains("quality profile: high") || p.Contains("high quality") || p.Contains("high-detail") || p.Contains("high detail")) return "High";
             if (p.Contains("quality profile: low") || p.Contains("low poly") || p.Contains("low-poly") || p.Contains("low detail")) return "Low";
             return "Medium";
@@ -794,7 +1046,7 @@ namespace AI_Assistant.Blender
             (s ?? "").Contains("Traceback (most recent call last)", StringComparison.OrdinalIgnoreCase)
             || (s ?? "").Contains("AI_SCENE_PREFAB_EXPORT_FAILED", StringComparison.OrdinalIgnoreCase);
 
-        private static bool AllowedType(string t) => t is "cube" or "plane" or "cylinder" or "cone" or "sphere" or "uv_sphere" or "torus";
+        private static bool AllowedType(string t) => t is "cube" or "plane" or "cylinder" or "cone" or "sphere" or "uv_sphere" or "torus" or "curve" or "extruded_polygon" or "mesh" or "skin" or "text";
         private static string CleanGoal(string p) { string v = (p ?? "").Trim(); return v.StartsWith("/blender ", StringComparison.OrdinalIgnoreCase) ? v.Substring(9).Trim() : v; }
         private static string Safe(string v) { var b = new StringBuilder(); foreach (char c in string.IsNullOrWhiteSpace(v) ? "AI_Scene" : v) b.Append(char.IsLetterOrDigit(c) || c == '_' || c == '-' ? c : '_'); return b.ToString(); }
         private static string Py(string v) => "'" + (v ?? "").Replace("\\", "\\\\").Replace("'", "\\'") + "'";
@@ -805,6 +1057,42 @@ namespace AI_Assistant.Blender
         private static bool Bool(JsonElement e, string n) => e.TryGetProperty(n, out var v) && (v.ValueKind == JsonValueKind.True || (v.ValueKind == JsonValueKind.String && bool.TryParse(v.GetString(), out bool b) && b));
         private static float[] Vec3(JsonElement e, string n, float[] f) => VecN(e, n, f, 3);
         private static float[] Vec4(JsonElement e, string n, float[] f) => VecN(e, n, f, 4);
+        private static List<float[]> FloatVectors(JsonElement e, string n, int maxDimensions)
+        {
+            List<float[]> result = new();
+            if (!e.TryGetProperty(n, out JsonElement values) || values.ValueKind != JsonValueKind.Array) return result;
+            foreach (JsonElement value in values.EnumerateArray().Take(512))
+            {
+                if (value.ValueKind != JsonValueKind.Array) continue;
+                List<float> row = new();
+                foreach (JsonElement item in value.EnumerateArray().Take(maxDimensions))
+                    if (item.ValueKind == JsonValueKind.Number && item.TryGetSingle(out float number)) row.Add(number);
+                if (row.Count >= 2) { while (row.Count < 3) row.Add(0f); result.Add(row.ToArray()); }
+            }
+            return result;
+        }
+        private static List<int[]> IntVectors(JsonElement e, string n, int minimumDimensions)
+        {
+            List<int[]> result = new();
+            if (!e.TryGetProperty(n, out JsonElement values) || values.ValueKind != JsonValueKind.Array) return result;
+            foreach (JsonElement value in values.EnumerateArray().Take(1024))
+            {
+                if (value.ValueKind != JsonValueKind.Array) continue;
+                List<int> row = new();
+                foreach (JsonElement item in value.EnumerateArray().Take(32))
+                    if (item.ValueKind == JsonValueKind.Number && item.TryGetInt32(out int number) && number >= 0) row.Add(number);
+                if (row.Count >= minimumDimensions) result.Add(row.ToArray());
+            }
+            return result;
+        }
+        private static List<float> FloatValues(JsonElement e, string n)
+        {
+            List<float> result = new();
+            if (!e.TryGetProperty(n, out JsonElement values) || values.ValueKind != JsonValueKind.Array) return result;
+            foreach (JsonElement item in values.EnumerateArray().Take(512))
+                if (item.ValueKind == JsonValueKind.Number && item.TryGetSingle(out float number)) result.Add(number);
+            return result;
+        }
         private static float[] VecN(JsonElement e, string n, float[] f, int count)
         {
             float[] r = f.ToArray();
@@ -832,8 +1120,10 @@ namespace AI_Assistant.Blender
 
         private sealed class BuilderScenePlan
         {
+            public string RequestKind { get; set; } = "prop";
             public string SceneName { get; set; } = "";
             public string Summary { get; set; } = "";
+            public string LastVisualFeedback { get; set; } = "";
             public List<BuilderAssetPlan> Assets { get; set; } = new();
             public List<BuilderInstance> Instances { get; set; } = new();
         }
@@ -865,6 +1155,17 @@ namespace AI_Assistant.Blender
         {
             public string AssetName { get; set; } = "";
             public int Triangles { get; set; }
+            public int Vertices { get; set; }
+            public int Edges { get; set; }
+            public int Faces { get; set; }
+            public int MeshObjects { get; set; }
+            public int MaterialSlots { get; set; }
+            public int LooseVertices { get; set; }
+            public int NonManifoldEdges { get; set; }
+            public int DegenerateFaces { get; set; }
+            public float BoundsX { get; set; }
+            public float BoundsY { get; set; }
+            public float BoundsZ { get; set; }
             public int Score { get; set; }
         }
 
@@ -883,8 +1184,20 @@ namespace AI_Assistant.Blender
             public bool ExportsOk { get; set; }
             public bool TopologyOk { get; set; }
             public bool QualityOk { get; set; }
+            public bool VisualReviewAvailable { get; set; }
+            public bool VisualQualityOk { get; set; }
+            public int VisualScore { get; set; }
+            public string VisualFeedback { get; set; } = "";
+            public List<string> PreviewPaths { get; set; } = new();
             public List<RuntimeAsset> RuntimeAssets { get; set; } = new();
             public List<Topology> Topology { get; set; } = new();
+        }
+
+        private sealed class HandoffResult
+        {
+            public bool Success { get; init; }
+            public string Message { get; init; } = "";
+            public string ManifestPath { get; init; } = "";
         }
 
         private sealed record ProcessResult(int ExitCode, string Output, bool TimedOut, bool Cancelled);

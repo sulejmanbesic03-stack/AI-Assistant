@@ -2,6 +2,7 @@
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Threading;
 using System.Text.Json;
 
 namespace AI_Assistant.TempCapabilities
@@ -692,8 +693,10 @@ namespace AI_Assistant.TempCapabilities
             return this;
         }
 
-        public string Execute()
+        public string Execute(CancellationToken cancellationToken = default)
         {
+            if (cancellationToken.IsCancellationRequested)
+                return "{\"success\":false,\"errorCode\":\"CANCELLED\",\"message\":\"Unity batch cancelled by user.\"}";
             if (operations.Count == 0)
             {
                 return
@@ -710,7 +713,7 @@ namespace AI_Assistant.TempCapabilities
                     }
                 );
 
-            return unity.ExecuteBatch(json);
+            return unity.ExecuteBatch(json, cancellationToken);
         }
     }
 }

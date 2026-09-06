@@ -383,23 +383,18 @@ namespace AI_Assistant
 
         private static AssistantRuntime CreateAgent()
         {
-            string projectFile =
-                FindProjectFileUpwards(AppContext.BaseDirectory, "AI Assistant.csproj")
-                ?? throw new FileNotFoundException(
-                    "AI Assistant.csproj nije pronađen. Pokreni aplikaciju iz build outputa projekta."
+            string? projectFile = FindProjectFileUpwards(AppContext.BaseDirectory, "AI Assistant.csproj");
+            string sourceRoot = projectFile == null
+                ? AppContext.BaseDirectory
+                : Path.GetDirectoryName(projectFile) ?? AppContext.BaseDirectory;
+
+            string? updaterProject = projectFile == null
+                ? null
+                : Path.Combine(
+                    Directory.GetParent(sourceRoot)?.FullName ?? sourceRoot,
+                    "AI Assistant Updater",
+                    "AI Assistant Updater.csproj"
                 );
-
-            string sourceRoot = Path.GetDirectoryName(projectFile)
-                ?? throw new DirectoryNotFoundException("Source root nije pronađen.");
-
-            string solutionRoot = Directory.GetParent(sourceRoot)?.FullName
-                ?? throw new DirectoryNotFoundException("Solution root nije pronađen.");
-
-            string updaterProject = Path.Combine(
-                solutionRoot,
-                "AI Assistant Updater",
-                "AI Assistant Updater.csproj"
-            );
 
             if (!File.Exists(updaterProject))
             {
@@ -428,9 +423,9 @@ namespace AI_Assistant
 
             return new AssistantRuntime(
                 allowedRoots,
-                projectFile,
+                projectFile ?? Path.Combine(sourceRoot, "AI Assistant.csproj"),
                 sourceRoot,
-                updaterProject
+                updaterProject ?? Path.Combine(sourceRoot, "AI Assistant Updater.csproj")
             );
         }
 

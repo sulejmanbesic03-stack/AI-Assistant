@@ -19,6 +19,7 @@ namespace AI_Assistant.AI
         private readonly UnityBridgeTools unityTools;
 
         private string lastUnityV2Goal = "";
+        private string lastBlenderGoal = "";
         private string pendingHighRiskPrompt = "";
 
         public event Action<string>? Activity;
@@ -48,6 +49,11 @@ namespace AI_Assistant.AI
             {
                 pendingHighRiskPrompt = ""; ReportActivity("[RISK GATE] cancelled by user"); return "High-risk task cancelled. No execution was started.";
             }
+            if (!string.IsNullOrWhiteSpace(pendingHighRiskPrompt))
+            {
+                pendingHighRiskPrompt = "";
+                ReportActivity("[RISK GATE] held request expired after a non-approval message");
+            }
             if (settings.RequireApprovalForDestructiveChanges && IsHighRisk(normalizedPrompt) && !IsPlanOnly(normalizedPrompt))
             {
                 pendingHighRiskPrompt = normalizedPrompt; ReportActivity("[RISK GATE] destructive/high-impact task held for approval");
@@ -61,11 +67,21 @@ namespace AI_Assistant.AI
         private async Task<string> RouteApprovedAsync(string normalizedPrompt)
         {
             bool continuation = IsContinuation(normalizedPrompt);
-            if (blenderV3.ShouldHandle(normalizedPrompt))
+            bool explicitUnity = HasExplicitUnitySignal(normalizedPrompt);
+            if (explicitUnity && !IsExplicitBlender(normalizedPrompt) && agentV2.ShouldHandle(normalizedPrompt))
             {
-                string qualityProfile = DetectQualityProfile(normalizedPrompt);
+                if (!continuation) lastUnityV2Goal = normalizedPrompt;
+                if (!continuation) lastBlenderGoal = "";
+                ReportActivity("[ROUTER] Unity Cowork Agent V2 (explicit Unity intent)");
+                return await agentV2.HandleAsync(normalizedPrompt);
+            }
+            if (blenderV3.ShouldHandle(normalizedPrompt) || (continuation && !string.IsNullOrWhiteSpace(lastBlenderGoal)))
+            {
+                string blenderPrompt = continuation ? lastBlenderGoal : normalizedPrompt;
+                if (!continuation) { lastBlenderGoal = normalizedPrompt; lastUnityV2Goal = ""; }
+                string qualityProfile = DetectQualityProfile(blenderPrompt);
                 string unityContext = CaptureLiveUnityContext();
-                string augmentedPrompt = BuildBlenderAugmentedPrompt(normalizedPrompt, qualityProfile, unityContext);
+                string augmentedPrompt = BuildBlenderAugmentedPrompt(blenderPrompt, qualityProfile, unityContext);
                 ReportActivity("[ROUTER] Blender Agent V3 deterministic builder");
                 ReportActivity("[BLENDER QUALITY] " + qualityProfile);
                 ReportActivity(string.IsNullOrWhiteSpace(unityContext) ? "[BLENDER UNITY CONTEXT] unavailable; planning around neutral origin" : "[BLENDER UNITY CONTEXT] live scene snapshot attached before layout planning");
@@ -88,7 +104,7 @@ namespace AI_Assistant.AI
 
         public void ResetConversationContext()
         {
-            AgentCancellationHub.CancelCurrent(); agentV2.Reset(); legacy.ResetConversationContext(); lastUnityV2Goal = ""; pendingHighRiskPrompt = "";
+            AgentCancellationHub.CancelCurrent(); agentV2.Reset(); legacy.ResetConversationContext(); lastUnityV2Goal = ""; lastBlenderGoal = ""; pendingHighRiskPrompt = "";
         }
 
         public string BuildDiagnostics()
@@ -99,7 +115,7 @@ namespace AI_Assistant.AI
             string blender = settings.ResolveBlenderExecutable();
             lines.Add("Blender: " + (string.IsNullOrWhiteSpace(blender) ? "not found" : blender));
             lines.Add("Blender engine: V3 deterministic builder-first");
-            lines.Add("Blender model: " + (Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_MODEL") ?? "inclusionai/ling-3.0-flash-fin:free"));
+            lines.Add("Blender planning model: " + (Environment.GetEnvironmentVariable("GEMINI_MODEL") ?? "gemini-3.7-flash") + " (Gemini first; Groq/OpenRouter fallback)");
             lines.Add("Blender quality default: Medium");
             lines.Add("Unity-aware Blender layout: on");
             lines.Add("AA production quality floor: on");
@@ -160,8 +176,20 @@ namespace AI_Assistant.AI
         private static bool IsHighRisk(string prompt)
         {
             string p = (prompt ?? "").Trim().ToLowerInvariant();
-            string[] signals = { "delete ", "obrisi", "obriši", "remove all", "delete all", "reset scene", "wipe", "overwrite", "replace entire", "replace all", "remove script", "delete script", "delete folder", "remove folder", "clear scene", "destroy all", "rename project", "move project" };
+            string[] signals = { "delete ", "delete.", "obrisi", "obriši", "ukloni", "remove all", "delete all", "reset scene", "resetuj scenu", "wipe", "overwrite", "replace entire", "replace all", "zamijeni cijelu", "remove script", "delete script", "delete folder", "remove folder", "clear scene", "ocisti scenu", "destroy all", "rename project", "move project", "drop database", "purge", "format" };
             foreach (string signal in signals) if (p.Contains(signal)) return true; return false;
+        }
+        private static bool HasExplicitUnitySignal(string prompt)
+        {
+            string p = (prompt ?? "").Trim().ToLowerInvariant();
+            return p.StartsWith("/agent ", StringComparison.OrdinalIgnoreCase)
+                || p.StartsWith("/plan ", StringComparison.OrdinalIgnoreCase)
+                || ContainsAny(p, "unity", "gameobject", "scene hierarchy", "monobehaviour", "prefab", "rigidbody", "collider", "navmesh", "charactercontroller", "unity editor");
+        }
+        private static bool IsExplicitBlender(string prompt)
+        {
+            string p = (prompt ?? "").Trim();
+            return p.StartsWith("/blender ", StringComparison.OrdinalIgnoreCase) || p.Equals("/blender", StringComparison.OrdinalIgnoreCase);
         }
         private static bool IsPlanOnly(string prompt) => (prompt ?? "").Trim().StartsWith("/plan ", StringComparison.OrdinalIgnoreCase);
         private static bool IsApproval(string prompt) { string p = (prompt ?? "").Trim(); return p.Equals("approve", StringComparison.OrdinalIgnoreCase) || p.Equals("odobri", StringComparison.OrdinalIgnoreCase) || p.Equals("potvrdi", StringComparison.OrdinalIgnoreCase); }

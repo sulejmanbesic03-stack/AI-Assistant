@@ -486,6 +486,15 @@ namespace AI_Assistant.AgentV2
                     return CancelledReply();
                 }
 
+                if (task.ModelCalls >= ConfiguredMaxModelCalls())
+                {
+                    return new ProviderReplyV2
+                    {
+                        Success = false,
+                        Error = "Model-call budget exhausted (AI_MAX_MODEL_CALLS=" + ConfiguredMaxModelCalls() + ")."
+                    };
+                }
+
                 if (!provider.IsConfigured || IsCoolingDown(provider.Name))
                 {
                     continue;
@@ -528,9 +537,13 @@ namespace AI_Assistant.AgentV2
 
         private List<IAIProviderV2> BuildCandidateOrder(AgentTaskStateV2 task)
         {
+            bool preferFree = string.Equals(Environment.GetEnvironmentVariable("AI_PREFER_FREE_PROVIDERS"), "1", StringComparison.OrdinalIgnoreCase)
+                || string.Equals(Environment.GetEnvironmentVariable("AI_PREFER_FREE_PROVIDERS"), "true", StringComparison.OrdinalIgnoreCase);
             List<IAIProviderV2> baseOrder = task.Phase == AgentTaskPhaseV2.Correcting
                 ? new List<IAIProviderV2> { groq, gemini, openRouter }
-                : new List<IAIProviderV2> { openRouter, gemini, groq };
+                : preferFree
+                    ? new List<IAIProviderV2> { openRouter, gemini, groq }
+                    : new List<IAIProviderV2> { gemini, groq, openRouter };
 
             return baseOrder
                 .Where(provider => provider.IsConfigured)
@@ -593,6 +606,13 @@ namespace AI_Assistant.AgentV2
                 Success = false,
                 Error = "No configured free provider is currently available."
             };
+        }
+
+        private static int ConfiguredMaxModelCalls()
+        {
+            return int.TryParse(Environment.GetEnvironmentVariable("AI_MAX_MODEL_CALLS"), out int configured)
+                ? Math.Clamp(configured, 1, 20)
+                : 8;
         }
 
         private sealed class ProviderScore
