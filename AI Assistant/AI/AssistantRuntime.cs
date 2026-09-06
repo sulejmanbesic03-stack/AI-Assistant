@@ -189,7 +189,12 @@ namespace AI_Assistant.AI
         private static bool IsExplicitBlender(string prompt)
         {
             string p = (prompt ?? "").Trim();
-            return p.StartsWith("/blender ", StringComparison.OrdinalIgnoreCase) || p.Equals("/blender", StringComparison.OrdinalIgnoreCase);
+            return p.Equals("/blender", StringComparison.OrdinalIgnoreCase)
+                || p.StartsWith("/blender ", StringComparison.OrdinalIgnoreCase)
+                || p.StartsWith("/blender:", StringComparison.OrdinalIgnoreCase)
+                || p.Equals("blender", StringComparison.OrdinalIgnoreCase)
+                || p.StartsWith("blender ", StringComparison.OrdinalIgnoreCase)
+                || p.StartsWith("blender:", StringComparison.OrdinalIgnoreCase);
         }
         private static bool IsPlanOnly(string prompt) => (prompt ?? "").Trim().StartsWith("/plan ", StringComparison.OrdinalIgnoreCase);
         private static bool IsApproval(string prompt) { string p = (prompt ?? "").Trim(); return p.Equals("approve", StringComparison.OrdinalIgnoreCase) || p.Equals("odobri", StringComparison.OrdinalIgnoreCase) || p.Equals("potvrdi", StringComparison.OrdinalIgnoreCase); }

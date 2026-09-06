@@ -38,7 +38,9 @@ namespace AI_Assistant.Blender
         public bool ShouldHandle(string prompt)
         {
             string p = (prompt ?? "").Trim().ToLowerInvariant();
-            return p.StartsWith("/blender ") || p.Contains(" blender ") || p.StartsWith("blender ")
+            return p == "/blender" || p.StartsWith("/blender ") || p.StartsWith("/blender:")
+                || p == "blender" || p.StartsWith("blender ") || p.StartsWith("blender:")
+                || p.Contains(" blender ")
                 || p.Contains("napravi model") || p.Contains("3d model") || p.Contains("napravi scenu")
                 || p.Contains("build a scene") || p.Contains("benzinsk") || p.Contains("gas station");
         }
@@ -1047,7 +1049,15 @@ namespace AI_Assistant.Blender
             || (s ?? "").Contains("AI_SCENE_PREFAB_EXPORT_FAILED", StringComparison.OrdinalIgnoreCase);
 
         private static bool AllowedType(string t) => t is "cube" or "plane" or "cylinder" or "cone" or "sphere" or "uv_sphere" or "torus" or "curve" or "extruded_polygon" or "mesh" or "skin" or "text";
-        private static string CleanGoal(string p) { string v = (p ?? "").Trim(); return v.StartsWith("/blender ", StringComparison.OrdinalIgnoreCase) ? v.Substring(9).Trim() : v; }
+        private static string CleanGoal(string p)
+        {
+            string value = (p ?? "").Trim();
+            if (value.StartsWith("/blender", StringComparison.OrdinalIgnoreCase))
+                return value.Substring(8).TrimStart(' ', ':', '-').Trim();
+            if (value.StartsWith("blender", StringComparison.OrdinalIgnoreCase))
+                return value.Substring(7).TrimStart(' ', ':', '-').Trim();
+            return value;
+        }
         private static string Safe(string v) { var b = new StringBuilder(); foreach (char c in string.IsNullOrWhiteSpace(v) ? "AI_Scene" : v) b.Append(char.IsLetterOrDigit(c) || c == '_' || c == '-' ? c : '_'); return b.ToString(); }
         private static string Py(string v) => "'" + (v ?? "").Replace("\\", "\\\\").Replace("'", "\\'") + "'";
         private static string Compact(string v, int n) => string.IsNullOrEmpty(v) ? "" : v.Length <= n ? v : v.Substring(0, n) + "...";
