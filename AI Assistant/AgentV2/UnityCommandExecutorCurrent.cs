@@ -1178,19 +1178,84 @@ namespace AI_Assistant.AgentV2
                     ),
 
                 "instantiate_prefab" =>
-                    unity.InstantiatePrefab(
-                        action.AssetPath,
-                        string.IsNullOrWhiteSpace(action.Name)
-                            ? "GeneratedAsset"
-                            : action.Name,
-                        action.ParentPath
-                    ),
+                    InstantiatePrefabIdempotent(action),
 
                 _ =>
                     "AGENT V2 ERROR: unsupported direct scene action type '"
                     + action.Type
                     + "'."
             };
+        }
+
+        private string InstantiatePrefabIdempotent(SceneActionV2 action)
+        {
+            string name = string.IsNullOrWhiteSpace(action.Name)
+                ? "GeneratedAsset"
+                : action.Name.Trim();
+
+            // Retrying a Blender -> Unity handoff must not stack another copy
+            // of the same generated asset in the scene. Only the agent-owned
+            // canonical name is guarded; user-created prefab instances keep
+            // the normal executor behavior.
+            if (string.Equals(name, "GeneratedAsset", StringComparison.Ordinal))
+            {
+                string hierarchy = unity.GetSceneHierarchy();
+                if (SceneContainsObjectName(hierarchy, name))
+                {
+                    return "{\"success\":true,\"reused\":true,\"name\":\"GeneratedAsset\",\"message\":\"Existing GeneratedAsset instance reused.\"}";
+                }
+            }
+
+            return unity.InstantiatePrefab(action.AssetPath, name, action.ParentPath);
+        }
+
+        private static bool SceneContainsObjectName(string hierarchy, string expectedName)
+        {
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(hierarchy);
+                return SceneContainsObjectName(document.RootElement, expectedName);
+            }
+            catch
+            {
+                return hierarchy.Contains(
+                    "\"name\":\"" + expectedName + "\"",
+                    StringComparison.OrdinalIgnoreCase
+                );
+            }
+        }
+
+        private static bool SceneContainsObjectName(JsonElement element, string expectedName)
+        {
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                if (element.TryGetProperty("name", out JsonElement name)
+                    && name.ValueKind == JsonValueKind.String
+                    && string.Equals(name.GetString(), expectedName, StringComparison.Ordinal))
+                {
+                    return true;
+                }
+
+                foreach (JsonProperty property in element.EnumerateObject())
+                {
+                    if (SceneContainsObjectName(property.Value, expectedName))
+                    {
+                        return true;
+                    }
+                }
+            }
+            else if (element.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement child in element.EnumerateArray())
+                {
+                    if (SceneContainsObjectName(child, expectedName))
+                    {
+                        return true;
+                    }
+                }
+            }
+
+            return false;
         }
 
         // ============================================================
