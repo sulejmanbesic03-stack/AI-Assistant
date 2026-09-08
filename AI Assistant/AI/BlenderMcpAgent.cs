@@ -93,7 +93,7 @@ namespace AI_Assistant.AI
                     return "GROQ_API_KEY nije pronađen.";
                 }
 
-                string model = Environment.GetEnvironmentVariable("GROQ_BLENDER_MODEL");
+                string model = Environment.GetEnvironmentVariable("GROQ_BLENDER_MODEL") ?? "";
                 if (string.IsNullOrWhiteSpace(model))
                 {
                     model = DefaultGroqModel;
@@ -218,7 +218,7 @@ namespace AI_Assistant.AI
 
             DisposeProcess();
 
-            string command = Environment.GetEnvironmentVariable("BLENDER_MCP_COMMAND");
+            string command = Environment.GetEnvironmentVariable("BLENDER_MCP_COMMAND") ?? "";
             if (string.IsNullOrWhiteSpace(command))
             {
                 command = "uvx";
