@@ -15,18 +15,18 @@ namespace AI_Assistant.AI
     /// <summary>
     /// Small MCP client for the official Blender Lab server.
     /// The MCP server is launched through uvx and talks to Blender's addon on localhost:9876.
-    /// Groq is the primary model provider; OpenRouter is used when Groq is unavailable.
+    /// Groq is used for Blender MCP with a direct Groq model fallback.
     /// </summary>
     public sealed class BlenderMcpAgent : IDisposable
     {
         private const string GroqEndpoint =
             "https://api.groq.com/openai/v1/chat/completions";
 
-        private const string OpenRouterEndpoint =
-            "https://openrouter.ai/api/v1/chat/completions";
-
         private const string DefaultGroqModel =
             "qwen/qwen3.6-27b";
+
+        private const string DefaultGroqFallbackModel =
+            "openai/gpt-oss-120b";
 
         private const string OfficialMcpSource =
             "git+https://projects.blender.org/lab/blender_mcp.git#subdirectory=mcp";
@@ -35,7 +35,6 @@ namespace AI_Assistant.AI
         private const int RequestTimeoutSeconds = 120;
         private const int MaxToolResultChars = 4000;
         private const int DefaultGroqMaxCompletionTokens = 1200;
-        private const int DefaultOpenRouterMaxCompletionTokens = 1000;
 
         private static readonly JsonSerializerOptions JsonOptions =
             new JsonSerializerOptions
@@ -72,11 +71,9 @@ namespace AI_Assistant.AI
                 await EnsureConnectedAsync();
 
                 string? apiKey = Environment.GetEnvironmentVariable("GROQ_API_KEY");
-                string? openRouterKey = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
-                if (string.IsNullOrWhiteSpace(apiKey)
-                    && string.IsNullOrWhiteSpace(openRouterKey))
+                if (string.IsNullOrWhiteSpace(apiKey))
                 {
-                    return "Ni GROQ_API_KEY ni OPENROUTER_API_KEY nisu pronađeni.";
+                    return "GROQ_API_KEY nije pronađen.";
                 }
 
                 string model = Environment.GetEnvironmentVariable("GROQ_BLENDER_MODEL");
@@ -106,7 +103,7 @@ namespace AI_Assistant.AI
 
                 for (int cycle = 0; cycle < MaxToolCycles; cycle++)
                 {
-                    JsonDocument response = await SendWithFallbackAsync(apiKey, model, messages);
+                    JsonDocument response = await SendWithGroqFallbackAsync(apiKey, model, messages);
                     JsonElement message = ReadAssistantMessage(response);
 
                     string? content = null;
@@ -277,7 +274,7 @@ namespace AI_Assistant.AI
             return result.GetRawText();
         }
 
-        private async Task<JsonDocument> SendWithFallbackAsync(
+        private async Task<JsonDocument> SendWithGroqFallbackAsync(
             string? groqApiKey,
             string groqModel,
             List<object> messages
@@ -318,43 +315,35 @@ namespace AI_Assistant.AI
                 groqError = new InvalidOperationException("GROQ_API_KEY nije konfigurisan.");
             }
 
-            string openRouterApiKey =
-                Environment.GetEnvironmentVariable("OPENROUTER_API_KEY") ?? "";
-            if (string.IsNullOrWhiteSpace(openRouterApiKey))
-            {
-                throw groqError
-                    ?? new InvalidOperationException("Groq provider nije vratio grešku.");
-            }
-
             Exception failure = groqError
                 ?? new InvalidOperationException("Groq provider nije vratio odgovor.");
 
-            string? openRouterModel =
-                Environment.GetEnvironmentVariable("OPENROUTER_BLENDER_MODEL");
-            if (string.IsNullOrWhiteSpace(openRouterModel))
+            string fallbackModel =
+                Environment.GetEnvironmentVariable("GROQ_BLENDER_FALLBACK_MODEL")
+                ?? Environment.GetEnvironmentVariable("GROQ_MODEL")
+                ?? DefaultGroqFallbackModel;
+            if (string.IsNullOrWhiteSpace(fallbackModel)
+                || string.Equals(fallbackModel, groqModel, StringComparison.OrdinalIgnoreCase))
             {
-                // Do not inherit OPENROUTER_MODEL here. That variable may point
-                // to a large reasoning model used by the general agent and can
-                // exceed the free provider's token budget for Blender schemas.
-                openRouterModel = "openrouter/free";
+                fallbackModel = DefaultGroqFallbackModel;
             }
 
             activity(
-                "[BLENDER PROVIDER] Groq unavailable; using OpenRouter fallback · "
-                + openRouterModel
+                "[BLENDER PROVIDER] Groq primary unavailable; using direct Groq fallback · "
+                + fallbackModel
                 + " ("
                 + Trim(failure.Message, 300)
                 + ")"
             );
 
             return await SendCompletionAsync(
-                OpenRouterEndpoint,
-                openRouterApiKey,
-                openRouterModel,
+                GroqEndpoint,
+                groqApiKey ?? "",
+                fallbackModel,
                 messages,
                 ResolveMaxCompletionTokens(
-                    "OPENROUTER_BLENDER_MAX_TOKENS",
-                    DefaultOpenRouterMaxCompletionTokens
+                    "GROQ_BLENDER_FALLBACK_MAX_TOKENS",
+                    DefaultGroqMaxCompletionTokens
                 )
             );
         }
@@ -416,17 +405,6 @@ namespace AI_Assistant.AI
             );
             request.Headers.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
-            if (endpoint == OpenRouterEndpoint)
-            {
-                request.Headers.TryAddWithoutValidation(
-                    "HTTP-Referer",
-                    "https://github.com/sulejmanbesic03-stack/AI-Assistant"
-                );
-                request.Headers.TryAddWithoutValidation(
-                    "X-Title",
-                    "AI Assistant Blender MCP"
-                );
-            }
             request.Content = new StringContent(
                 JsonSerializer.Serialize(body),
                 Encoding.UTF8,
@@ -445,8 +423,8 @@ namespace AI_Assistant.AI
 
             JsonDocument document = JsonDocument.Parse(text);
             // Validate the OpenAI-compatible envelope here so a malformed
-            // Groq response can enter the OpenRouter fallback path instead of
-            // failing later with an opaque dictionary lookup exception.
+            // Groq response can enter the direct Groq model fallback instead
+            // of failing later with an opaque dictionary lookup exception.
             try
             {
                 _ = ReadAssistantMessage(document);
