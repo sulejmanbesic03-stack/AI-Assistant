@@ -33,8 +33,9 @@ namespace AI_Assistant.AI
 
         private const int MaxToolCycles = 8;
         private const int RequestTimeoutSeconds = 120;
-        private const int MaxToolResultChars = 12000;
-        private const int DefaultMaxCompletionTokens = 1600;
+        private const int MaxToolResultChars = 4000;
+        private const int DefaultGroqMaxCompletionTokens = 1200;
+        private const int DefaultOpenRouterMaxCompletionTokens = 1000;
 
         private static readonly JsonSerializerOptions JsonOptions =
             new JsonSerializerOptions
@@ -288,16 +289,24 @@ namespace AI_Assistant.AI
             {
                 try
                 {
+                    activity("[BLENDER PROVIDER] trying Groq · " + groqModel);
                     return await SendCompletionAsync(
                         GroqEndpoint,
                         groqApiKey ?? "",
                         groqModel,
-                        messages
+                        messages,
+                        ResolveMaxCompletionTokens(
+                            "GROQ_BLENDER_MAX_TOKENS",
+                            DefaultGroqMaxCompletionTokens
+                        )
                     );
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException ex)
                 {
-                    throw;
+                    groqError = new InvalidOperationException(
+                        "Groq provider timeout/abort: " + ex.Message,
+                        ex
+                    );
                 }
                 catch (Exception ex)
                 {
@@ -324,10 +333,9 @@ namespace AI_Assistant.AI
                 Environment.GetEnvironmentVariable("OPENROUTER_BLENDER_MODEL");
             if (string.IsNullOrWhiteSpace(openRouterModel))
             {
-                openRouterModel = Environment.GetEnvironmentVariable("OPENROUTER_MODEL");
-            }
-            if (string.IsNullOrWhiteSpace(openRouterModel))
-            {
+                // Do not inherit OPENROUTER_MODEL here. That variable may point
+                // to a large reasoning model used by the general agent and can
+                // exceed the free provider's token budget for Blender schemas.
                 openRouterModel = "openrouter/free";
             }
 
@@ -343,7 +351,11 @@ namespace AI_Assistant.AI
                 OpenRouterEndpoint,
                 openRouterApiKey,
                 openRouterModel,
-                messages
+                messages,
+                ResolveMaxCompletionTokens(
+                    "OPENROUTER_BLENDER_MAX_TOKENS",
+                    DefaultOpenRouterMaxCompletionTokens
+                )
             );
         }
 
@@ -371,7 +383,8 @@ namespace AI_Assistant.AI
             string endpoint,
             string apiKey,
             string model,
-            List<object> messages
+            List<object> messages,
+            int maxCompletionTokens
         )
         {
             List<object> groqTools = tools.Select(tool => new
@@ -380,10 +393,10 @@ namespace AI_Assistant.AI
                 function = new
                 {
                     name = tool.Name,
-                    description = tool.Description ?? "Blender MCP tool",
+                    description = Trim(tool.Description ?? "Blender MCP tool", 300),
                     parameters = tool.InputSchema.ValueKind == JsonValueKind.Undefined
                         ? JsonSerializer.SerializeToElement(new { type = "object" })
-                        : tool.InputSchema
+                        : CompactSchema(tool.InputSchema)
                 }
             }).Cast<object>().ToList();
 
@@ -394,7 +407,7 @@ namespace AI_Assistant.AI
                 ["tools"] = groqTools,
                 ["tool_choice"] = "auto",
                 ["temperature"] = 0.1,
-                ["max_tokens"] = ResolveMaxCompletionTokens()
+                ["max_tokens"] = maxCompletionTokens
             };
 
             using HttpRequestMessage request = new HttpRequestMessage(
@@ -446,16 +459,64 @@ namespace AI_Assistant.AI
             }
         }
 
-        private static int ResolveMaxCompletionTokens()
+        private static int ResolveMaxCompletionTokens(string variableName, int defaultValue)
         {
-            string? configured =
-                Environment.GetEnvironmentVariable("GROQ_BLENDER_MAX_TOKENS");
+            string? configured = Environment.GetEnvironmentVariable(variableName);
             if (int.TryParse(configured, out int value))
             {
-                return Math.Clamp(value, 512, 4000);
+                return Math.Clamp(value, 512, 3000);
             }
 
-            return DefaultMaxCompletionTokens;
+            return defaultValue;
+        }
+
+        private static JsonElement CompactSchema(JsonElement schema)
+        {
+            return JsonSerializer.SerializeToElement(CompactSchemaValue(schema));
+        }
+
+        private static object? CompactSchemaValue(JsonElement value)
+        {
+            switch (value.ValueKind)
+            {
+                case JsonValueKind.Object:
+                    Dictionary<string, object?> compact = new Dictionary<string, object?>();
+                    foreach (JsonProperty property in value.EnumerateObject())
+                    {
+                        if (property.NameEquals("description")
+                            || property.NameEquals("title")
+                            || property.NameEquals("$schema")
+                            || property.NameEquals("examples"))
+                        {
+                            continue;
+                        }
+
+                        compact[property.Name] = CompactSchemaValue(property.Value);
+                    }
+                    return compact;
+
+                case JsonValueKind.Array:
+                    return value.EnumerateArray()
+                        .Select(CompactSchemaValue)
+                        .ToList();
+
+                case JsonValueKind.String:
+                    return value.GetString();
+
+                case JsonValueKind.Number:
+                    return value.TryGetInt64(out long integer)
+                        ? integer
+                        : value.GetDouble();
+
+                case JsonValueKind.True:
+                    return true;
+
+                case JsonValueKind.False:
+                    return false;
+
+                default:
+                    return null;
+            }
         }
 
         private async Task<JsonElement> SendRequestAsync(string method, object? parameters)
