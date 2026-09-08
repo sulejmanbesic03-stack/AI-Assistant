@@ -399,7 +399,7 @@
 
                     <Border Style="{StaticResource CardBorder}" Padding="15" Margin="0,12,0,0">
                         <StackPanel>
-                            <TextBlock Text="Provider strategy" FontSize="12" FontWeight="Bold" />
+                            <TextBlock Text="Blender provider strategy" FontSize="12" FontWeight="Bold" />
                             <TextBlock Text="Groq primary · direct Groq 120B fallback" FontSize="10" Foreground="#657186" Margin="0,3,0,12" />
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
@@ -413,8 +413,8 @@
                             </Grid>
                             <Grid Margin="0,9,0,0">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                <TextBlock Text="Gemini" FontSize="11" />
-                                <TextBlock Grid.Column="1" Text="LAST RESORT" FontSize="9" FontWeight="Bold" Foreground="#F6C85F" />
+                                <TextBlock Text="OpenRouter / Gemini" FontSize="11" />
+                                <TextBlock Grid.Column="1" Text="NOT USED" FontSize="9" FontWeight="Bold" Foreground="#657186" />
                             </Grid>
                         </StackPanel>
                     </Border>
