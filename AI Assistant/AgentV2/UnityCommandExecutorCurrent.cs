@@ -4,8 +4,10 @@ using AI_Assistant.Tools;
 using System;
 using System.Collections.Generic;
 using System.Linq;
+using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Tasks;
+using System.Threading;
 
 namespace AI_Assistant.AgentV2
 {
@@ -30,24 +32,29 @@ namespace AI_Assistant.AgentV2
 
         public Task<AgentExecutionReportV2> ExecuteAsync(
             AgentImplementationV2 implementation,
-            string userGoal
+            string userGoal,
+            CancellationToken cancellationToken = default
         )
         {
             return Task.Run(
                 () => Execute(
                     implementation,
-                    userGoal
-                )
+                    userGoal,
+                    cancellationToken
+                ),
+                cancellationToken
             );
         }
 
         private AgentExecutionReportV2 Execute(
             AgentImplementationV2 implementation,
-            string userGoal
+            string userGoal,
+            CancellationToken cancellationToken
         )
         {
             AgentExecutionReportV2 report =
                 new AgentExecutionReportV2();
+            int baselineConsoleErrors = ReadConsoleErrorCount(unity.GetConsoleErrors());
 
             if (
                 !NormalizeAndValidateImplementation(
@@ -63,6 +70,7 @@ namespace AI_Assistant.AgentV2
             // 1. Compile persistent generated/repaired gameplay scripts first.
             foreach (ScriptChangeV2 script in implementation.ScriptChanges)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (!WriteAndCompileScript(script, report))
                 {
                     return report;
@@ -71,7 +79,7 @@ namespace AI_Assistant.AgentV2
 
             // 2. Create/configure scene objects. Existing-script attach actions
             // are direct actions and execute after the batch creates the target.
-            if (!ExecuteSceneActions(implementation.SceneActions, report))
+            if (!ExecuteSceneActions(implementation.SceneActions, report, cancellationToken))
             {
                 return report;
             }
@@ -79,6 +87,7 @@ namespace AI_Assistant.AgentV2
             // 3. Attach generated scripts through canonical script_changes.attach_to.
             foreach (ScriptChangeV2 script in implementation.ScriptChanges)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 if (
                     !string.IsNullOrWhiteSpace(script.AttachTo)
                     && !AttachGeneratedScript(script, report)
@@ -96,6 +105,7 @@ namespace AI_Assistant.AgentV2
                 )
             )
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 TempCapabilitySpecV2 capability =
                     implementation.TemporaryCapability;
 
@@ -134,6 +144,7 @@ namespace AI_Assistant.AgentV2
             // 5. Save once and verify once.
             activity("[V2 SAVE] scene");
 
+            cancellationToken.ThrowIfCancellationRequested();
             string saveResult = unity.SaveScene();
 
             if (!AgentJsonV2.LooksSuccessful(saveResult))
@@ -158,6 +169,12 @@ namespace AI_Assistant.AgentV2
                     unity.GetConsoleErrors(),
                     3000
                 );
+            int currentConsoleErrors = ReadConsoleErrorCount(report.ConsoleResult);
+            if (currentConsoleErrors > baselineConsoleErrors)
+            {
+                report.Fail("Unity generated " + (currentConsoleErrors - baselineConsoleErrors) + " new console error(s): " + report.ConsoleResult);
+                return report;
+            }
 
             if (
                 ShouldRunRuntimeVerification(userGoal)
@@ -166,7 +183,8 @@ namespace AI_Assistant.AgentV2
             {
                 VerifyRuntime(
                     implementation.RuntimeObjectPaths,
-                    report
+                    report,
+                    cancellationToken
                 );
             }
 
@@ -948,7 +966,8 @@ namespace AI_Assistant.AgentV2
 
         private bool ExecuteSceneActions(
             IReadOnlyList<SceneActionV2> actions,
-            AgentExecutionReportV2 report
+            AgentExecutionReportV2 report,
+            CancellationToken cancellationToken = default
         )
         {
             if (actions.Count == 0)
@@ -956,88 +975,49 @@ namespace AI_Assistant.AgentV2
                 return true;
             }
 
-            List<SceneActionV2> batchable =
-                actions
-                    .Where(IsBatchable)
-                    .ToList();
+            List<SceneActionV2> pendingBatch = new();
 
-            List<SceneActionV2> direct =
-                actions
-                    .Where(action => !IsBatchable(action))
-                    .ToList();
-
-            if (batchable.Count > 0)
+            bool FlushBatch()
             {
-                activity(
-                    "[V2 BATCH] "
-                    + batchable.Count
-                    + " scene actions"
-                );
-
-                UnityBatchBuilder batch =
-                    new UnityBatchBuilder(unity)
-                        .StopOnFailure(true);
-
-                foreach (SceneActionV2 action in batchable)
-                {
-                    AddToBatch(batch, action);
-                }
-
-                string batchResult = batch.Execute();
-
+                if (pendingBatch.Count == 0) return true;
+                activity("[V2 BATCH] " + pendingBatch.Count + " scene actions (preserved order)");
+                UnityBatchBuilder batch = new UnityBatchBuilder(unity).StopOnFailure(true);
+                foreach (SceneActionV2 item in pendingBatch) AddToBatch(batch, item);
+                string batchResult = batch.Execute(cancellationToken);
+                pendingBatch.Clear();
                 if (!AgentJsonV2.LooksSuccessful(batchResult))
                 {
                     report.Fail(
-                        "Unity scene batch failed: "
-                        + AgentJsonV2.Compact(batchResult, 2200)
+                        "Unity scene batch failed: " + AgentJsonV2.Compact(batchResult, 2200)
                     );
-
                     return false;
                 }
-
-                report.Steps.Add(
-                    "Unity batch: "
-                    + batchable.Count
-                    + " scene actions"
-                );
+                report.Steps.Add("Unity batch: ordered scene actions");
+                return true;
             }
 
-            // Direct actions are deliberately executed after the batch so an
-            // attach_script can target an object just created in that batch.
-            foreach (SceneActionV2 action in direct)
+            foreach (SceneActionV2 action in actions)
             {
-                activity(
-                    "[V2 ACTION] "
-                    + action.Type
-                    + (
-                        action.Type == "attach_script"
-                            ? " " + action.ScriptType + " -> " + action.ObjectPath
-                            : ""
-                    )
-                );
+                if (IsBatchable(action))
+                {
+                    pendingBatch.Add(action);
+                    continue;
+                }
 
-                string actionResult =
-                    ExecuteDirectSceneAction(action);
-
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!FlushBatch()) return false;
+                activity("[V2 ACTION] " + action.Type + (action.Type == "attach_script" ? " " + action.ScriptType + " -> " + action.ObjectPath : ""));
+                string actionResult = ExecuteDirectSceneAction(action);
                 if (!AgentJsonV2.LooksSuccessful(actionResult))
                 {
-                    report.Fail(
-                        "Scene action '"
-                        + action.Type
-                        + "' failed: "
-                        + AgentJsonV2.Compact(actionResult, 1800)
-                    );
-
+                    report.Fail("Scene action '" + action.Type + "' failed: " + AgentJsonV2.Compact(actionResult, 1800));
                     return false;
                 }
-
-                report.Steps.Add(
-                    "Scene action: "
-                    + action.Type
-                );
+                report.Steps.Add("Scene action: " + action.Type);
             }
 
-            return true;
+            cancellationToken.ThrowIfCancellationRequested();
+            return FlushBatch();
         }
 
         private static bool IsBatchable(SceneActionV2 action)
@@ -1203,7 +1183,8 @@ namespace AI_Assistant.AgentV2
 
         private void VerifyRuntime(
             IEnumerable<string> objectPaths,
-            AgentExecutionReportV2 report
+            AgentExecutionReportV2 report,
+            CancellationToken cancellationToken = default
         )
         {
             activity("[V2 RUNTIME] enter Play Mode");
@@ -1233,10 +1214,17 @@ namespace AI_Assistant.AgentV2
                         .Take(4)
                 )
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     activity("[V2 RUNTIME] " + objectPath);
 
                     string runtime =
                         unity.GetUnityRuntimeState(objectPath);
+
+                    if (!AgentJsonV2.LooksSuccessful(runtime))
+                    {
+                        report.Fail("Runtime verification failed for " + objectPath + ": " + AgentJsonV2.Compact(runtime, 1400));
+                        return;
+                    }
 
                     report.RuntimeResults.Add(
                         objectPath
@@ -1287,6 +1275,18 @@ namespace AI_Assistant.AgentV2
                     StringComparison.OrdinalIgnoreCase
                 )
             );
+        }
+
+        private static int ReadConsoleErrorCount(string value)
+        {
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(value ?? "{}");
+                if (document.RootElement.TryGetProperty("count", out JsonElement count) && count.TryGetInt32(out int result))
+                    return Math.Max(0, result);
+            }
+            catch { }
+            return 0;
         }
     }
 }

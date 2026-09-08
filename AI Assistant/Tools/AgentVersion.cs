@@ -1,19 +1,16 @@
 using AI_Assistant.AI;
 
-
 namespace AI_Assistant.Tools
 {
     public static class AgentVersion
     {
         public const string Version =
-            "0.6.6-cowork-tokenbudget";
+            "0.11.1-cowork-semantic-blender-rc";
 
-
-        // Compile-time handshake retained for the legacy compatibility path.
         public const string RequiredContextRouterBuild =
             AIIntegration.ContextRouterBuild;
 
         public const string CoworkKernelBuild =
-            "unity-cowork-v2-minimax-tokenbudget-cooldown";
+            "ship-v1-blender-v3-semantic-humanoid-origin-material-face-gate";
     }
 }

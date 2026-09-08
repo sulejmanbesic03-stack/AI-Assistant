@@ -4,20 +4,46 @@
              StartupUri="MainWindow.xaml"
              ShutdownMode="OnMainWindowClose">
     <Application.Resources>
-        <SolidColorBrush x:Key="WindowBrush" Color="#0B1020" />
-        <SolidColorBrush x:Key="PanelBrush" Color="#11182A" />
-        <SolidColorBrush x:Key="PanelBorderBrush" Color="#24304A" />
-        <SolidColorBrush x:Key="PrimaryBrush" Color="#6D5DFB" />
-        <SolidColorBrush x:Key="PrimaryHoverBrush" Color="#8175FF" />
-        <SolidColorBrush x:Key="TextBrush" Color="#F3F5FA" />
-        <SolidColorBrush x:Key="MutedTextBrush" Color="#97A3BA" />
+        <SolidColorBrush x:Key="WindowBrush" Color="#070A12" />
+        <SolidColorBrush x:Key="PanelBrush" Color="#0D111C" />
+        <SolidColorBrush x:Key="PanelRaisedBrush" Color="#111827" />
+        <SolidColorBrush x:Key="PanelBorderBrush" Color="#20283A" />
+        <SolidColorBrush x:Key="PrimaryBrush" Color="#7C5CFF" />
+        <SolidColorBrush x:Key="PrimaryHoverBrush" Color="#9278FF" />
+        <SolidColorBrush x:Key="TextBrush" Color="#F7F8FC" />
+        <SolidColorBrush x:Key="MutedTextBrush" Color="#8C96AA" />
+        <SolidColorBrush x:Key="SubtleTextBrush" Color="#667085" />
+        <SolidColorBrush x:Key="SuccessBrush" Color="#36D399" />
+        <SolidColorBrush x:Key="CyanBrush" Color="#41D9FF" />
+        <SolidColorBrush x:Key="WarningBrush" Color="#F6C85F" />
+
+        <LinearGradientBrush x:Key="HeroGradient" StartPoint="0,0" EndPoint="1,1">
+            <GradientStop Color="#7C5CFF" Offset="0" />
+            <GradientStop Color="#5B6CFF" Offset="0.48" />
+            <GradientStop Color="#24C8F4" Offset="1" />
+        </LinearGradientBrush>
+
+        <Style x:Key="CardBorder" TargetType="Border">
+            <Setter Property="Background" Value="{StaticResource PanelBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource PanelBorderBrush}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="16" />
+        </Style>
+
+        <Style x:Key="ChipBorder" TargetType="Border">
+            <Setter Property="Background" Value="#121827" />
+            <Setter Property="BorderBrush" Value="#273149" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="CornerRadius" Value="999" />
+            <Setter Property="Padding" Value="9,5" />
+        </Style>
 
         <Style TargetType="Button">
             <Setter Property="Foreground" Value="White" />
             <Setter Property="Background" Value="{StaticResource PrimaryBrush}" />
             <Setter Property="BorderThickness" Value="0" />
-            <Setter Property="Padding" Value="18,10" />
-            <Setter Property="FontSize" Value="14" />
+            <Setter Property="Padding" Value="16,10" />
+            <Setter Property="FontSize" Value="13" />
             <Setter Property="FontWeight" Value="SemiBold" />
             <Setter Property="Cursor" Value="Hand" />
             <Setter Property="Template">
@@ -25,26 +51,39 @@
                     <ControlTemplate TargetType="Button">
                         <Border x:Name="ButtonBorder"
                                 Background="{TemplateBinding Background}"
-                                CornerRadius="9"
+                                BorderBrush="{TemplateBinding BorderBrush}"
+                                BorderThickness="{TemplateBinding BorderThickness}"
+                                CornerRadius="10"
                                 Padding="{TemplateBinding Padding}">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
-                                <Setter TargetName="ButtonBorder"
-                                        Property="Background"
-                                        Value="{StaticResource PrimaryHoverBrush}" />
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.88" />
+                            </Trigger>
+                            <Trigger Property="IsPressed" Value="True">
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.72" />
                             </Trigger>
                             <Trigger Property="IsEnabled" Value="False">
-                                <Setter TargetName="ButtonBorder"
-                                        Property="Opacity"
-                                        Value="0.45" />
+                                <Setter TargetName="ButtonBorder" Property="Opacity" Value="0.38" />
                             </Trigger>
                         </ControlTemplate.Triggers>
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+        </Style>
+
+        <Style x:Key="GhostButton" TargetType="Button" BasedOn="{StaticResource {x:Type Button}}">
+            <Setter Property="Background" Value="#111725" />
+            <Setter Property="BorderBrush" Value="#273149" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Foreground" Value="#CFD5E2" />
+        </Style>
+
+        <Style x:Key="IconButton" TargetType="Button" BasedOn="{StaticResource GhostButton}">
+            <Setter Property="Padding" Value="10,8" />
+            <Setter Property="MinWidth" Value="38" />
         </Style>
     </Application.Resources>
 </Application>

@@ -11,38 +11,30 @@ using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 
-
 namespace AI_Assistant
 {
     public partial class MainWindow : Window
     {
-        private readonly ObservableCollection<ChatEntry>
-            messages =
-                new ObservableCollection<ChatEntry>();
+        private readonly ObservableCollection<ChatEntry> messages =
+            new ObservableCollection<ChatEntry>();
 
         private AssistantRuntime? ai;
         private bool isBusy;
-
+        private bool stopRequested;
+        private string latestActivity = "Idle";
 
         public MainWindow()
         {
             InitializeComponent();
-
             MessagesList.ItemsSource = messages;
-
             Loaded += MainWindow_Loaded;
         }
 
-
-        private void MainWindow_Loaded(
-            object sender,
-            RoutedEventArgs e
-        )
+        private void MainWindow_Loaded(object sender, RoutedEventArgs e)
         {
             try
             {
                 ai = CreateAgent();
-
                 ai.Activity += OnAgentActivity;
 
                 SetStatus(
@@ -50,69 +42,69 @@ namespace AI_Assistant
                     Color.FromRgb(69, 201, 142)
                 );
 
+                SetBusy(false);
+                RefreshLiveInspector();
+
                 AddMessage(
                     "Assistant",
-                    "AI Assistant je spreman. Unity zahtjevi koriste Cowork Agent V2; ostali workflow-i ostaju na compatibility routeru."
+                    "Cowork SHIP V1 je spreman. Unity koristi Agent V2, /blender koristi controlled Blender pipeline, a runtime prikazuje rad agenta u Live Inspectoru bez zatrpavanja chata."
                 );
 
                 PromptTextBox.Focus();
             }
             catch (Exception ex)
             {
-                SetStatus(
-                    "Greška pri pokretanju",
-                    Color.FromRgb(239, 95, 95)
-                );
-
-                AddMessage(
-                    "System",
-                    ex.GetType().Name + ": " + ex.Message
-                );
-
+                SetStatus("Greška pri pokretanju", Color.FromRgb(239, 95, 95));
+                AddMessage("System", ex.GetType().Name + ": " + ex.Message);
                 PromptTextBox.IsEnabled = false;
                 SendButton.IsEnabled = false;
             }
         }
 
-
-        private async void SendButton_Click(
-            object sender,
-            RoutedEventArgs e
-        )
+        private async void SendButton_Click(object sender, RoutedEventArgs e)
         {
+            if (isBusy)
+            {
+                RequestStop();
+                return;
+            }
+
             await SendCurrentPromptAsync();
         }
 
-
-        private async void PromptTextBox_PreviewKeyDown(
-            object sender,
-            KeyEventArgs e
-        )
+        private void RequestStop()
         {
-            if (
-                e.Key == Key.Enter
-                && Keyboard.Modifiers != ModifierKeys.Shift
-            )
+            if (!isBusy || ai == null || stopRequested)
+            {
+                return;
+            }
+
+            stopRequested = true;
+            ai.CancelCurrentWork();
+            latestActivity = "Stopping current task";
+            SendButton.IsEnabled = false;
+            SendButton.Content = "Stopping...";
+            SetStatus("Zaustavljam agenta...", Color.FromRgb(239, 95, 95));
+            RefreshLiveInspector();
+        }
+
+        private async void PromptTextBox_PreviewKeyDown(object sender, KeyEventArgs e)
+        {
+            if (e.Key == Key.Enter && Keyboard.Modifiers != ModifierKeys.Shift)
             {
                 e.Handled = true;
                 await SendCurrentPromptAsync();
             }
         }
 
-
         private async Task SendCurrentPromptAsync()
         {
-            if (
-                isBusy
-                || ai == null
-            )
+            if (isBusy || ai == null)
             {
                 return;
             }
 
-            string prompt =
-                PromptTextBox.Text.Trim();
-
+            string prompt = PromptTextBox.Text.Trim();
             if (string.IsNullOrWhiteSpace(prompt))
             {
                 return;
@@ -120,21 +112,15 @@ namespace AI_Assistant
 
             PromptTextBox.Clear();
             AddMessage("User", prompt);
-
+            latestActivity = "Starting task";
             SetBusy(true);
+            RefreshLiveInspector();
 
             try
             {
-                string answer =
-                    await Task.Run(
-                        () => ai.Ask(prompt)
-                    );
+                string answer = await Task.Run(() => ai.Ask(prompt));
 
-                if (
-                    string.IsNullOrWhiteSpace(
-                        answer
-                    )
-                )
+                if (string.IsNullOrWhiteSpace(answer))
                 {
                     AddMessage(
                         "System",
@@ -148,25 +134,24 @@ namespace AI_Assistant
             }
             catch (Exception ex)
             {
-                AddMessage(
-                    "System",
-                    ex.GetType().Name + ": " + ex.Message
-                );
+                AddMessage("System", ex.GetType().Name + ": " + ex.Message);
             }
             finally
             {
+                latestActivity = "Ready";
                 SetBusy(false);
+                RefreshLiveInspector();
                 PromptTextBox.Focus();
             }
         }
 
-
         private void SetBusy(bool busy)
         {
             isBusy = busy;
-
-            SendButton.IsEnabled = !busy;
+            stopRequested = false;
             PromptTextBox.IsEnabled = !busy;
+            SendButton.IsEnabled = true;
+            SendButton.Content = busy ? "Stop ■" : "Run agent ↗";
 
             SetStatus(
                 busy ? "Agent radi..." : "Spreman · " + AgentVersion.Version,
@@ -176,43 +161,192 @@ namespace AI_Assistant
             );
         }
 
-
         private void OnAgentActivity(string message)
         {
+            void Apply()
+            {
+                latestActivity = FormatActivity(message);
+
+                if (isBusy)
+                {
+                    SetStatus(
+                        message.StartsWith("[CANCEL]", StringComparison.OrdinalIgnoreCase)
+                            ? "Zaustavljam agenta..."
+                            : "Agent radi · " + ActivityStage(message),
+                        message.StartsWith("[CANCEL]", StringComparison.OrdinalIgnoreCase)
+                            ? Color.FromRgb(239, 95, 95)
+                            : Color.FromRgb(240, 180, 41)
+                    );
+                }
+
+                RefreshLiveInspector();
+            }
+
             if (Dispatcher.CheckAccess())
             {
-                AddMessage("Activity", message);
+                Apply();
                 return;
             }
 
-            Dispatcher.Invoke(
-                () => AddMessage("Activity", message)
-            );
+            Dispatcher.BeginInvoke((Action)Apply);
         }
 
-
-        private void AddMessage(
-            string role,
-            string text
-        )
+        private void RefreshLiveInspector()
         {
-            messages.Add(
-                new ChatEntry(role, text)
-            );
+            if (ai == null)
+            {
+                return;
+            }
 
+            string diagnostics = ai.BuildDiagnostics();
+
+            RuntimeDiagnosticsText.Text =
+                diagnostics
+                + "\n\n"
+                + (isBusy ? "ACTIVE TASK" : "LAST STATE")
+                + "\n"
+                + latestActivity;
+        }
+
+        private static string FormatActivity(string message)
+        {
+            string raw = (message ?? "").Trim();
+            if (string.IsNullOrWhiteSpace(raw))
+            {
+                return "Working";
+            }
+
+            if (raw.StartsWith("[CANCEL]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Stopping current task";
+            }
+
+            if (raw.StartsWith("[V2 MODEL]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Reasoning · " + TrimPrefix(raw, "[V2 MODEL]");
+            }
+
+            if (raw.StartsWith("[V2 TOKENS]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Reasoning · context prepared";
+            }
+
+            if (raw.StartsWith("[V2 INSPECT]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Inspecting Unity · " + TrimPrefix(raw, "[V2 INSPECT]");
+            }
+
+            if (raw.StartsWith("[V2 PROVIDER]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 RATE LIMIT]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Provider fallback · " + raw[(raw.IndexOf(']') + 1)..].Trim();
+            }
+
+            if (raw.StartsWith("[V2 WRITE]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 COMPILE]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 ATTACH]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 ACTION]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 BATCH]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 SAVE]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 TEMP]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Executing Unity · " + raw[(raw.IndexOf(']') + 1)..].Trim();
+            }
+
+            if (raw.StartsWith("[V2 VERIFY]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 OBSERVE]", StringComparison.OrdinalIgnoreCase)
+                || raw.StartsWith("[V2 RUNTIME]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Verifying Unity · " + raw[(raw.IndexOf(']') + 1)..].Trim();
+            }
+
+            if (raw.StartsWith("[BLENDER REPAIR]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Repairing Blender run · " + TrimPrefix(raw, "[BLENDER REPAIR]");
+            }
+
+            if (raw.StartsWith("[BLENDER TOPOLOGY]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Inspecting topology · " + TrimPrefix(raw, "[BLENDER TOPOLOGY]");
+            }
+
+            if (raw.StartsWith("[BLENDER UNITY]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Building Unity scene · " + TrimPrefix(raw, "[BLENDER UNITY]");
+            }
+
+            if (raw.StartsWith("[BLENDER VERIFY]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Verifying Blender · " + TrimPrefix(raw, "[BLENDER VERIFY]");
+            }
+
+            if (raw.StartsWith("[BLENDER]", StringComparison.OrdinalIgnoreCase))
+            {
+                string detail = TrimPrefix(raw, "[BLENDER]");
+                return detail.Contains("execut", StringComparison.OrdinalIgnoreCase)
+                    ? "Executing Blender · " + detail
+                    : "Preparing Blender · " + detail;
+            }
+
+            return raw;
+        }
+
+        private static string ActivityStage(string message)
+        {
+            string raw = (message ?? "").ToUpperInvariant();
+
+            if (raw.Contains("TOPOLOGY"))
+            {
+                return "Inspect";
+            }
+
+            if (raw.Contains("VERIFY") || raw.Contains("OBSERVE"))
+            {
+                return "Verify";
+            }
+
+            if (raw.Contains("EXECUT")
+                || raw.Contains("BATCH")
+                || raw.Contains("ACTION")
+                || raw.Contains("WRITE")
+                || raw.Contains("COMPILE")
+                || raw.Contains("ATTACH")
+                || raw.Contains("SAVE")
+                || raw.Contains("UNITY"))
+            {
+                return "Execute";
+            }
+
+            if (raw.Contains("INSPECT"))
+            {
+                return "Inspect";
+            }
+
+            if (raw.Contains("REPAIR") || raw.Contains("CORRECT"))
+            {
+                return "Repair";
+            }
+
+            return "Reason";
+        }
+
+        private static string TrimPrefix(string value, string prefix)
+        {
+            return value.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)
+                ? value.Substring(prefix.Length).Trim()
+                : value;
+        }
+
+        private void AddMessage(string role, string text)
+        {
+            messages.Add(new ChatEntry(role, text));
             Dispatcher.BeginInvoke(
                 DispatcherPriority.Background,
-                new Action(
-                    () => MessagesScroll.ScrollToEnd()
-                )
+                new Action(() => MessagesScroll.ScrollToEnd())
             );
         }
 
-
-        private void ClearButton_Click(
-            object sender,
-            RoutedEventArgs e
-        )
+        private void ClearButton_Click(object sender, RoutedEventArgs e)
         {
             if (isBusy)
             {
@@ -220,52 +354,44 @@ namespace AI_Assistant
             }
 
             ai?.ResetConversationContext();
-
             messages.Clear();
-
-            AddMessage(
-                "Assistant",
-                "Razgovor i kontekst zadatka su očišćeni."
-            );
+            latestActivity = "Ready";
+            RefreshLiveInspector();
+            AddMessage("Assistant", "Razgovor i kontekst zadatka su očišćeni.");
         }
 
+        private void SettingsButton_Click(object sender, RoutedEventArgs e)
+        {
+            if (isBusy || ai == null)
+            {
+                return;
+            }
 
-        private void SetStatus(
-            string text,
-            Color color
-        )
+            SettingsWindow window = new SettingsWindow(ai.Settings)
+            {
+                Owner = this
+            };
+            window.ShowDialog();
+            RefreshLiveInspector();
+        }
+
+        private void SetStatus(string text, Color color)
         {
             StatusText.Text = text;
             StatusDot.Fill = new SolidColorBrush(color);
         }
 
-
         private static AssistantRuntime CreateAgent()
         {
-            string projectFile =
-                FindProjectFileUpwards(
-                    AppContext.BaseDirectory,
-                    "AI Assistant.csproj"
-                )
-                ?? throw new FileNotFoundException(
-                    "AI Assistant.csproj nije pronađen. Pokreni aplikaciju iz build outputa projekta."
-                );
+            string? projectFile = FindProjectFileUpwards(AppContext.BaseDirectory, "AI Assistant.csproj");
+            string sourceRoot = projectFile == null
+                ? AppContext.BaseDirectory
+                : Path.GetDirectoryName(projectFile) ?? AppContext.BaseDirectory;
 
-            string sourceRoot =
-                Path.GetDirectoryName(projectFile)
-                ?? throw new DirectoryNotFoundException(
-                    "Source root nije pronađen."
-                );
-
-            string solutionRoot =
-                Directory.GetParent(sourceRoot)?.FullName
-                ?? throw new DirectoryNotFoundException(
-                    "Solution root nije pronađen."
-                );
-
-            string updaterProject =
-                Path.Combine(
-                    solutionRoot,
+            string? updaterProject = projectFile == null
+                ? null
+                : Path.Combine(
+                    Directory.GetParent(sourceRoot)?.FullName ?? sourceRoot,
                     "AI Assistant Updater",
                     "AI Assistant Updater.csproj"
                 );
@@ -273,14 +399,11 @@ namespace AI_Assistant
             if (!File.Exists(updaterProject))
             {
                 throw new FileNotFoundException(
-                    "Updater project nije pronađen: "
-                    + updaterProject
+                    "Updater project nije pronađen: " + updaterProject
                 );
             }
 
-            List<string> allowedRoots =
-                new List<string>();
-
+            List<string> allowedRoots = new List<string>();
             string[] optionalRoots =
             {
                 @"C:\AIWorkspace",
@@ -298,32 +421,24 @@ namespace AI_Assistant
 
             allowedRoots.Add(sourceRoot);
 
-            return
-                new AssistantRuntime(
-                    allowedRoots,
-                    projectFile,
-                    sourceRoot,
-                    updaterProject
-                );
+            return new AssistantRuntime(
+                allowedRoots,
+                projectFile ?? Path.Combine(sourceRoot, "AI Assistant.csproj"),
+                sourceRoot,
+                updaterProject ?? Path.Combine(sourceRoot, "AI Assistant Updater.csproj")
+            );
         }
-
 
         private static string? FindProjectFileUpwards(
             string startDirectory,
             string projectFileName
         )
         {
-            DirectoryInfo? directory =
-                new DirectoryInfo(startDirectory);
+            DirectoryInfo? directory = new DirectoryInfo(startDirectory);
 
             while (directory != null)
             {
-                string candidate =
-                    Path.Combine(
-                        directory.FullName,
-                        projectFileName
-                    );
-
+                string candidate = Path.Combine(directory.FullName, projectFileName);
                 if (File.Exists(candidate))
                 {
                     return candidate;
@@ -336,22 +451,15 @@ namespace AI_Assistant
         }
     }
 
-
     public sealed class ChatEntry
     {
         public string Role { get; }
         public string Text { get; }
 
         public string DisplayRole =>
-            Role == "Assistant"
-                ? "AI"
-                : Role.ToUpperInvariant();
+            Role == "Assistant" ? "AI" : Role.ToUpperInvariant();
 
-
-        public ChatEntry(
-            string role,
-            string text
-        )
+        public ChatEntry(string role, string text)
         {
             Role = role;
             Text = text;

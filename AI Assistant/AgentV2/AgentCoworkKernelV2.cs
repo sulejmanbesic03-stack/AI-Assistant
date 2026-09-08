@@ -5,6 +5,7 @@ using System.Linq;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using System.Threading;
 using System.Threading.Tasks;
 
 namespace AI_Assistant.AgentV2
@@ -109,14 +110,18 @@ namespace AI_Assistant.AgentV2
 
         public async Task<AgentExecutionReportV2> ExecuteAsync(
             AgentImplementationV2 implementation,
-            string userGoal
+            string userGoal,
+            CancellationToken cancellationToken = default
         )
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             if (implementation.CapabilityCall == null)
             {
                 return await nativeExecutor.ExecuteAsync(
                     implementation,
-                    userGoal
+                    userGoal,
+                    cancellationToken
                 );
             }
 
@@ -153,6 +158,7 @@ namespace AI_Assistant.AgentV2
             }
 
             activity("[V2 CAPABILITY] " + call.ToolName);
+            cancellationToken.ThrowIfCancellationRequested();
 
             if (
                 !tempCapabilities.TryExecuteLibraryCapability(
@@ -192,7 +198,8 @@ namespace AI_Assistant.AgentV2
             AgentExecutionReportV2 verification =
                 await nativeExecutor.ExecuteAsync(
                     verificationOnly,
-                    userGoal
+                    userGoal,
+                    cancellationToken
                 );
 
             report.MergeFrom(verification);

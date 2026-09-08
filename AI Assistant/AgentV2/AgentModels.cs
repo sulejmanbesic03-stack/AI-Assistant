@@ -121,8 +121,15 @@ namespace AI_Assistant.AgentV2
             return
                 ScriptChanges.Count > 0
                 || SceneActions.Count > 0
-                || CapabilityCall != null
-                || TemporaryCapability != null;
+                || (
+                    CapabilityCall != null
+                    && !string.IsNullOrWhiteSpace(CapabilityCall.ToolName)
+                )
+                || (
+                    TemporaryCapability != null
+                    && !string.IsNullOrWhiteSpace(TemporaryCapability.Name)
+                    && !string.IsNullOrWhiteSpace(TemporaryCapability.Source)
+                );
         }
     }
 
@@ -319,6 +326,29 @@ namespace AI_Assistant.AgentV2
                 parsed.RuntimeObjectPaths ??= new List<string>();
                 parsed.Notes ??= new List<string>();
 
+                // Free models sometimes emit placeholder capability objects such
+                // as {"name":"...","source":""} or an empty capability_call.
+                // Those are not executable work and must never turn an otherwise
+                // successful deterministic Unity mutation into a failed task.
+                if (
+                    parsed.CapabilityCall != null
+                    && string.IsNullOrWhiteSpace(parsed.CapabilityCall.ToolName)
+                )
+                {
+                    parsed.CapabilityCall = null;
+                }
+
+                if (
+                    parsed.TemporaryCapability != null
+                    && (
+                        string.IsNullOrWhiteSpace(parsed.TemporaryCapability.Name)
+                        || string.IsNullOrWhiteSpace(parsed.TemporaryCapability.Source)
+                    )
+                )
+                {
+                    parsed.TemporaryCapability = null;
+                }
+
                 implementation = parsed;
                 return true;
             }
@@ -435,34 +465,179 @@ namespace AI_Assistant.AgentV2
             try
             {
                 using JsonDocument document = JsonDocument.Parse(result);
+                JsonElement root = document.RootElement;
 
-                if (
-                    document.RootElement.ValueKind == JsonValueKind.Object
-                    && document.RootElement.TryGetProperty(
-                        "success",
-                        out JsonElement success
-                    )
-                    && (
-                        success.ValueKind == JsonValueKind.True
-                        || success.ValueKind == JsonValueKind.False
-                    )
-                )
+                if (root.ValueKind == JsonValueKind.Object)
                 {
-                    return success.GetBoolean();
+                    if (TryReadBoolean(root, "success", out bool success))
+                    {
+                        return success;
+                    }
+
+                    if (TryReadBoolean(root, "ok", out bool ok))
+                    {
+                        return ok;
+                    }
+
+                    if (HasMeaningfulError(root, "error")
+                        || HasMeaningfulError(root, "errors"))
+                    {
+                        return false;
+                    }
+
+                    if (TryReadState(root, "state", out bool stateSuccess))
+                    {
+                        return stateSuccess;
+                    }
+
+                    if (TryReadState(root, "status", out bool statusSuccess))
+                    {
+                        return statusSuccess;
+                    }
+
+                    // Structured bridge responses frequently include fields such
+                    // as error:null or errors:[] without a top-level success flag.
+                    // If JSON parsed cleanly and contains no semantic failure,
+                    // treat it as a successful bridge response instead of doing a
+                    // raw substring search for the word "error".
+                    return true;
                 }
             }
             catch
             {
-                // Some bridge endpoints return plain text on success.
+                // Some bridge endpoints legitimately return plain text.
             }
 
-            string normalized = result.ToLowerInvariant();
+            string normalized = result.Trim().ToLowerInvariant();
 
             return
-                !normalized.Contains("error")
+                !normalized.Contains("error:")
+                && !normalized.Contains(" error ")
+                && !normalized.StartsWith("error")
                 && !normalized.Contains("failed")
                 && !normalized.Contains("denied")
                 && !normalized.Contains("timeout");
+        }
+
+        private static bool TryReadBoolean(
+            JsonElement root,
+            string propertyName,
+            out bool value
+        )
+        {
+            value = false;
+
+            if (!root.TryGetProperty(propertyName, out JsonElement element))
+            {
+                return false;
+            }
+
+            if (element.ValueKind == JsonValueKind.True
+                || element.ValueKind == JsonValueKind.False)
+            {
+                value = element.GetBoolean();
+                return true;
+            }
+
+            return false;
+        }
+
+        private static bool HasMeaningfulError(
+            JsonElement root,
+            string propertyName
+        )
+        {
+            if (!root.TryGetProperty(propertyName, out JsonElement error))
+            {
+                return false;
+            }
+
+            switch (error.ValueKind)
+            {
+                case JsonValueKind.Null:
+                case JsonValueKind.Undefined:
+                    return false;
+
+                case JsonValueKind.String:
+                    return !string.IsNullOrWhiteSpace(error.GetString());
+
+                case JsonValueKind.Array:
+                    return error.GetArrayLength() > 0;
+
+                case JsonValueKind.Object:
+                    return error.EnumerateObject().MoveNext();
+
+                case JsonValueKind.False:
+                    return false;
+
+                case JsonValueKind.True:
+                    return true;
+
+                default:
+                    return true;
+            }
+        }
+
+        private static bool TryReadState(
+            JsonElement root,
+            string propertyName,
+            out bool success
+        )
+        {
+            success = false;
+
+            if (!root.TryGetProperty(propertyName, out JsonElement state)
+                || state.ValueKind != JsonValueKind.String)
+            {
+                return false;
+            }
+
+            string normalized = (state.GetString() ?? "")
+                .Trim()
+                .ToLowerInvariant();
+
+            string[] successful =
+            {
+                "success",
+                "succeeded",
+                "ok",
+                "completed",
+                "compiled",
+                "ready",
+                "saved",
+                "done"
+            };
+
+            foreach (string candidate in successful)
+            {
+                if (normalized == candidate)
+                {
+                    success = true;
+                    return true;
+                }
+            }
+
+            string[] failed =
+            {
+                "failed",
+                "failure",
+                "error",
+                "denied",
+                "timeout",
+                "cancelled",
+                "canceled"
+            };
+
+            foreach (string candidate in failed)
+            {
+                if (normalized == candidate)
+                {
+                    success = false;
+                    return true;
+                }
+            }
+
+            return false;
         }
 
         public static string Compact(

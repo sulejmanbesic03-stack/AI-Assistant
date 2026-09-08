@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using System.Threading;
 using System.Threading.Tasks;
+using AI_Assistant.Runtime;
 
 namespace AI_Assistant.Tools
 {
@@ -211,6 +212,10 @@ namespace AI_Assistant.Tools
 
             while (DateTime.UtcNow < deadline)
             {
+                if (AgentCancellationHub.IsCancellationRequested)
+                {
+                    return CreateFailure("CANCELLED", "Unity persistent-script wait cancelled by user.");
+                }
                 lastResult =
                     SendPersistentGetRequest(
                         "/script-status?jobId="
@@ -248,6 +253,8 @@ namespace AI_Assistant.Tools
                     // Unity may be briefly offline during domain reload.
                 }
 
+                if (AgentCancellationHub.IsCancellationRequested)
+                    return CreateFailure("CANCELLED", "Unity persistent-script wait cancelled by user.");
                 Thread.Sleep(500);
             }
 
@@ -815,6 +822,7 @@ namespace AI_Assistant.Tools
         {
             try
             {
+                if (AgentCancellationHub.IsCancellationRequested) return CreateFailure("CANCELLED", "Unity request cancelled by user.");
                 using HttpResponseMessage response =
                     client
                         .GetAsync(
@@ -846,6 +854,7 @@ namespace AI_Assistant.Tools
         {
             try
             {
+                if (AgentCancellationHub.IsCancellationRequested) return CreateFailure("CANCELLED", "Unity request cancelled by user.");
                 using StringContent content =
                     new StringContent(
                         json,
@@ -885,6 +894,7 @@ namespace AI_Assistant.Tools
         {
             try
             {
+                if (AgentCancellationHub.IsCancellationRequested) return CreateFailure("CANCELLED", "Unity request cancelled by user.");
                 using StringContent content =
                     new StringContent(
                         json,
@@ -921,6 +931,7 @@ namespace AI_Assistant.Tools
         {
             try
             {
+                if (AgentCancellationHub.IsCancellationRequested) return CreateFailure("CANCELLED", "Unity request cancelled by user.");
                 using StringContent content =
                     new StringContent(
                         json,
@@ -952,6 +963,7 @@ namespace AI_Assistant.Tools
         {
             try
             {
+                if (AgentCancellationHub.IsCancellationRequested) return CreateFailure("CANCELLED", "Unity request cancelled by user.");
                 using HttpResponseMessage response =
                     client
                         .GetAsync(
@@ -975,6 +987,7 @@ namespace AI_Assistant.Tools
         {
             try
             {
+                if (AgentCancellationHub.IsCancellationRequested) return CreateFailure("CANCELLED", "Unity request cancelled by user.");
                 using HttpResponseMessage response =
                     client
                         .GetAsync(
@@ -999,6 +1012,7 @@ namespace AI_Assistant.Tools
         {
             try
             {
+                if (AgentCancellationHub.IsCancellationRequested) return CreateFailure("CANCELLED", "Unity request cancelled by user.");
                 using StringContent content =
                     new StringContent(
                         json,
