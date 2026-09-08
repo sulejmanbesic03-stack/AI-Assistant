@@ -106,9 +106,7 @@ namespace AI_Assistant.AI
                 for (int cycle = 0; cycle < MaxToolCycles; cycle++)
                 {
                     JsonDocument response = await SendWithFallbackAsync(apiKey, model, messages);
-                    JsonElement message = response.RootElement
-                        .GetProperty("choices")[0]
-                        .GetProperty("message");
+                    JsonElement message = ReadAssistantMessage(response);
 
                     string? content = null;
                     if (message.TryGetProperty("content", out JsonElement contentElement)
@@ -349,6 +347,26 @@ namespace AI_Assistant.AI
             );
         }
 
+        private static JsonElement ReadAssistantMessage(JsonDocument response)
+        {
+            JsonElement root = response.RootElement;
+            if (!root.TryGetProperty("choices", out JsonElement choices)
+                || choices.ValueKind != JsonValueKind.Array
+                || choices.GetArrayLength() == 0
+                || !choices[0].TryGetProperty("message", out JsonElement message))
+            {
+                string details = root.TryGetProperty("error", out JsonElement error)
+                    ? error.GetRawText()
+                    : root.GetRawText();
+                throw new InvalidOperationException(
+                    "Provider response has no usable choices/message: "
+                    + Trim(details, 1200)
+                );
+            }
+
+            return message;
+        }
+
         private async Task<JsonDocument> SendCompletionAsync(
             string endpoint,
             string apiKey,
@@ -412,7 +430,20 @@ namespace AI_Assistant.AI
                 );
             }
 
-            return JsonDocument.Parse(text);
+            JsonDocument document = JsonDocument.Parse(text);
+            // Validate the OpenAI-compatible envelope here so a malformed
+            // Groq response can enter the OpenRouter fallback path instead of
+            // failing later with an opaque dictionary lookup exception.
+            try
+            {
+                _ = ReadAssistantMessage(document);
+                return document;
+            }
+            catch
+            {
+                document.Dispose();
+                throw;
+            }
         }
 
         private static int ResolveMaxCompletionTokens()
