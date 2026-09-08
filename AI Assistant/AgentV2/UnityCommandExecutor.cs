@@ -588,6 +588,15 @@ namespace AI_Assistant.AgentV2
                         action.AssetPath
                     ),
 
+                "instantiate_prefab" =>
+                    unity.InstantiatePrefab(
+                        action.AssetPath,
+                        string.IsNullOrWhiteSpace(action.Name)
+                            ? "GeneratedCharacter"
+                            : action.Name,
+                        action.ParentPath
+                    ),
+
                 _ =>
                     "AGENT V2 ERROR: unsupported scene action type '"
                     + action.Type
