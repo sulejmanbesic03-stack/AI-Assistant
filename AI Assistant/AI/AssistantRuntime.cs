@@ -18,6 +18,7 @@ namespace AI_Assistant.AI
     {
         private readonly AIIntegration legacy;
         private readonly AgentOrchestratorV2 agentV2;
+        private readonly BlenderMcpAgent blender;
 
         // Recovery anchor for Unity continuations. A Unity domain reload or a
         // no-mutation response can leave the V2 task marked non-resumable even
@@ -57,12 +58,25 @@ namespace AI_Assistant.AI
                 tempCapabilities,
                 ReportActivity
             );
+
+            blender = new BlenderMcpAgent(
+                ReportActivity
+            );
         }
 
         public async Task<string> Ask(string prompt)
         {
             string normalizedPrompt = (prompt ?? "").Trim();
             bool continuation = IsContinuation(normalizedPrompt);
+
+            if (IsBlenderPrompt(normalizedPrompt))
+            {
+                ReportActivity(
+                    "[ROUTER] Blender MCP · Groq Qwen 3.6 27B"
+                );
+
+                return await blender.AskAsync(normalizedPrompt);
+            }
 
             if (agentV2.ShouldHandle(normalizedPrompt))
             {
@@ -106,6 +120,7 @@ namespace AI_Assistant.AI
         {
             agentV2.Reset();
             legacy.ResetConversationContext();
+            blender.Dispose();
             lastUnityV2Goal = "";
         }
 
@@ -116,6 +131,16 @@ namespace AI_Assistant.AI
                 "0",
                 StringComparison.OrdinalIgnoreCase
             );
+        }
+
+        private static bool IsBlenderPrompt(string prompt)
+        {
+            string value = (prompt ?? "").Trim();
+
+            return
+                value.Contains("blender", StringComparison.OrdinalIgnoreCase)
+                || value.Contains("bpy", StringComparison.OrdinalIgnoreCase)
+                || value.Contains(".blend", StringComparison.OrdinalIgnoreCase);
         }
 
         private static bool IsContinuation(string prompt)
