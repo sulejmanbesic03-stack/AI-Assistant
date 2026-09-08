@@ -361,7 +361,8 @@ namespace AI_Assistant.AgentV2
                 "https://openrouter.ai/api/v1/chat/completions",
                 Environment.GetEnvironmentVariable("OPENROUTER_MODEL") ?? "openrouter/free",
                 "OPENROUTER_API_KEY",
-                180
+                180,
+                6000
             )
         {
         }
@@ -444,7 +445,8 @@ namespace AI_Assistant.AgentV2
                 "https://api.groq.com/openai/v1/chat/completions",
                 Environment.GetEnvironmentVariable("GROQ_MODEL") ?? "openai/gpt-oss-120b",
                 "GROQ_API_KEY",
-                180
+                180,
+                6000
             );
         }
 
@@ -560,15 +562,17 @@ namespace AI_Assistant.AgentV2
             bool preferFree = string.Equals(Environment.GetEnvironmentVariable("AI_PREFER_FREE_PROVIDERS"), "1", StringComparison.OrdinalIgnoreCase)
                 || string.Equals(Environment.GetEnvironmentVariable("AI_PREFER_FREE_PROVIDERS"), "true", StringComparison.OrdinalIgnoreCase);
             List<IAIProviderV2> baseOrder = task.Phase == AgentTaskPhaseV2.Correcting
-                ? new List<IAIProviderV2> { groq, gemini, openRouter }
+                ? new List<IAIProviderV2> { groq, openRouter, gemini }
                 : preferFree
-                    ? new List<IAIProviderV2> { openRouter, gemini, groq }
+                    ? new List<IAIProviderV2> { groq, openRouter, gemini }
                     : new List<IAIProviderV2> { gemini, groq, openRouter };
 
+            // Keep the provider contract deterministic: Groq is attempted
+            // first and OpenRouter is the immediate fallback. A previous
+            // adaptive score could make a previously successful fallback stay
+            // primary on later tasks.
             return baseOrder
                 .Where(provider => provider.IsConfigured)
-                .OrderByDescending(provider => Score(provider.Name))
-                .ThenBy(provider => baseOrder.IndexOf(provider))
                 .ToList();
         }
 
