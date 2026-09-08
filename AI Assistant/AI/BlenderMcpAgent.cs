@@ -15,12 +15,15 @@ namespace AI_Assistant.AI
     /// <summary>
     /// Small MCP client for the official Blender Lab server.
     /// The MCP server is launched through uvx and talks to Blender's addon on localhost:9876.
-    /// Groq remains the only model provider for this Blender path.
+    /// Groq is the primary model provider; OpenRouter is used when Groq is unavailable.
     /// </summary>
     public sealed class BlenderMcpAgent : IDisposable
     {
         private const string GroqEndpoint =
             "https://api.groq.com/openai/v1/chat/completions";
+
+        private const string OpenRouterEndpoint =
+            "https://openrouter.ai/api/v1/chat/completions";
 
         private const string DefaultGroqModel =
             "qwen/qwen3.6-27b";
@@ -31,6 +34,7 @@ namespace AI_Assistant.AI
         private const int MaxToolCycles = 8;
         private const int RequestTimeoutSeconds = 120;
         private const int MaxToolResultChars = 12000;
+        private const int DefaultMaxCompletionTokens = 1600;
 
         private static readonly JsonSerializerOptions JsonOptions =
             new JsonSerializerOptions
@@ -87,7 +91,8 @@ namespace AI_Assistant.AI
                             "You are a Blender automation agent. Use the available Blender MCP tools directly. "
                             + "Inspect the current scene before changing it when needed. Prefer the highest-level "
                             + "registered tool. Use execute_blender_code only when no dedicated tool can do the job. "
-                            + "Make the smallest reliable change, save when the user asks, and report exactly what happened."
+                            + "Make the smallest reliable change, save when the user asks, and report exactly what happened. "
+                            + "Keep reasoning concise, emit only the required tool arguments, and keep the final confirmation short."
                     },
                     new
                     {
@@ -98,7 +103,7 @@ namespace AI_Assistant.AI
 
                 for (int cycle = 0; cycle < MaxToolCycles; cycle++)
                 {
-                    JsonDocument response = await SendGroqAsync(apiKey, model, messages);
+                    JsonDocument response = await SendWithFallbackAsync(apiKey, model, messages);
                     JsonElement message = response.RootElement
                         .GetProperty("choices")[0]
                         .GetProperty("message");
@@ -271,7 +276,63 @@ namespace AI_Assistant.AI
             return result.GetRawText();
         }
 
-        private async Task<JsonDocument> SendGroqAsync(
+        private async Task<JsonDocument> SendWithFallbackAsync(
+            string groqApiKey,
+            string groqModel,
+                List<object> messages
+        )
+        {
+            try
+            {
+                return await SendCompletionAsync(
+                    GroqEndpoint,
+                    groqApiKey,
+                    groqModel,
+                    messages
+                );
+            }
+            catch (OperationCanceledException)
+            {
+                throw;
+            }
+            catch (Exception groqError)
+            {
+                string? openRouterApiKey = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
+                if (string.IsNullOrWhiteSpace(openRouterApiKey))
+                {
+                    throw;
+                }
+
+                string? openRouterModel =
+                    Environment.GetEnvironmentVariable("OPENROUTER_BLENDER_MODEL");
+                if (string.IsNullOrWhiteSpace(openRouterModel))
+                {
+                    openRouterModel = Environment.GetEnvironmentVariable("OPENROUTER_MODEL");
+                }
+                if (string.IsNullOrWhiteSpace(openRouterModel))
+                {
+                    openRouterModel = "openrouter/free";
+                }
+
+                activity(
+                    "[BLENDER PROVIDER] Groq unavailable; using OpenRouter fallback · "
+                    + openRouterModel
+                    + " ("
+                    + Trim(groqError.Message, 300)
+                    + ")"
+                );
+
+                return await SendCompletionAsync(
+                    OpenRouterEndpoint,
+                    openRouterApiKey,
+                    openRouterModel,
+                    messages
+                );
+            }
+        }
+
+        private async Task<JsonDocument> SendCompletionAsync(
+            string endpoint,
             string apiKey,
             string model,
             List<object> messages
@@ -297,15 +358,26 @@ namespace AI_Assistant.AI
                 ["tools"] = groqTools,
                 ["tool_choice"] = "auto",
                 ["temperature"] = 0.1,
-                ["max_tokens"] = 4000
+                ["max_tokens"] = ResolveMaxCompletionTokens()
             };
 
             using HttpRequestMessage request = new HttpRequestMessage(
                 HttpMethod.Post,
-                GroqEndpoint
+                endpoint
             );
             request.Headers.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
+            if (endpoint == OpenRouterEndpoint)
+            {
+                request.Headers.TryAddWithoutValidation(
+                    "HTTP-Referer",
+                    "https://github.com/sulejmanbesic03-stack/AI-Assistant"
+                );
+                request.Headers.TryAddWithoutValidation(
+                    "X-Title",
+                    "AI Assistant Blender MCP"
+                );
+            }
             request.Content = new StringContent(
                 JsonSerializer.Serialize(body),
                 Encoding.UTF8,
@@ -318,11 +390,23 @@ namespace AI_Assistant.AI
             if (!response.IsSuccessStatusCode)
             {
                 throw new InvalidOperationException(
-                    "Groq HTTP " + (int)response.StatusCode + ": " + Trim(text, 2000)
+                    "Provider HTTP " + (int)response.StatusCode + ": " + Trim(text, 2000)
                 );
             }
 
             return JsonDocument.Parse(text);
+        }
+
+        private static int ResolveMaxCompletionTokens()
+        {
+            string? configured =
+                Environment.GetEnvironmentVariable("GROQ_BLENDER_MAX_TOKENS");
+            if (int.TryParse(configured, out int value))
+            {
+                return Math.Clamp(value, 512, 4000);
+            }
+
+            return DefaultMaxCompletionTokens;
         }
 
         private async Task<JsonElement> SendRequestAsync(string method, object? parameters)
