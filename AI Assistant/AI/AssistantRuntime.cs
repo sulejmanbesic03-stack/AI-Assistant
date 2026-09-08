@@ -6,15 +6,17 @@ using AI_Assistant.Tools;
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace AI_Assistant.AI
 {
-    public sealed class AssistantRuntime
+    public sealed class AssistantRuntime : IDisposable
     {
         private readonly AIIntegration legacy;
         private readonly AgentOrchestratorV2 agentV2;
         private readonly BlenderMcpAgent blenderMcp;
+        private readonly IntentRouter intentRouter;
         private readonly RuntimeSettings settings;
         private readonly UnityBridgeTools unityTools;
 
@@ -35,6 +37,7 @@ namespace AI_Assistant.AI
             TempCapabilityManager tempCapabilities = new TempCapabilityManager(sourceRoot, unityTools);
             agentV2 = new AgentOrchestratorV2(unityTools, tempCapabilities, ReportActivity);
             blenderMcp = new BlenderMcpAgent(ReportActivity);
+            intentRouter = new IntentRouter(ReportActivity);
         }
 
         public async Task<string> Ask(string prompt)
@@ -64,42 +67,144 @@ namespace AI_Assistant.AI
 
         public void CancelCurrentWork() { AgentCancellationHub.CancelCurrent(); ReportActivity("[CANCEL] stop requested by user"); }
 
+        public void Dispose()
+        {
+            AgentCancellationHub.CancelCurrent();
+            blenderMcp.Dispose();
+            intentRouter.Dispose();
+        }
+
         private async Task<string> RouteApprovedAsync(string normalizedPrompt)
         {
             bool continuation = IsContinuation(normalizedPrompt);
-            bool explicitUnity = HasExplicitUnitySignal(normalizedPrompt);
-            if (IsBlenderUnityRequest(normalizedPrompt))
+
+            // A continuation belongs to the task that is already in progress.
+            // Do this before classification so "nastavi" cannot accidentally
+            // start a new provider or execution domain.
+            if (continuation && !string.IsNullOrWhiteSpace(lastBlenderGoal))
             {
-                ReportActivity("[ROUTER] Blender → Unity character pipeline");
-                return await HandleBlenderUnityRequestAsync(normalizedPrompt);
+                ReportActivity("[ROUTER] Blender MCP resume");
+                return await blenderMcp.AskAsync(lastBlenderGoal);
             }
-            if (explicitUnity && !IsExplicitBlender(normalizedPrompt) && agentV2.ShouldHandle(normalizedPrompt))
-            {
-                if (!continuation) lastUnityV2Goal = normalizedPrompt;
-                if (!continuation) lastBlenderGoal = "";
-                ReportActivity("[ROUTER] Unity Cowork Agent V2 (explicit Unity intent)");
-                return await agentV2.HandleAsync(normalizedPrompt);
-            }
-            if (IsBlenderPrompt(normalizedPrompt) || (continuation && !string.IsNullOrWhiteSpace(lastBlenderGoal)))
-            {
-                string blenderPrompt = continuation ? lastBlenderGoal : normalizedPrompt;
-                if (!continuation) { lastBlenderGoal = normalizedPrompt; lastUnityV2Goal = ""; }
-                ReportActivity("[ROUTER] Blender MCP · Groq Qwen 3.6 27B");
-                return await blenderMcp.AskAsync(blenderPrompt);
-            }
-            if (agentV2.ShouldHandle(normalizedPrompt))
-            {
-                if (!continuation) lastUnityV2Goal = normalizedPrompt;
-                ReportActivity("[ROUTER] Unity Cowork Agent V2");
-                return await agentV2.HandleAsync(normalizedPrompt);
-            }
+
             if (continuation && IsAgentV2Enabled() && !string.IsNullOrWhiteSpace(lastUnityV2Goal))
             {
-                ReportActivity("[ROUTER] Unity Cowork Agent V2 resume recovery");
+                ReportActivity("[ROUTER] Unity Cowork Agent V2 resume");
                 return await agentV2.HandleAsync(lastUnityV2Goal);
             }
+
+            // Explicit commands remain deterministic and are useful for
+            // recovery/debugging. Natural-language requests use the model
+            // router below instead of a growing keyword table.
+            if (IsExplicitBlender(normalizedPrompt))
+            {
+                lastBlenderGoal = normalizedPrompt;
+                lastUnityV2Goal = "";
+                ReportActivity("[ROUTER] Blender MCP · Groq Qwen 3.6 27B");
+                return await blenderMcp.AskAsync(normalizedPrompt);
+            }
+
+            if (IsExplicitAgentCommand(normalizedPrompt))
+            {
+                lastUnityV2Goal = normalizedPrompt;
+                lastBlenderGoal = "";
+                ReportActivity("[ROUTER] Unity Cowork Agent V2 (explicit command)");
+                return await agentV2.HandleAsync(normalizedPrompt);
+            }
+
+            IntentResult intent = await intentRouter.ClassifyAsync(
+                normalizedPrompt,
+                AgentCancellationHub.Token
+            );
+            ReportActivity(
+                "[ROUTER MODEL] "
+                + intent.Intent
+                + " · confidence="
+                + intent.Confidence.ToString("0.00")
+                + (string.IsNullOrWhiteSpace(intent.Reason) ? "" : " · " + intent.Reason)
+            );
+
+            switch (intent.Intent)
+            {
+                case AssistantIntent.BlenderUnity:
+                    ReportActivity("[ROUTER] Blender MCP → Unity handoff");
+                    return await HandleBlenderUnityRequestAsync(normalizedPrompt);
+
+                case AssistantIntent.Blender:
+                    lastBlenderGoal = normalizedPrompt;
+                    lastUnityV2Goal = "";
+                    ReportActivity("[ROUTER] Blender MCP · Groq Qwen 3.6 27B");
+                    return await blenderMcp.AskAsync(normalizedPrompt);
+
+                case AssistantIntent.Unity:
+                case AssistantIntent.Plan:
+                    lastUnityV2Goal = normalizedPrompt;
+                    lastBlenderGoal = "";
+                    ReportActivity("[ROUTER] Unity Cowork Agent V2 · model-routed");
+                    return await agentV2.HandleAsync(normalizedPrompt);
+
+                case AssistantIntent.Conversation:
+                    ReportActivity("[ROUTER] Conversation / compatibility path");
+                    return await legacy.Ask(normalizedPrompt);
+            }
+
+            // If the small classifier is unavailable (quota, network, or an
+            // invalid response), retain a narrow emergency route so the app
+            // remains usable. This is deliberately last-resort behavior.
+            if (LooksLikeBlenderToUnityRequest(normalizedPrompt))
+            {
+                ReportActivity("[ROUTER] Blender MCP → Unity handoff · emergency fallback");
+                return await HandleBlenderUnityRequestAsync(normalizedPrompt);
+            }
+
+            if (IsBlenderPrompt(normalizedPrompt))
+            {
+                lastBlenderGoal = normalizedPrompt;
+                lastUnityV2Goal = "";
+                ReportActivity("[ROUTER] Blender MCP · emergency fallback");
+                return await blenderMcp.AskAsync(normalizedPrompt);
+            }
+
+            if (HasExplicitUnitySignal(normalizedPrompt) || agentV2.ShouldHandle(normalizedPrompt))
+            {
+                lastUnityV2Goal = normalizedPrompt;
+                lastBlenderGoal = "";
+                ReportActivity("[ROUTER] Unity Cowork Agent V2 · emergency fallback");
+                return await agentV2.HandleAsync(normalizedPrompt);
+            }
+
             ReportActivity("[ROUTER] Legacy compatibility path");
             return await legacy.Ask(normalizedPrompt);
+        }
+
+        private static bool LooksLikeBlenderToUnityRequest(string prompt)
+        {
+            string value = (prompt ?? "").Trim();
+            bool asksForAsset = ContainsAny(
+                value,
+                "model",
+                "modela",
+                "character",
+                "charactera",
+                "asset",
+                "objekat",
+                "lik",
+                "3d",
+                "mesha",
+                "mesh"
+            );
+            bool asksForUnityDelivery = ContainsAny(
+                value,
+                "unity",
+                "u unity",
+                "pošalji",
+                "posalji",
+                "ubaci",
+                "import",
+                "prefab",
+                "project"
+            );
+            return asksForAsset && asksForUnityDelivery;
         }
 
         private async Task<string> HandleBlenderUnityRequestAsync(string prompt)
@@ -110,8 +215,9 @@ namespace AI_Assistant.AI
                 return "Blender → Unity pipeline nije spreman: Unity project root nije konfigurisan ili nema Assets folder.";
             }
 
+            const string generatedAssetName = "GeneratedAsset";
             string relativeAssetPath =
-                "Assets/AI_Generated/Models/GeneratedCharacter/GeneratedCharacter.fbx";
+                "Assets/AI_Generated/Models/GeneratedAsset/GeneratedAsset.fbx";
             string absoluteAssetPath = Path.Combine(
                 settings.UnityProjectRoot,
                 relativeAssetPath.Replace('/', Path.DirectorySeparatorChar)
@@ -122,13 +228,27 @@ namespace AI_Assistant.AI
                 Directory.CreateDirectory(assetDirectory);
             }
 
+            bool hadPreviousExport = File.Exists(absoluteAssetPath);
+            DateTime previousExportWriteUtc = hadPreviousExport
+                ? File.GetLastWriteTimeUtc(absoluteAssetPath)
+                : DateTime.MinValue;
+            long previousExportLength = hadPreviousExport
+                ? new FileInfo(absoluteAssetPath).Length
+                : -1;
+
             string blenderPrompt =
-                "Generate the requested game-ready character in Blender using the available MCP tools. "
+                "Create the 3D asset requested by the user in Blender using the official Blender MCP tools. "
+                + "Preserve the user's requested subject, style, proportions, materials, and level of detail. "
+                + "Do not substitute a generic humanoid, primitive blockout, or placeholder unless the user asked for one. "
+                + "Inspect the current scene first. If a root named "
+                + generatedAssetName
+                + " already exists from an interrupted attempt, reuse and repair it instead of duplicating it. "
                 + "This is a Blender-to-Unity pipeline. Do not render, do not use Material Preview or Rendered view, "
-                + "and do not open any GPU shader preview. Build the character at the world origin with one root named "
-                + "Character_Root. Use a male survival character with an AA-style game-ready silhouette, coherent proportions, connected parts, clothing "
-                + "and simple materials. Keep it suitable for real-time Unity use. Save the .blend file and export the "
-                + "complete selected character hierarchy as FBX using Forward -Z and Up Y to this exact absolute path: "
+                + "and do not open any GPU shader preview. Keep the asset at the world origin, use a clean root named "
+                + generatedAssetName
+                + ", and keep it suitable for real-time Unity use. Preserve the current .blend file if it already has a known path; "
+                + "do not invent a new .blend path. Export the complete created "
+                + "asset hierarchy as FBX using Forward -Z and Up Y to this exact absolute path: "
                 + absoluteAssetPath
                 + ". Create the parent directory if needed. Verify that the FBX exists, then report the exact export path. "
                 + "Original user request: "
@@ -138,9 +258,15 @@ namespace AI_Assistant.AI
             lastUnityV2Goal = "";
             string blenderResult = await blenderMcp.AskAsync(blenderPrompt);
 
-            if (!File.Exists(absoluteAssetPath))
+            bool exportChanged = HasNewExport(
+                absoluteAssetPath,
+                hadPreviousExport,
+                previousExportWriteUtc,
+                previousExportLength
+            );
+            if (!exportChanged)
             {
-                return "Blender stage nije završio export. Očekivani FBX nije pronađen: "
+                return "Blender stage nije potvrdio novi export. FBX nije kreiran ili se postojeći fajl nije promijenio: "
                     + absoluteAssetPath
                     + "\n\nBlender odgovor:\n"
                     + blenderResult;
@@ -151,7 +277,7 @@ namespace AI_Assistant.AI
             // not repeat the Blender stage.
             lastBlenderGoal = "";
             string unityPrompt =
-                "/agent Import and instantiate the generated Blender character in Unity. "
+                "/agent Import and instantiate the generated Blender asset in Unity. "
                 + "Use the existing Unity bridge and do not delete or replace existing scene objects. "
                 + "The asset is already exported at this Unity-relative path: "
                 + relativeAssetPath
@@ -161,7 +287,9 @@ namespace AI_Assistant.AI
                 + "\"} and then "
                 + "{\"type\":\"instantiate_prefab\",\"asset_path\":\""
                 + relativeAssetPath
-                + "\",\"name\":\"GeneratedCharacter\",\"parent_path\":\"\"}. "
+                + "\",\"name\":\""
+                + generatedAssetName
+                + "\",\"parent_path\":\"\"}. "
                 + "Place it at the scene origin if the bridge supports it, save the active scene, and verify the result.";
 
             lastUnityV2Goal = unityPrompt;
@@ -169,6 +297,51 @@ namespace AI_Assistant.AI
                 + blenderResult
                 + "\n\nUnity handoff:\n"
                 + await agentV2.HandleAsync(unityPrompt);
+        }
+
+        private static bool HasNewExport(
+            string path,
+            bool hadPreviousExport,
+            DateTime previousWriteUtc,
+            long previousLength
+        )
+        {
+            try
+            {
+                FileInfo current = new FileInfo(path);
+                if (!current.Exists || current.Length < 64)
+                {
+                    return false;
+                }
+
+                bool changed = !hadPreviousExport
+                    || current.LastWriteTimeUtc != previousWriteUtc
+                    || current.Length != previousLength;
+                if (!changed)
+                {
+                    return false;
+                }
+
+                using FileStream stream = new FileStream(
+                    path,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read
+                );
+                byte[] header = new byte[32];
+                int read = stream.Read(header, 0, header.Length);
+                string text = Encoding.ASCII.GetString(header, 0, read);
+                return text.StartsWith("Kaydara FBX Binary", StringComparison.Ordinal)
+                    || text.StartsWith("; FBX", StringComparison.Ordinal);
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
+            }
         }
 
         public void ResetConversationContext()
@@ -191,6 +364,7 @@ namespace AI_Assistant.AI
             lines.Add("Blender: " + (string.IsNullOrWhiteSpace(blender) ? "not found" : blender));
             lines.Add("Blender engine: official Blender MCP via uvx");
             lines.Add("Blender provider: Groq primary -> direct Groq 120B fallback");
+            lines.Add("Intent router: direct Groq GPT-OSS 120B");
             lines.Add("Blender model: " + (Environment.GetEnvironmentVariable("GROQ_BLENDER_MODEL") ?? "qwen/qwen3.6-27b"));
             lines.Add("Blender fallback model: " + (Environment.GetEnvironmentVariable("GROQ_BLENDER_FALLBACK_MODEL") ?? Environment.GetEnvironmentVariable("GROQ_MODEL") ?? "openai/gpt-oss-120b"));
             lines.Add("Gemini: " + IsKeyConfigured("GEMINI_API_KEY"));
@@ -208,42 +382,6 @@ namespace AI_Assistant.AI
                 value.Contains("blender", StringComparison.OrdinalIgnoreCase)
                 || value.Contains("bpy", StringComparison.OrdinalIgnoreCase)
                 || value.Contains(".blend", StringComparison.OrdinalIgnoreCase);
-        }
-
-        private static bool IsBlenderUnityRequest(string prompt)
-        {
-            string p = (prompt ?? "").Trim().ToLowerInvariant();
-            bool asksForCharacter = ContainsAny(
-                p,
-                "character",
-                "karakter",
-                "humanoid",
-                "model",
-                "3d asset",
-                "3d model"
-            );
-            bool asksForUnity = ContainsAny(
-                p,
-                "unity",
-                "ubaci",
-                "ubaciti",
-                "pošalji",
-                "posalji",
-                "send it",
-                "import"
-            );
-            bool asksToGenerate = ContainsAny(
-                p,
-                "napravi",
-                "napraviti",
-                "generiši",
-                "generisi",
-                "create",
-                "generate",
-                "build"
-            );
-
-            return asksForCharacter && asksForUnity && asksToGenerate;
         }
 
         private static bool IsContinuation(string prompt)
@@ -274,6 +412,14 @@ namespace AI_Assistant.AI
                 || p.Equals("blender", StringComparison.OrdinalIgnoreCase)
                 || p.StartsWith("blender ", StringComparison.OrdinalIgnoreCase)
                 || p.StartsWith("blender:", StringComparison.OrdinalIgnoreCase);
+        }
+        private static bool IsExplicitAgentCommand(string prompt)
+        {
+            string p = (prompt ?? "").Trim();
+            return p.Equals("/agent", StringComparison.OrdinalIgnoreCase)
+                || p.StartsWith("/agent ", StringComparison.OrdinalIgnoreCase)
+                || p.Equals("/plan", StringComparison.OrdinalIgnoreCase)
+                || p.StartsWith("/plan ", StringComparison.OrdinalIgnoreCase);
         }
         private static bool IsPlanOnly(string prompt) => (prompt ?? "").Trim().StartsWith("/plan ", StringComparison.OrdinalIgnoreCase);
         private static bool IsApproval(string prompt) { string p = (prompt ?? "").Trim(); return p.Equals("approve", StringComparison.OrdinalIgnoreCase) || p.Equals("odobri", StringComparison.OrdinalIgnoreCase) || p.Equals("potvrdi", StringComparison.OrdinalIgnoreCase); }
