@@ -62,6 +62,18 @@
 		<Compile Remove="AgentV2\UnityCommandExecutorFixed.cs" />
 		<None Include="AgentV2\UnityCommandExecutorFixed.cs" />
 
+		<!-- The official Blender MCP client is authoritative. Keep the old
+		     V2/V3 factory sources for reference, but never compile their
+		     legacy provider paths into the desktop app. -->
+		<Compile Remove="Blender\BlenderAgentV2.cs" />
+		<None Include="Blender\BlenderAgentV2.cs" />
+
+		<Compile Remove="Blender\BlenderAgentV3.cs" />
+		<None Include="Blender\BlenderAgentV3.cs" />
+
+		<Compile Remove="Blender\BlenderVisualQualityGate.cs" />
+		<None Include="Blender\BlenderVisualQualityGate.cs" />
+
 	</ItemGroup>
 
 	<ItemGroup>
