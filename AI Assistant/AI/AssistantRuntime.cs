@@ -190,9 +190,9 @@ namespace AI_Assistant.AI
             string blender = settings.ResolveBlenderExecutable();
             lines.Add("Blender: " + (string.IsNullOrWhiteSpace(blender) ? "not found" : blender));
             lines.Add("Blender engine: official Blender MCP via uvx");
-            lines.Add("Blender provider: Groq primary -> OpenRouter fallback");
+            lines.Add("Blender provider: Groq primary -> direct Groq 120B fallback");
             lines.Add("Blender model: " + (Environment.GetEnvironmentVariable("GROQ_BLENDER_MODEL") ?? "qwen/qwen3.6-27b"));
-            lines.Add("OpenRouter: " + IsKeyConfigured("OPENROUTER_API_KEY"));
+            lines.Add("Blender fallback model: " + (Environment.GetEnvironmentVariable("GROQ_BLENDER_FALLBACK_MODEL") ?? Environment.GetEnvironmentVariable("GROQ_MODEL") ?? "openai/gpt-oss-120b"));
             lines.Add("Gemini: " + IsKeyConfigured("GEMINI_API_KEY"));
             lines.Add("Groq: " + IsKeyConfigured("GROQ_API_KEY"));
             lines.Add("Risk gate: " + (settings.RequireApprovalForDestructiveChanges ? "on" : "off"));
