@@ -71,9 +71,11 @@ namespace AI_Assistant.AI
                 await EnsureConnectedAsync();
 
                 string? apiKey = Environment.GetEnvironmentVariable("GROQ_API_KEY");
-                if (string.IsNullOrWhiteSpace(apiKey))
+                string? openRouterKey = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
+                if (string.IsNullOrWhiteSpace(apiKey)
+                    && string.IsNullOrWhiteSpace(openRouterKey))
                 {
-                    return "GROQ_API_KEY nije pronađen.";
+                    return "Ni GROQ_API_KEY ni OPENROUTER_API_KEY nisu pronađeni.";
                 }
 
                 string model = Environment.GetEnvironmentVariable("GROQ_BLENDER_MODEL");
@@ -277,59 +279,74 @@ namespace AI_Assistant.AI
         }
 
         private async Task<JsonDocument> SendWithFallbackAsync(
-            string groqApiKey,
+            string? groqApiKey,
             string groqModel,
             List<object> messages
         )
         {
-            try
+            Exception? groqError = null;
+
+            if (!string.IsNullOrWhiteSpace(groqApiKey))
             {
-                return await SendCompletionAsync(
-                    GroqEndpoint,
-                    groqApiKey,
-                    groqModel,
-                    messages
-                );
-            }
-            catch (OperationCanceledException)
-            {
-                throw;
-            }
-            catch (Exception groqError)
-            {
-                string openRouterApiKey =
-                    Environment.GetEnvironmentVariable("OPENROUTER_API_KEY") ?? "";
-                if (string.IsNullOrWhiteSpace(openRouterApiKey))
+                try
+                {
+                    return await SendCompletionAsync(
+                        GroqEndpoint,
+                        groqApiKey ?? "",
+                        groqModel,
+                        messages
+                    );
+                }
+                catch (OperationCanceledException)
                 {
                     throw;
                 }
-
-                string? openRouterModel =
-                    Environment.GetEnvironmentVariable("OPENROUTER_BLENDER_MODEL");
-                if (string.IsNullOrWhiteSpace(openRouterModel))
+                catch (Exception ex)
                 {
-                    openRouterModel = Environment.GetEnvironmentVariable("OPENROUTER_MODEL");
+                    groqError = ex;
                 }
-                if (string.IsNullOrWhiteSpace(openRouterModel))
-                {
-                    openRouterModel = "openrouter/free";
-                }
-
-                activity(
-                    "[BLENDER PROVIDER] Groq unavailable; using OpenRouter fallback · "
-                    + openRouterModel
-                    + " ("
-                    + Trim(groqError.Message, 300)
-                    + ")"
-                );
-
-                return await SendCompletionAsync(
-                    OpenRouterEndpoint,
-                    openRouterApiKey,
-                    openRouterModel,
-                    messages
-                );
             }
+            else
+            {
+                groqError = new InvalidOperationException("GROQ_API_KEY nije konfigurisan.");
+            }
+
+            string openRouterApiKey =
+                Environment.GetEnvironmentVariable("OPENROUTER_API_KEY") ?? "";
+            if (string.IsNullOrWhiteSpace(openRouterApiKey))
+            {
+                throw groqError
+                    ?? new InvalidOperationException("Groq provider nije vratio grešku.");
+            }
+
+            Exception failure = groqError
+                ?? new InvalidOperationException("Groq provider nije vratio odgovor.");
+
+            string? openRouterModel =
+                Environment.GetEnvironmentVariable("OPENROUTER_BLENDER_MODEL");
+            if (string.IsNullOrWhiteSpace(openRouterModel))
+            {
+                openRouterModel = Environment.GetEnvironmentVariable("OPENROUTER_MODEL");
+            }
+            if (string.IsNullOrWhiteSpace(openRouterModel))
+            {
+                openRouterModel = "openrouter/free";
+            }
+
+            activity(
+                "[BLENDER PROVIDER] Groq unavailable; using OpenRouter fallback · "
+                + openRouterModel
+                + " ("
+                + Trim(failure.Message, 300)
+                + ")"
+            );
+
+            return await SendCompletionAsync(
+                OpenRouterEndpoint,
+                openRouterApiKey,
+                openRouterModel,
+                messages
+            );
         }
 
         private async Task<JsonDocument> SendCompletionAsync(
