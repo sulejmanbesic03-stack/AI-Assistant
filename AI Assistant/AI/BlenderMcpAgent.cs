@@ -201,6 +201,10 @@ namespace AI_Assistant.AI
                 WorkingDirectory = AppContext.BaseDirectory
             };
 
+            // Blender Lab currently imports mcp.server.fastmcp. MCP 2.x renamed
+            // that module, so constrain the uvx environment to the compatible line.
+            startInfo.ArgumentList.Add("--with");
+            startInfo.ArgumentList.Add("mcp<2");
             startInfo.ArgumentList.Add("--from");
             startInfo.ArgumentList.Add(OfficialMcpSource);
             startInfo.ArgumentList.Add("blender-mcp");
