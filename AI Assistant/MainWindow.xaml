@@ -400,7 +400,7 @@
                     <Border Style="{StaticResource CardBorder}" Padding="15" Margin="0,12,0,0">
                         <StackPanel>
                             <TextBlock Text="Provider strategy" FontSize="12" FontWeight="Bold" />
-                            <TextBlock Text="Groq primary · OpenRouter fallback" FontSize="10" Foreground="#657186" Margin="0,3,0,12" />
+                            <TextBlock Text="Groq primary · direct Groq 120B fallback" FontSize="10" Foreground="#657186" Margin="0,3,0,12" />
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
                                 <TextBlock Text="Groq" FontSize="11" />
@@ -408,7 +408,7 @@
                             </Grid>
                             <Grid Margin="0,9,0,0">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                <TextBlock Text="OpenRouter · free pool" FontSize="11" />
+                                <TextBlock Text="Groq · GPT-OSS 120B" FontSize="11" />
                                 <TextBlock Grid.Column="1" Text="FALLBACK" FontSize="9" FontWeight="Bold" Foreground="#9A86FF" />
                             </Grid>
                             <Grid Margin="0,9,0,0">
