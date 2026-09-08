@@ -41,21 +41,6 @@ If `uvx` is not on PATH, set its full executable path:
 ```
 
 
-### Controlled Blender V3 fallback
-
-Blender requests use a controlled headless pipeline:
-
-1. Probe the installed Blender version.
-2. Ask a free-first model for version-compatible scene-construction Python.
-3. Safety-scan generated code.
-4. Run Blender with `--background --factory-startup`.
-5. Host code saves `.blend` and exports FBX/GLB.
-6. Capture Python traceback/output and verify both expected files.
-7. If the first run fails, perform one bounded repair pass using the failed script + Blender log.
-8. Optionally copy the exported model to `Assets/AI_Generated/Models` in the configured Unity project.
-
-If the official MCP process is unavailable, the host-owned Blender V3 pipeline remains available as a controlled fallback. It probes Blender, generates a semantic plan, builds the scene deterministically, verifies the output, and can hand off the result to Unity. Blender **3.6 LTS and Blender 4.x** are supported fallback targets.
-
 ## Free-first provider routing
 
 Initial implementation passes:
