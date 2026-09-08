@@ -625,7 +625,7 @@ namespace AI_Assistant.AgentV2
                 + "- Do not enter Play Mode yourself. Runtime verification is host-controlled.\n\n"
                 + "SUPPORTED scene_actions types:\n"
                 + "add_component, attach_script, create_gameobject, create_primitive, set_position, set_rotation, set_scale, set_active, rename_gameobject, set_parent, duplicate_gameobject, configure_rigidbody, configure_collider, create_material, set_material_color, assign_material, import_asset, instantiate_prefab.\n"
-                + "For import_asset and instantiate_prefab always use asset_path with a Unity-relative path such as Assets/AI_Generated/Models/GeneratedCharacter/GeneratedCharacter.fbx.\n\n"
+                + "For import_asset and instantiate_prefab always use asset_path with a Unity-relative path such as Assets/AI_Generated/Models/GeneratedAsset/GeneratedAsset.fbx.\n\n"
                 + "TEMP CAPABILITY CONTRACT when the deterministic actions cannot express the operation:\n"
                 + "- exactly one concrete IUnityDynamicCapability implementation\n"
                 + "- Name property exactly matches temporary_capability.name\n"
