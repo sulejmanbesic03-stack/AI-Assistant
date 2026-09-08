@@ -180,6 +180,11 @@ namespace AI_Assistant.AgentV2
         [JsonPropertyName("asset_path")]
         public string AssetPath { get; set; } = "";
 
+        // OpenAI-compatible models sometimes emit camelCase even though the
+        // Agent V2 contract uses snake_case.
+        [JsonPropertyName("assetPath")]
+        public string AssetPathCamelCase { get; set; } = "";
+
         [JsonPropertyName("material_path")]
         public string MaterialPath { get; set; } = "";
 
@@ -325,6 +330,15 @@ namespace AI_Assistant.AgentV2
                 parsed.SceneActions ??= new List<SceneActionV2>();
                 parsed.RuntimeObjectPaths ??= new List<string>();
                 parsed.Notes ??= new List<string>();
+
+                foreach (SceneActionV2 action in parsed.SceneActions)
+                {
+                    if (string.IsNullOrWhiteSpace(action.AssetPath)
+                        && !string.IsNullOrWhiteSpace(action.AssetPathCamelCase))
+                    {
+                        action.AssetPath = action.AssetPathCamelCase;
+                    }
+                }
 
                 // Free models sometimes emit placeholder capability objects such
                 // as {"name":"...","source":""} or an empty capability_call.
