@@ -279,7 +279,7 @@ namespace AI_Assistant.AI
         private async Task<JsonDocument> SendWithFallbackAsync(
             string groqApiKey,
             string groqModel,
-                List<object> messages
+            List<object> messages
         )
         {
             try
@@ -297,7 +297,8 @@ namespace AI_Assistant.AI
             }
             catch (Exception groqError)
             {
-                string? openRouterApiKey = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
+                string openRouterApiKey =
+                    Environment.GetEnvironmentVariable("OPENROUTER_API_KEY") ?? "";
                 if (string.IsNullOrWhiteSpace(openRouterApiKey))
                 {
                     throw;
