@@ -400,21 +400,21 @@
                     <Border Style="{StaticResource CardBorder}" Padding="15" Margin="0,12,0,0">
                         <StackPanel>
                             <TextBlock Text="Provider strategy" FontSize="12" FontWeight="Bold" />
-                            <TextBlock Text="Adaptive zero-cost routing" FontSize="10" Foreground="#657186" Margin="0,3,0,12" />
+                            <TextBlock Text="Groq primary · OpenRouter fallback" FontSize="10" Foreground="#657186" Margin="0,3,0,12" />
                             <Grid>
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                <TextBlock Text="OpenRouter pool" FontSize="11" />
+                                <TextBlock Text="Groq" FontSize="11" />
                                 <TextBlock Grid.Column="1" Text="PRIMARY" FontSize="9" FontWeight="Bold" Foreground="#8FE8FF" />
                             </Grid>
                             <Grid Margin="0,9,0,0">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                <TextBlock Text="Gemini" FontSize="11" />
+                                <TextBlock Text="OpenRouter · free pool" FontSize="11" />
                                 <TextBlock Grid.Column="1" Text="FALLBACK" FontSize="9" FontWeight="Bold" Foreground="#9A86FF" />
                             </Grid>
                             <Grid Margin="0,9,0,0">
                                 <Grid.ColumnDefinitions><ColumnDefinition Width="*"/><ColumnDefinition Width="Auto"/></Grid.ColumnDefinitions>
-                                <TextBlock Text="Groq · GPT-OSS 120B" FontSize="11" />
-                                <TextBlock Grid.Column="1" Text="REPAIR" FontSize="9" FontWeight="Bold" Foreground="#F6C85F" />
+                                <TextBlock Text="Gemini" FontSize="11" />
+                                <TextBlock Grid.Column="1" Text="LAST RESORT" FontSize="9" FontWeight="Bold" Foreground="#F6C85F" />
                             </Grid>
                         </StackPanel>
                     </Border>
