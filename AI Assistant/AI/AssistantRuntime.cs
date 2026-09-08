@@ -120,7 +120,7 @@ namespace AI_Assistant.AI
         {
             agentV2.Reset();
             legacy.ResetConversationContext();
-            blender.Dispose();
+            blender.Reset();
             lastUnityV2Goal = "";
         }
 
