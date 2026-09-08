@@ -34,7 +34,8 @@ namespace AI_Assistant.AI
         private const int MaxToolCycles = 8;
         private const int RequestTimeoutSeconds = 120;
         private const int MaxToolResultChars = 4000;
-        private const int DefaultGroqMaxCompletionTokens = 1200;
+        private const int DefaultGroqMaxCompletionTokens = 1600;
+        private const int DefaultGroqFallbackMaxCompletionTokens = 2600;
 
         private static readonly JsonSerializerOptions JsonOptions =
             new JsonSerializerOptions
@@ -92,7 +93,10 @@ namespace AI_Assistant.AI
                             + "Inspect the current scene before changing it when needed. Prefer the highest-level "
                             + "registered tool. Use execute_blender_code only when no dedicated tool can do the job. "
                             + "Make the smallest reliable change, save when the user asks, and report exactly what happened. "
-                            + "Keep reasoning concise, emit only the required tool arguments, and keep the final confirmation short."
+                            + "Keep reasoning concise, emit only the required tool arguments, and keep the final confirmation short. "
+                            + "For large Blender edits, split execute_blender_code into several short calls. "
+                            + "Every tool arguments value must be valid JSON with escaped newlines; never emit raw newlines "
+                            + "inside a JSON string and never cut a code argument off mid-script."
                     },
                     new
                     {
@@ -318,6 +322,10 @@ namespace AI_Assistant.AI
             Exception failure = groqError
                 ?? new InvalidOperationException("Groq provider nije vratio odgovor.");
 
+            List<object> fallbackMessages = IsToolCallFormatFailure(failure)
+                ? AddToolCallRepairHint(messages)
+                : messages;
+
             string fallbackModel =
                 Environment.GetEnvironmentVariable("GROQ_BLENDER_FALLBACK_MODEL")
                 ?? Environment.GetEnvironmentVariable("GROQ_MODEL")
@@ -340,12 +348,36 @@ namespace AI_Assistant.AI
                 GroqEndpoint,
                 groqApiKey ?? "",
                 fallbackModel,
-                messages,
+                fallbackMessages,
                 ResolveMaxCompletionTokens(
                     "GROQ_BLENDER_FALLBACK_MAX_TOKENS",
-                    DefaultGroqMaxCompletionTokens
+                    DefaultGroqFallbackMaxCompletionTokens
                 )
             );
+        }
+
+        private static bool IsToolCallFormatFailure(Exception failure)
+        {
+            string message = failure.ToString();
+            return message.Contains("tool_use_failed", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("parse tool call arguments", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("unexpected end of JSON", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static List<object> AddToolCallRepairHint(List<object> messages)
+        {
+            List<object> repaired = new List<object>(messages)
+            {
+                new
+                {
+                    role = "user",
+                    content =
+                        "The previous provider could not parse a tool call. Retry the Blender operation using "
+                        + "short, valid MCP tool calls. If using execute_blender_code, keep the Python snippet small "
+                        + "and ensure its JSON arguments are complete and correctly escaped. Do not send one giant script."
+                }
+            };
+            return repaired;
         }
 
         private static JsonElement ReadAssistantMessage(JsonDocument response)
