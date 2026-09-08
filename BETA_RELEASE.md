@@ -1,4 +1,4 @@
-# AI Assistant 0.7.1 Cowork SHIP V1
+# AI Assistant 0.11.1 Cowork SHIP V1
 
 This branch is the integrated beta/SHIP candidate that treats Unity and Blender as separate execution domains behind one desktop runtime.
 
@@ -6,7 +6,7 @@ This branch is the integrated beta/SHIP candidate that treats Unity and Blender 
 
 ```text
 User goal
-  -> runtime router
+  -> Groq intent router (natural language)
       -> Unity Cowork Agent V2
           -> compact live Unity snapshot
           -> adaptive free-first model request
@@ -14,72 +14,66 @@ User goal
           -> semantic bridge result validation
           -> compile + live verification
           -> correction delta when required
-      -> Controlled Blender Agent V2
-          -> probe installed Blender version
-          -> model generates version-compatible scene-construction Python only
-          -> host safety scan
-          -> Blender headless factory-startup execution
-          -> host-controlled .blend save
-          -> host-controlled FBX/GLB export
-          -> Python traceback + file verification
-          -> one bounded automatic repair pass from the failed log
-          -> optional handoff to Unity Assets/AI_Generated/Models
+      -> official Blender Lab MCP client
+          -> uvx starts pinned official blender-mcp over stdio
+          -> MCP initialize + tools/list discovery
+          -> Groq local tool-calling loop
+          -> official Blender add-on on localhost:9876
+          -> host verifies a new usable FBX
+          -> optional deterministic handoff to Unity
       -> legacy compatibility path for non-V2 workflows
 ```
 
 ## What changed
 
-- Added a controlled Blender execution domain.
-- Added Unity-to-Blender project settings in the WPF UI.
-- Added direct Blender -> Unity model handoff.
-- Added a Unity Editor postprocessor for generated models.
+- Added an official Blender MCP client/orchestrator; the app does not invent a second Blender bridge or scene JSON format.
+- Added direct Blender -> Unity model handoff after a verified export.
 - Added a high-risk approval gate. Destructive/high-impact requests are held until the user types `APPROVE`.
-- Replaced the fixed MiniMax-first provider with an adaptive zero-cost-first router:
-  - initial implementation: OpenRouter free router -> Gemini -> Groq
-  - correction passes: Groq GPT-OSS 120B -> Gemini -> OpenRouter free router
-  - 429 cooldowns are remembered and blind retries are blocked
-  - the successful provider remains sticky during a normal task
-- Provider model IDs are overrideable with environment variables.
+- Blender MCP uses direct Groq Qwen 3.6 27B first and direct Groq GPT-OSS 120B fallback. OpenRouter is isolated to the separate Unity provider path.
+- Natural-language intent routing sends a 3D-create-and-deliver request to Blender → Unity without requiring Blender-specific keywords.
+- MCP tool schemas are compacted and limited to the official core tool set to protect Groq free-tier input tokens.
+- Malformed tool calls, MCP protocol errors, cancellation, pagination and uvx startup failures are surfaced and recoverable.
 - Unity bridge responses are validated semantically, so harmless fields such as `error:null` or `errors:[]` no longer create false task failures.
 - Runtime activity no longer fills the conversation. The chat contains user/assistant results while the current tool/model operation is shown in Live Inspector/status telemetry.
-- Blender 3.6 LTS and Blender 4.x are supported by the controlled pipeline. The runtime probes the installed version and tells the model which API level to target.
-- Blender execution catches Python tracebacks, verifies both `.blend` and export files, and performs one automatic correction pass from the failed script/log before returning failure.
+- Blender 5.1+ with the matching official MCP add-on is the supported path.
+- The runtime verifies that the expected FBX is new, readable and has an FBX header before Unity is called.
 - Added runtime diagnostics and a GitHub Actions Release build gate.
 
 ## Required setup
 
 ### API keys
 
-At least one must be configured as a Windows environment variable:
+For Blender MCP, configure this Windows environment variable:
 
 ```powershell
-setx OPENROUTER_API_KEY "your-key"
-setx GEMINI_API_KEY "your-key"
 setx GROQ_API_KEY "your-key"
 ```
 
-Recommended zero-cost setup is to configure all three, because the router can survive temporary provider limits.
+Unity Agent V2 can additionally use its separately configured providers.
 
 Optional model overrides:
 
 ```powershell
-setx OPENROUTER_MODEL "openrouter/free"
 setx GEMINI_MODEL "gemini-3.7-flash"
 setx GROQ_MODEL "openai/gpt-oss-120b"
 setx GEMINI_REASONING_EFFORT "high"
+setx GROQ_BLENDER_MODEL "qwen/qwen3.6-27b"
+setx GROQ_BLENDER_FALLBACK_MODEL "openai/gpt-oss-120b"
+setx GROQ_BLENDER_MAX_TOKENS "2200"
+setx GROQ_BLENDER_FALLBACK_MAX_TOKENS "2600"
 ```
 
-The default OpenRouter model is `openrouter/free`, so SHIP V1 is not tied to one promotional free model.
+Restart AI Assistant after changing environment variables.
 
 ### Blender
 
-Install Blender 3.6 LTS or Blender 4.x. In the app open **Settings** and configure the executable if auto-detection does not find it.
+Install Blender 5.1 or newer and enable the official MCP add-on. In the add-on preferences, start the MCP Server. In the app open **Settings** and configure the executable if auto-detection does not find it.
 
 Examples:
 
 ```text
-C:\Program Files\Blender Foundation\Blender 3.6\blender.exe
-C:\Program Files\Blender Foundation\Blender 4.5\blender.exe
+C:\Program Files\Blender Foundation\Blender 5.1\blender.exe
+C:\Program Files\Blender Foundation\Blender 5.2\blender.exe
 ```
 
 Recommended workspace:
@@ -88,19 +82,19 @@ Recommended workspace:
 C:\BlenderProjects
 ```
 
-Blender runs with:
+The desktop app starts the pinned official server with `uvx`; `uvx` must be on PATH. If required, set `BLENDER_MCP_COMMAND` to the full path of `uvx.exe`. The server then communicates with the running Blender add-on on `localhost:9876`.
+
+Pinned server source:
 
 ```text
---background --factory-startup --python <generated script>
+git+https://projects.blender.org/lab/blender_mcp.git@4309a39646e644261624bfcd2bca669b343b7621#subdirectory=mcp
 ```
-
-The generated AI script is not allowed to save files, export, spawn subprocesses, access network modules or perform arbitrary file IO. The host owns save/export and verification.
 
 ### Unity
 
 In **Settings**, set Unity project root to the local clone of `AIIntegrationProject` on its `beta/ship-v1` branch.
 
-Blender exports are copied to:
+Blender exports are written at runtime to the configured Unity project:
 
 ```text
 Assets/AI_Generated/Models
@@ -171,28 +165,33 @@ CANCEL
    - Player controller repair
    - Enemy patrol/chase/attack state machine
 
-5. **Blender simple asset**
+5. **Blender MCP simple asset**
    - `/blender create a low-poly barrel`
-   - verify `.blend` and `.fbx` or `.glb`
-   - verify asset appears in `Assets/AI_Generated/Models`
-   - repeat on Blender 3.6 LTS
+   - confirm the app discovers official tools over stdio
+   - confirm the Blender add-on executes the tool call
+   - confirm the requested export path exists and is readable
 
-6. **Blender recovery**
-   - force or encounter a generated Python API error
-   - confirm traceback is captured
-   - confirm one correction pass runs from the log
-   - confirm final files are verified before success
+6. **Natural-language Blender → Unity**
+   - `Napravi mi AA charactera za survival, neka bude muško, i pošalji mi ga u Unity.`
+   - confirm the router selects Blender → Unity
+   - confirm no generic placeholder instruction replaces the user request
+   - confirm Unity imports and instantiates only after a new FBX is verified
 
-7. **Blender safety**
-   - request something that tempts arbitrary filesystem/network access
-   - verify generated script is blocked if it contains forbidden operations
+7. **Blender recovery**
+   - stop the official MCP server or disable the add-on
+   - confirm the error identifies uvx/MCP/add-on connectivity
+   - retry after restoring the add-on without duplicating the root
 
-8. **Provider fallback**
-   - test with only one key
-   - test with OpenRouter + Groq
+8. **Blender safety**
+   - verify destructive requests are held by the risk gate
+   - remember that official `execute_blender_code` is powerful and runs in Blender
+
+9. **Provider fallback**
+   - test Qwen primary and direct Groq GPT-OSS 120B fallback
+   - confirm OpenRouter is not used by the Blender MCP path
    - hit/imitate a rate limit and confirm no blind repeat loop
 
-9. **Risk gate**
+10. **Risk gate**
    - request deletion/replacement
    - confirm no execution before `APPROVE`
 
@@ -200,10 +199,11 @@ CANCEL
 
 This remains a beta/SHIP candidate rather than a claim of perfect autonomy. Important boundaries are intentional:
 
-- Blender verification proves the headless run and expected files, not artistic quality. Visual/mesh-quality scoring is a later layer.
-- Free model quality varies, especially through a rotating free router.
+- Blender verification proves that a new readable FBX was exported, not artistic quality or production topology.
+- Groq free-tier limits can still prevent a request; the app must report that failure and never claim an export succeeded.
 - Unity Play Mode verification still occurs only when explicitly requested by the current Agent V2 flow.
-- Blender-to-Unity handoff imports the generated model but does not automatically build production prefabs, LOD groups, colliders or materials unless the subsequent Unity task requests them.
+- Blender-to-Unity handoff imports and instantiates the generated model but does not automatically build production prefabs, LOD groups, colliders or materials unless requested.
+- The generated FBX is written to the configured Unity project at runtime and is not committed to this repository.
 - The risk gate is a conservative lexical host check plus the existing Unity execution safeguards; it is not an operating-system sandbox.
 
 The design goal is to keep model intelligence replaceable while moving reliability, safety, verification and state into deterministic host code.
