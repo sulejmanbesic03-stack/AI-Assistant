@@ -21,6 +21,35 @@ The Unity batch bridge is transactional/idempotent: failed deterministic batches
 
 The previous AIIntegration path is retained for compatibility with non-Unity workflows.
 
+## Blender MCP
+
+Blender prompts are routed through the official Blender Lab MCP server and use Groq Qwen 3.6 27B only.
+
+Requirements:
+
+- Blender 5.1 or newer with the official MCP add-on enabled.
+- Start MCP Server in the add-on preferences.
+- `uvx` available on PATH.
+
+The desktop app launches the official server from:
+
+```text
+git+https://projects.blender.org/lab/blender_mcp.git#subdirectory=mcp
+```
+
+The default model is `qwen/qwen3.6-27b`. To override it:
+
+```powershell
+[Environment]::SetEnvironmentVariable("GROQ_BLENDER_MODEL","qwen/qwen3.6-27b","User")
+```
+
+If `uvx` is not on PATH, set its full executable path:
+
+```powershell
+[Environment]::SetEnvironmentVariable("BLENDER_MCP_COMMAND","C:\\Users\\YOUR_NAME\\.local\\bin\\uvx.exe","User")
+```
+
+
 ## Free-first model routing
 
 Default Unity Agent V2 model/provider routing is deliberately simple:
