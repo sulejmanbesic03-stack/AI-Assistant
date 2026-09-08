@@ -370,6 +370,10 @@ namespace AI_Assistant.AgentV2
                         if (!Has(action.AssetPath)) return FailRequired(report, prefix, "asset_path");
                         break;
 
+                    case "instantiate_prefab":
+                        if (!Has(action.AssetPath)) return FailRequired(report, prefix, "asset_path");
+                        break;
+
                     default:
                         report.Fail(
                             "Agent V2 preflight: unsupported action type '"
@@ -723,6 +727,15 @@ namespace AI_Assistant.AgentV2
 
                 "import_asset" =>
                     unity.ImportAsset(action.AssetPath),
+
+                "instantiate_prefab" =>
+                    unity.InstantiatePrefab(
+                        action.AssetPath,
+                        string.IsNullOrWhiteSpace(action.Name)
+                            ? "GeneratedCharacter"
+                            : action.Name,
+                        action.ParentPath
+                    ),
 
                 _ =>
                     "AGENT V2 ERROR: unsupported scene action type '"
