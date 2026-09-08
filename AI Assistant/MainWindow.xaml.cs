@@ -28,6 +28,13 @@ namespace AI_Assistant
             InitializeComponent();
             MessagesList.ItemsSource = messages;
             Loaded += MainWindow_Loaded;
+            Closed += MainWindow_Closed;
+        }
+
+        private void MainWindow_Closed(object? sender, EventArgs e)
+        {
+            ai?.Dispose();
+            ai = null;
         }
 
         private void MainWindow_Loaded(object sender, RoutedEventArgs e)
@@ -47,7 +54,7 @@ namespace AI_Assistant
 
                 AddMessage(
                     "Assistant",
-                    "Cowork SHIP V1 je spreman. Unity koristi Agent V2, /blender koristi controlled Blender pipeline, a runtime prikazuje rad agenta u Live Inspectoru bez zatrpavanja chata."
+                    "Cowork SHIP V1 je spreman. Prirodni zahtjevi se model-rutuju; Blender koristi official MCP preko uvx, a Unity handoff ide tek nakon provjerenog exporta."
                 );
 
                 PromptTextBox.Focus();
@@ -258,6 +265,41 @@ namespace AI_Assistant
                 || raw.StartsWith("[V2 RUNTIME]", StringComparison.OrdinalIgnoreCase))
             {
                 return "Verifying Unity · " + raw[(raw.IndexOf(']') + 1)..].Trim();
+            }
+
+            if (raw.StartsWith("[ROUTER MODEL]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Routing task · " + TrimPrefix(raw, "[ROUTER MODEL]");
+            }
+
+            if (raw.StartsWith("[ROUTER]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Routing task · " + TrimPrefix(raw, "[ROUTER]");
+            }
+
+            if (raw.StartsWith("[BLENDER PROVIDER]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Blender provider · " + TrimPrefix(raw, "[BLENDER PROVIDER]");
+            }
+
+            if (raw.StartsWith("[BLENDER MCP ERROR]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Blender error · " + TrimPrefix(raw, "[BLENDER MCP ERROR]");
+            }
+
+            if (raw.StartsWith("[BLENDER MCP SERVER]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Blender server · " + TrimPrefix(raw, "[BLENDER MCP SERVER]");
+            }
+
+            if (raw.StartsWith("[BLENDER MCP]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Blender MCP · " + TrimPrefix(raw, "[BLENDER MCP]");
+            }
+
+            if (raw.StartsWith("[HANDOFF]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Unity handoff · " + TrimPrefix(raw, "[HANDOFF]");
             }
 
             if (raw.StartsWith("[BLENDER REPAIR]", StringComparison.OrdinalIgnoreCase))
