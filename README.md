@@ -2,7 +2,7 @@
 
 A local Windows .NET 8/WPF development agent that routes Unity and Blender work through separate controlled execution domains.
 
-Main now contains the Ship-v1 Unity/UI improvements plus the standardized Blender MCP path.
+Main contains the Ship-v1 Unity/UI improvements plus the official Blender MCP client path.
 
 ## Runtime domains
 
@@ -14,7 +14,9 @@ Bridge responses are interpreted semantically, so harmless JSON fields such as `
 
 ## Blender MCP
 
-Blender prompts are routed through the official Blender Lab MCP server and use Groq Qwen 3.6 27B only.
+Blender work uses the official Blender Lab MCP server. AI Assistant is the MCP client/orchestrator: it starts the official `blender-mcp` process over stdio, discovers its tools, sends the tool schemas to Groq, and forwards each model tool call to the MCP server. The Blender add-on is the server's local connection to the running Blender instance. The Unity bridge is used only after a verified FBX export; it is not a replacement for Blender MCP.
+
+Natural-language requests are classified by a small Groq intent pass. A request such as “napravi muški survival character i pošalji ga u Unity” therefore enters the Blender → Unity pipeline without relying on a hardcoded keyword combination. The original request is passed to Blender unchanged in meaning; the pipeline does not impose a humanoid, gender, or visual style.
 
 Requirements:
 
@@ -25,13 +27,22 @@ Requirements:
 The desktop app launches the official server from:
 
 ```text
-git+https://projects.blender.org/lab/blender_mcp.git#subdirectory=mcp
+git+https://projects.blender.org/lab/blender_mcp.git@4309a39646e644261624bfcd2bca669b343b7621#subdirectory=mcp
 ```
 
-The default model is `qwen/qwen3.6-27b`. To override it:
+The server revision is pinned so a future upstream change cannot silently break a production build. Upgrade it deliberately after testing the matching Blender add-on. AI Assistant also constrains the temporary `uvx` environment to `mcp>=1.2,<2`, matching the official server source revision's `mcp.server.fastmcp` import.
+
+The Blender MCP provider uses direct Groq only:
+
+1. `qwen/qwen3.6-27b` primary
+2. `openai/gpt-oss-120b` fallback
+
+OpenRouter is not in the Blender MCP path. To override the models:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("GROQ_BLENDER_MODEL","qwen/qwen3.6-27b","User")
+[Environment]::SetEnvironmentVariable("GROQ_BLENDER_FALLBACK_MODEL","openai/gpt-oss-120b","User")
+[Environment]::SetEnvironmentVariable("GROQ_ROUTER_MODEL","openai/gpt-oss-120b","User")
 ```
 
 If `uvx` is not on PATH, set its full executable path:
@@ -41,24 +52,15 @@ If `uvx` is not on PATH, set its full executable path:
 ```
 
 
-## Free-first provider routing
+## General provider routing
 
-Initial implementation passes:
-
-1. OpenRouter free router (`openrouter/free`)
-2. Gemini (`gemini-3.7-flash` by default)
-3. Groq (`openai/gpt-oss-120b` by default)
-
-Correction/repair passes prefer Groq -> Gemini -> OpenRouter. Rate-limit cooldowns are remembered and blind 429 retries are blocked.
-
-Model IDs can be overridden with environment variables.
+Unity Agent V2 keeps its own provider routing and compatibility behavior. The Blender MCP path above is intentionally isolated so an OpenRouter rate limit or malformed OpenRouter tool history cannot corrupt a Blender MCP run. Model IDs can be overridden with environment variables.
 
 ## Required environment keys
 
-At least one provider key must be configured; all three are recommended for fallback coverage:
+For Blender MCP, `GROQ_API_KEY` is required. Unity Agent V2 may use the other configured providers for its separate compatibility path:
 
 ```powershell
-setx OPENROUTER_API_KEY "your-key"
 setx GEMINI_API_KEY "your-key"
 setx GROQ_API_KEY "your-key"
 ```
@@ -66,10 +68,11 @@ setx GROQ_API_KEY "your-key"
 Optional model overrides:
 
 ```powershell
-setx OPENROUTER_MODEL "openrouter/free"
 setx GEMINI_MODEL "gemini-3.7-flash"
 setx GROQ_MODEL "openai/gpt-oss-120b"
 setx GEMINI_REASONING_EFFORT "high"
+setx GROQ_BLENDER_MAX_TOKENS "2200"
+setx GROQ_BLENDER_FALLBACK_MAX_TOKENS "2600"
 ```
 
 Restart AI Assistant after changing user environment variables.
@@ -91,6 +94,10 @@ The app stores runtime settings in `%LOCALAPPDATA%\AI Assistant\settings.json`. 
 /plan <Unity inspect/plan-only request>
 /blender <3D asset request>
 ```
+
+For a Blender → Unity delivery, natural language is enough; no special command is required. The app verifies that the new FBX was created or changed before asking Unity to import and instantiate it. Generated assets are written to the configured Unity project, not committed to this repository.
+
+The official `execute_blender_code` tool is available for complex Blender operations. It executes Python in the connected Blender process, so it must be treated as a powerful/destructive capability and used only with trusted requests. Keep Blender's normal save/recovery workflow enabled.
 
 Destructive/high-impact work is held behind the explicit `APPROVE` / `CANCEL` risk gate.
 
