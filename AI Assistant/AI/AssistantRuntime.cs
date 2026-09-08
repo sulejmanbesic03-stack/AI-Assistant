@@ -5,6 +5,7 @@ using AI_Assistant.Tools;
 
 using System;
 using System.Collections.Generic;
+using System.IO;
 using System.Threading.Tasks;
 
 namespace AI_Assistant.AI
@@ -67,6 +68,11 @@ namespace AI_Assistant.AI
         {
             bool continuation = IsContinuation(normalizedPrompt);
             bool explicitUnity = HasExplicitUnitySignal(normalizedPrompt);
+            if (IsBlenderUnityRequest(normalizedPrompt))
+            {
+                ReportActivity("[ROUTER] Blender → Unity character pipeline");
+                return await HandleBlenderUnityRequestAsync(normalizedPrompt);
+            }
             if (explicitUnity && !IsExplicitBlender(normalizedPrompt) && agentV2.ShouldHandle(normalizedPrompt))
             {
                 if (!continuation) lastUnityV2Goal = normalizedPrompt;
@@ -94,6 +100,75 @@ namespace AI_Assistant.AI
             }
             ReportActivity("[ROUTER] Legacy compatibility path");
             return await legacy.Ask(normalizedPrompt);
+        }
+
+        private async Task<string> HandleBlenderUnityRequestAsync(string prompt)
+        {
+            if (string.IsNullOrWhiteSpace(settings.UnityProjectRoot)
+                || !Directory.Exists(Path.Combine(settings.UnityProjectRoot, "Assets")))
+            {
+                return "Blender → Unity pipeline nije spreman: Unity project root nije konfigurisan ili nema Assets folder.";
+            }
+
+            string relativeAssetPath =
+                "Assets/AI_Generated/Models/GeneratedCharacter/GeneratedCharacter.fbx";
+            string absoluteAssetPath = Path.Combine(
+                settings.UnityProjectRoot,
+                relativeAssetPath.Replace('/', Path.DirectorySeparatorChar)
+            );
+            string? assetDirectory = Path.GetDirectoryName(absoluteAssetPath);
+            if (!string.IsNullOrWhiteSpace(assetDirectory))
+            {
+                Directory.CreateDirectory(assetDirectory);
+            }
+
+            string blenderPrompt =
+                "Generate the requested game-ready character in Blender using the available MCP tools. "
+                + "This is a Blender-to-Unity pipeline. Do not render, do not use Material Preview or Rendered view, "
+                + "and do not open any GPU shader preview. Build the character at the world origin with one root named "
+                + "Character_Root. Use a male survival character with an AA-style game-ready silhouette, coherent proportions, connected parts, clothing "
+                + "and simple materials. Keep it suitable for real-time Unity use. Save the .blend file and export the "
+                + "complete selected character hierarchy as FBX using Forward -Z and Up Y to this exact absolute path: "
+                + absoluteAssetPath
+                + ". Create the parent directory if needed. Verify that the FBX exists, then report the exact export path. "
+                + "Original user request: "
+                + prompt;
+
+            lastBlenderGoal = blenderPrompt;
+            lastUnityV2Goal = "";
+            string blenderResult = await blenderMcp.AskAsync(blenderPrompt);
+
+            if (!File.Exists(absoluteAssetPath))
+            {
+                return "Blender stage nije završio export. Očekivani FBX nije pronađen: "
+                    + absoluteAssetPath
+                    + "\n\nBlender odgovor:\n"
+                    + blenderResult;
+            }
+
+            ReportActivity("[HANDOFF] FBX verified · Unity import and instantiate");
+            // Blender is complete; a later "nastavi" must resume Unity V2,
+            // not repeat the Blender stage.
+            lastBlenderGoal = "";
+            string unityPrompt =
+                "/agent Import and instantiate the generated Blender character in Unity. "
+                + "Use the existing Unity bridge and do not delete or replace existing scene objects. "
+                + "The asset is already exported at this Unity-relative path: "
+                + relativeAssetPath
+                + ". Use scene_actions with exactly these fields: "
+                + "{\"type\":\"import_asset\",\"asset_path\":\""
+                + relativeAssetPath
+                + "\"} and then "
+                + "{\"type\":\"instantiate_prefab\",\"asset_path\":\""
+                + relativeAssetPath
+                + "\",\"name\":\"GeneratedCharacter\",\"parent_path\":\"\"}. "
+                + "Place it at the scene origin if the bridge supports it, save the active scene, and verify the result.";
+
+            lastUnityV2Goal = unityPrompt;
+            return "Blender export završen.\n\n"
+                + blenderResult
+                + "\n\nUnity handoff:\n"
+                + await agentV2.HandleAsync(unityPrompt);
         }
 
         public void ResetConversationContext()
@@ -133,6 +208,42 @@ namespace AI_Assistant.AI
                 value.Contains("blender", StringComparison.OrdinalIgnoreCase)
                 || value.Contains("bpy", StringComparison.OrdinalIgnoreCase)
                 || value.Contains(".blend", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsBlenderUnityRequest(string prompt)
+        {
+            string p = (prompt ?? "").Trim().ToLowerInvariant();
+            bool asksForCharacter = ContainsAny(
+                p,
+                "character",
+                "karakter",
+                "humanoid",
+                "model",
+                "3d asset",
+                "3d model"
+            );
+            bool asksForUnity = ContainsAny(
+                p,
+                "unity",
+                "ubaci",
+                "ubaciti",
+                "pošalji",
+                "posalji",
+                "send it",
+                "import"
+            );
+            bool asksToGenerate = ContainsAny(
+                p,
+                "napravi",
+                "napraviti",
+                "generiši",
+                "generisi",
+                "create",
+                "generate",
+                "build"
+            );
+
+            return asksForCharacter && asksForUnity && asksToGenerate;
         }
 
         private static bool IsContinuation(string prompt)
