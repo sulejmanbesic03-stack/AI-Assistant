@@ -445,6 +445,19 @@ namespace AI_Assistant.AI
                 : value.Substring(0, max) + "…";
         }
 
+        public void Reset()
+        {
+            gate.Wait();
+            try
+            {
+                DisposeProcess();
+            }
+            finally
+            {
+                gate.Release();
+            }
+        }
+
         public void Dispose()
         {
             gate.Wait();
