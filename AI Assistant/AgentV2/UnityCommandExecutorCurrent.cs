@@ -1181,7 +1181,7 @@ namespace AI_Assistant.AgentV2
                     unity.InstantiatePrefab(
                         action.AssetPath,
                         string.IsNullOrWhiteSpace(action.Name)
-                            ? "GeneratedCharacter"
+                            ? "GeneratedAsset"
                             : action.Name,
                         action.ParentPath
                     ),
