@@ -145,7 +145,7 @@ namespace AI_Assistant.AI
                                 function = new
                                 {
                                     name = call.Function?.Name ?? "",
-                                    arguments = call.Function?.Arguments ?? "{}"
+                                    arguments = NormalizeToolArguments(call.Function?.Arguments)
                                 }
                             }).ToList()
                         };
@@ -155,7 +155,7 @@ namespace AI_Assistant.AI
                     foreach (GroqToolCall call in calls)
                     {
                         string toolName = call.Function?.Name ?? "";
-                        string arguments = call.Function?.Arguments ?? "{}";
+                        string arguments = NormalizeToolArguments(call.Function?.Arguments);
                         activity("[BLENDER MCP] " + toolName);
 
                         string toolResult = await CallMcpToolAsync(toolName, arguments);
@@ -473,6 +473,29 @@ namespace AI_Assistant.AI
         private static JsonElement CompactSchema(JsonElement schema)
         {
             return JsonSerializer.SerializeToElement(CompactSchemaValue(schema));
+        }
+
+        private static string NormalizeToolArguments(string? arguments)
+        {
+            if (string.IsNullOrWhiteSpace(arguments))
+            {
+                return "{}";
+            }
+
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(arguments);
+                return document.RootElement.ValueKind == JsonValueKind.Object
+                    ? document.RootElement.GetRawText()
+                    : "{}";
+            }
+            catch
+            {
+                // Providers can truncate a tool call at the output boundary.
+                // Never forward malformed arguments into another provider's
+                // message history.
+                return "{}";
+            }
         }
 
         private static object? CompactSchemaValue(JsonElement value)
