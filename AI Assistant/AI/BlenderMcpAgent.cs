@@ -101,14 +101,17 @@ namespace AI_Assistant.AI
                 bool hasMiniMax = !string.IsNullOrWhiteSpace(
                     Environment.GetEnvironmentVariable("MINIMAX_API_KEY")
                 );
+                bool hasOpenRouter = !string.IsNullOrWhiteSpace(
+                    Environment.GetEnvironmentVariable("OPENROUTER_API_KEY")
+                );
                 bool hasInclusionAi = !string.IsNullOrWhiteSpace(
                     Environment.GetEnvironmentVariable("INCLUSIONAI_API_KEY")
                 ) && !string.IsNullOrWhiteSpace(
                     Environment.GetEnvironmentVariable("INCLUSIONAI_BASE_URL")
                 );
-                if (string.IsNullOrWhiteSpace(apiKey) && !hasMiniMax && !hasInclusionAi)
+                if (string.IsNullOrWhiteSpace(apiKey) && !hasOpenRouter && !hasMiniMax && !hasInclusionAi)
                 {
-                    return "Nijedan Blender LLM provider nije konfigurisan. Postavi GROQ_API_KEY, MINIMAX_API_KEY ili INCLUSIONAI_API_KEY + INCLUSIONAI_BASE_URL.";
+                    return "Nijedan Blender LLM provider nije konfigurisan. Postavi GROQ_API_KEY, OPENROUTER_API_KEY, MINIMAX_API_KEY ili INCLUSIONAI_API_KEY + INCLUSIONAI_BASE_URL.";
                 }
 
                 string model = Environment.GetEnvironmentVariable("GROQ_BLENDER_MODEL") ?? "";
@@ -643,15 +646,14 @@ namespace AI_Assistant.AI
                         content = imageParts.ToArray()
                     }
                 },
-                ["temperature"] = 0.0,
-                ["max_completion_tokens"] = 512
+                ["temperature"] = 0.0
             };
 
             List<CompletionProvider> providers = BuildVisionProviders(visionModel);
             if (providers.Count == 0)
             {
                 throw new InvalidOperationException(
-                    "Nijedan vision provider nije konfigurisan. Za Groq postavi GROQ_API_KEY; za MiniMax postavi MINIMAX_API_KEY."
+                    "Nijedan vision provider nije konfigurisan. Postavi GROQ_API_KEY ili OPENROUTER_API_KEY; za MiniMax postavi MINIMAX_API_KEY."
                 );
             }
 
@@ -663,6 +665,16 @@ namespace AI_Assistant.AI
                     try
                     {
                         body["model"] = provider.Model;
+                        if (provider.IsGroq)
+                        {
+                            body.Remove("max_tokens");
+                            body["max_completion_tokens"] = 512;
+                        }
+                        else
+                        {
+                            body.Remove("max_completion_tokens");
+                            body["max_tokens"] = 512;
+                        }
                         using HttpRequestMessage request = new HttpRequestMessage(
                             HttpMethod.Post,
                             provider.Endpoint
@@ -672,6 +684,7 @@ namespace AI_Assistant.AI
                                 "Bearer",
                                 provider.ApiKey
                             );
+                        AddProviderHeaders(request, provider);
                         request.Content = new StringContent(
                             JsonSerializer.Serialize(body),
                             Encoding.UTF8,
@@ -1059,6 +1072,22 @@ namespace AI_Assistant.AI
                 );
             }
 
+            string? openRouterKey = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
+            if (!string.IsNullOrWhiteSpace(openRouterKey))
+            {
+                providers.Add(
+                    new CompletionProvider(
+                        "OpenRouter",
+                        "https://openrouter.ai/api/v1/chat/completions",
+                        openRouterKey,
+                        Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_MODEL")
+                            ?? Environment.GetEnvironmentVariable("OPENROUTER_MODEL")
+                            ?? "nex-agi/nex-n2.5-pro:free",
+                        false
+                    )
+                );
+            }
+
             string? minimaxKey = Environment.GetEnvironmentVariable("MINIMAX_API_KEY");
             if (!string.IsNullOrWhiteSpace(minimaxKey))
             {
@@ -1110,6 +1139,22 @@ namespace AI_Assistant.AI
                 ));
             }
 
+            string? openRouterKey = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
+            if (!string.IsNullOrWhiteSpace(openRouterKey))
+            {
+                providers.Add(new CompletionProvider(
+                    "OpenRouter",
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    openRouterKey,
+                    Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_VISION_MODEL")
+                        ?? Environment.GetEnvironmentVariable("OPENROUTER_VISION_MODEL")
+                        ?? Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_MODEL")
+                        ?? Environment.GetEnvironmentVariable("OPENROUTER_MODEL")
+                        ?? "nex-agi/nex-n2.5-pro:free",
+                    false
+                ));
+            }
+
             string? minimaxKey = Environment.GetEnvironmentVariable("MINIMAX_API_KEY");
             if (!string.IsNullOrWhiteSpace(minimaxKey))
             {
@@ -1148,6 +1193,26 @@ namespace AI_Assistant.AI
             return value.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase)
                 ? value
                 : value + "/chat/completions";
+        }
+
+        private static void AddProviderHeaders(
+            HttpRequestMessage request,
+            CompletionProvider provider
+        )
+        {
+            if (!provider.Endpoint.Contains("openrouter.ai", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            request.Headers.TryAddWithoutValidation(
+                "HTTP-Referer",
+                "https://github.com/sulejmanbesic03-stack/AI-Assistant"
+            );
+            request.Headers.TryAddWithoutValidation(
+                "X-Title",
+                "AI Assistant Cowork Beta"
+            );
         }
 
         private static bool IsToolCallFormatFailure(Exception failure)
@@ -1308,16 +1373,20 @@ namespace AI_Assistant.AI
                 ["tools"] = groqTools,
                 ["tool_choice"] = "auto",
                 ["temperature"] = 0.1,
-                ["max_completion_tokens"] = maxCompletionTokens,
             };
 
             if (provider.IsGroq)
             {
+                body["max_completion_tokens"] = maxCompletionTokens;
                 body["parallel_tool_calls"] = false;
                 body["reasoning_effort"] = provider.Model.StartsWith(
                     "qwen/",
                     StringComparison.OrdinalIgnoreCase
                 ) ? "none" : "low";
+            }
+            else
+            {
+                body["max_tokens"] = maxCompletionTokens;
             }
 
             string serializedBody = JsonSerializer.Serialize(body);
@@ -1335,6 +1404,7 @@ namespace AI_Assistant.AI
                             "Bearer",
                             provider.ApiKey
                         );
+                    AddProviderHeaders(request, provider);
                     request.Content = new StringContent(
                         serializedBody,
                         Encoding.UTF8,

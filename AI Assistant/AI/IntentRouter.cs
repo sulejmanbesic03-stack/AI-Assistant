@@ -151,13 +151,17 @@ namespace AI_Assistant.AI
                         content = Trim(prompt, 5000)
                     }
                 },
-                ["temperature"] = 0,
-                ["max_completion_tokens"] = 160
+                ["temperature"] = 0
             };
             if (provider.IsGroq)
             {
+                body["max_completion_tokens"] = 160;
                 body["reasoning_effort"] = "low";
                 body["response_format"] = new { type = "json_object" };
+            }
+            else
+            {
+                body["max_tokens"] = 160;
             }
 
             using HttpRequestMessage request = new HttpRequestMessage(
@@ -166,6 +170,7 @@ namespace AI_Assistant.AI
             );
             request.Headers.Authorization =
                 new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", provider.ApiKey);
+            AddProviderHeaders(request, provider);
             request.Content = new StringContent(
                 JsonSerializer.Serialize(body),
                 Encoding.UTF8,
@@ -208,6 +213,20 @@ namespace AI_Assistant.AI
                         ?? Environment.GetEnvironmentVariable("GROQ_MODEL")
                         ?? DefaultModel,
                     true
+                ));
+            }
+
+            string? openRouterKey = Environment.GetEnvironmentVariable("OPENROUTER_API_KEY");
+            if (!string.IsNullOrWhiteSpace(openRouterKey))
+            {
+                providers.Add(new RouterProvider(
+                    "OpenRouter",
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    openRouterKey,
+                    Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_MODEL")
+                        ?? Environment.GetEnvironmentVariable("OPENROUTER_MODEL")
+                        ?? "nex-agi/nex-n2.5-pro:free",
+                    false
                 ));
             }
 
@@ -261,6 +280,26 @@ namespace AI_Assistant.AI
                 || message.Contains("Router HTTP 502", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("Router HTTP 503", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("Router HTTP 504", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static void AddProviderHeaders(
+            HttpRequestMessage request,
+            RouterProvider provider
+        )
+        {
+            if (!provider.Endpoint.Contains("openrouter.ai", StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            request.Headers.TryAddWithoutValidation(
+                "HTTP-Referer",
+                "https://github.com/sulejmanbesic03-stack/AI-Assistant"
+            );
+            request.Headers.TryAddWithoutValidation(
+                "X-Title",
+                "AI Assistant Cowork Beta"
+            );
         }
 
         private static IntentResult ParseResult(string content)

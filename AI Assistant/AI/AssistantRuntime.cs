@@ -416,11 +416,13 @@ namespace AI_Assistant.AI
             string blender = settings.ResolveBlenderExecutable();
             lines.Add("Blender: " + (string.IsNullOrWhiteSpace(blender) ? "not found" : blender));
             lines.Add("Blender engine: official Blender MCP via uvx");
-            lines.Add("Blender provider: Groq -> configured MiniMax/InclusionAI fallbacks");
-            lines.Add("Intent router: Groq -> configured MiniMax/InclusionAI fallbacks");
+            lines.Add("Blender provider: Groq -> OpenRouter -> MiniMax -> InclusionAI");
+            lines.Add("Intent router: Groq -> OpenRouter -> MiniMax -> InclusionAI");
             lines.Add("Blender model: " + (Environment.GetEnvironmentVariable("GROQ_BLENDER_MODEL") ?? "qwen/qwen3.6-27b"));
             lines.Add("Blender fallback model: " + (Environment.GetEnvironmentVariable("GROQ_BLENDER_FALLBACK_MODEL") ?? Environment.GetEnvironmentVariable("GROQ_MODEL") ?? "openai/gpt-oss-120b"));
-            lines.Add("Blender vision reviewer: Groq -> MiniMax-M3 (if configured) · " + (Environment.GetEnvironmentVariable("GROQ_BLENDER_VISION_MODEL") ?? "qwen/qwen3.6-27b"));
+            lines.Add("Blender vision reviewer: Groq -> OpenRouter -> MiniMax-M3 · " + (Environment.GetEnvironmentVariable("GROQ_BLENDER_VISION_MODEL") ?? "qwen/qwen3.6-27b"));
+            lines.Add("OpenRouter: " + IsKeyConfigured("OPENROUTER_API_KEY") + " · " + (Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_MODEL") ?? Environment.GetEnvironmentVariable("OPENROUTER_MODEL") ?? "nex-agi/nex-n2.5-pro:free"));
+            lines.Add("OpenRouter vision: " + (Environment.GetEnvironmentVariable("BLENDER_OPENROUTER_VISION_MODEL") ?? Environment.GetEnvironmentVariable("OPENROUTER_VISION_MODEL") ?? "same multimodal model"));
             lines.Add("MiniMax fallback: " + IsKeyConfigured("MINIMAX_API_KEY") + " · " + (Environment.GetEnvironmentVariable("MINIMAX_MODEL") ?? "MiniMax-M2.7"));
             lines.Add("InclusionAI fallback: " + (IsKeyConfigured("INCLUSIONAI_API_KEY") == "configured" && !string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("INCLUSIONAI_BASE_URL")) ? "configured" : "not configured"));
             lines.Add("Blender timeouts: provider " + (Environment.GetEnvironmentVariable("GROQ_BLENDER_REQUEST_TIMEOUT_SECONDS") ?? "180s") + " · MCP " + (Environment.GetEnvironmentVariable("BLENDER_MCP_REQUEST_TIMEOUT_SECONDS") ?? "240s") + " · vision " + (Environment.GetEnvironmentVariable("GROQ_BLENDER_VISION_TIMEOUT_SECONDS") ?? "90s"));
