@@ -23,6 +23,7 @@ namespace AI_Assistant.AI
 
         private string lastUnityV2Goal = "";
         private string lastBlenderGoal = "";
+        private string? lastBlenderReferencePath;
         private string pendingHighRiskPrompt = "";
 
         public event Action<string>? Activity;
@@ -89,7 +90,11 @@ namespace AI_Assistant.AI
             if (continuation && !string.IsNullOrWhiteSpace(lastBlenderGoal))
             {
                 ReportActivity("[ROUTER] Blender MCP resume");
-                return await blenderMcp.AskAsync(lastBlenderGoal);
+                return await blenderMcp.AskAsync(
+                    lastBlenderGoal,
+                    lastBlenderReferencePath,
+                    true
+                );
             }
 
             if (continuation && IsAgentV2Enabled() && !string.IsNullOrWhiteSpace(lastUnityV2Goal))
@@ -104,10 +109,14 @@ namespace AI_Assistant.AI
             if (IsExplicitBlender(normalizedPrompt))
             {
                 lastBlenderGoal = normalizedPrompt;
+                lastBlenderReferencePath = await GenerateVisualPreviewAsync(normalizedPrompt);
                 lastUnityV2Goal = "";
                 ReportActivity("[ROUTER] Blender MCP · Groq Qwen 3.6 27B");
-                await GenerateVisualPreviewAsync(normalizedPrompt);
-                return await blenderMcp.AskAsync(normalizedPrompt);
+                return await blenderMcp.AskAsync(
+                    normalizedPrompt,
+                    lastBlenderReferencePath,
+                    true
+                );
             }
 
             if (IsExplicitAgentCommand(normalizedPrompt))
@@ -138,10 +147,14 @@ namespace AI_Assistant.AI
 
                 case AssistantIntent.Blender:
                     lastBlenderGoal = normalizedPrompt;
+                    lastBlenderReferencePath = await GenerateVisualPreviewAsync(normalizedPrompt);
                     lastUnityV2Goal = "";
                     ReportActivity("[ROUTER] Blender MCP · Groq Qwen 3.6 27B");
-                    await GenerateVisualPreviewAsync(normalizedPrompt);
-                    return await blenderMcp.AskAsync(normalizedPrompt);
+                    return await blenderMcp.AskAsync(
+                        normalizedPrompt,
+                        lastBlenderReferencePath,
+                        true
+                    );
 
                 case AssistantIntent.Unity:
                 case AssistantIntent.Plan:
@@ -167,10 +180,14 @@ namespace AI_Assistant.AI
             if (IsBlenderPrompt(normalizedPrompt))
             {
                 lastBlenderGoal = normalizedPrompt;
+                lastBlenderReferencePath = await GenerateVisualPreviewAsync(normalizedPrompt);
                 lastUnityV2Goal = "";
                 ReportActivity("[ROUTER] Blender MCP · emergency fallback");
-                await GenerateVisualPreviewAsync(normalizedPrompt);
-                return await blenderMcp.AskAsync(normalizedPrompt);
+                return await blenderMcp.AskAsync(
+                    normalizedPrompt,
+                    lastBlenderReferencePath,
+                    true
+                );
             }
 
             if (HasExplicitUnitySignal(normalizedPrompt) || agentV2.ShouldHandle(normalizedPrompt))
@@ -227,7 +244,7 @@ namespace AI_Assistant.AI
             // Blender stage so the user can see what the asset request was
             // interpreted as, but a Gemini/image failure must never block MCP
             // execution or make the app claim that Blender failed.
-            await GenerateVisualPreviewAsync(prompt);
+            string? referenceImagePath = await GenerateVisualPreviewAsync(prompt);
 
             const string generatedAssetName = "GeneratedAsset";
             string relativeAssetPath =
@@ -261,7 +278,9 @@ namespace AI_Assistant.AI
                 + "and do not open any GPU shader preview. Keep the asset at the world origin, use a clean root named "
                 + generatedAssetName
                 + ", and keep it suitable for real-time Unity use. Preserve the current .blend file if it already has a known path; "
-                + "do not invent a new .blend path. Export the complete created "
+                + "do not invent a new .blend path. Do not export during initial modeling. First create the complete asset "
+                + "and wait for the orchestrator's real viewport visual review. Export only after that review reports pass=true. "
+                + "Never claim success from object names or a text description alone. Export the complete created "
                 + "asset hierarchy as FBX using Forward -Z and Up Y to this exact absolute path: "
                 + absoluteAssetPath
                 + ". Create the parent directory if needed. Verify that the FBX exists, then report the exact export path. "
@@ -269,8 +288,13 @@ namespace AI_Assistant.AI
                 + prompt;
 
             lastBlenderGoal = blenderPrompt;
+            lastBlenderReferencePath = referenceImagePath;
             lastUnityV2Goal = "";
-            string blenderResult = await blenderMcp.AskAsync(blenderPrompt);
+            string blenderResult = await blenderMcp.AskAsync(
+                blenderPrompt,
+                referenceImagePath,
+                true
+            );
 
             bool exportChanged = HasNewExport(
                 absoluteAssetPath,
@@ -313,7 +337,7 @@ namespace AI_Assistant.AI
                 + await agentV2.HandleAsync(unityPrompt);
         }
 
-        private async Task GenerateVisualPreviewAsync(string prompt)
+        private async Task<string?> GenerateVisualPreviewAsync(string prompt)
         {
             string? previewPath = await visualPreview.GenerateAsync(
                 prompt,
@@ -323,6 +347,8 @@ namespace AI_Assistant.AI
             {
                 PreviewReady?.Invoke(previewPath);
             }
+
+            return previewPath;
         }
 
         private static bool HasNewExport(
@@ -378,6 +404,7 @@ namespace AI_Assistant.AI
             blenderMcp.Reset();
             lastUnityV2Goal = "";
             lastBlenderGoal = "";
+            lastBlenderReferencePath = null;
             pendingHighRiskPrompt = "";
         }
 
@@ -393,6 +420,7 @@ namespace AI_Assistant.AI
             lines.Add("Intent router: direct Groq GPT-OSS 120B");
             lines.Add("Blender model: " + (Environment.GetEnvironmentVariable("GROQ_BLENDER_MODEL") ?? "qwen/qwen3.6-27b"));
             lines.Add("Blender fallback model: " + (Environment.GetEnvironmentVariable("GROQ_BLENDER_FALLBACK_MODEL") ?? Environment.GetEnvironmentVariable("GROQ_MODEL") ?? "openai/gpt-oss-120b"));
+            lines.Add("Blender vision reviewer: " + (Environment.GetEnvironmentVariable("GROQ_BLENDER_VISION_MODEL") ?? "qwen/qwen3.6-27b"));
             lines.Add("Gemini: " + IsKeyConfigured("GEMINI_API_KEY"));
             lines.Add("Visual preview: " + (IsKeyConfigured("GEMINI_API_KEY") == "configured"
                 ? (Environment.GetEnvironmentVariable("AI_PREVIEW_ENABLED") == "0" ? "disabled" : "Gemini image")

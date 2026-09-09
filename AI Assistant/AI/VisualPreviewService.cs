@@ -50,6 +50,10 @@ namespace AI_Assistant.AI
             CancellationToken cancellationToken = default
         )
         {
+            // Never let a failed request accidentally reuse the previous
+            // asset's reference image for a new Blender task.
+            LastPreviewPath = null;
+
             if (string.Equals(Environment.GetEnvironmentVariable("AI_PREVIEW_ENABLED"), "0", StringComparison.OrdinalIgnoreCase))
             {
                 activity("[PREVIEW] disabled by AI_PREVIEW_ENABLED");

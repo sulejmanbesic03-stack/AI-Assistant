@@ -24,6 +24,8 @@ For Blender asset requests the desktop app can create an internal concept previe
 
 The preview is optional and best-effort: if `GEMINI_API_KEY` is missing, the image model is unavailable, or the request fails, the Blender and Unity stages continue normally. Set `AI_PREVIEW_ENABLED=0` to disable it. Override the image model with `GEMINI_IMAGE_MODEL`; the default is `gemini-3.1-flash-image`.
 
+For asset-generation requests that enter the Blender → Unity pipeline, the app also requires a visual QA pass before export. After a real Blender geometry mutation it calls the MCP `get_viewport_screenshot` tool, sends the actual viewport together with the internal reference to the vision-capable Groq model, and feeds the structured review back into Blender for repair. A missing screenshot tool, invalid image response, or failed review blocks export instead of accepting the model's textual success claim. The vision reviewer defaults to `qwen/qwen3.6-27b` and can be overridden with `GROQ_BLENDER_VISION_MODEL`. The separate GPT-OSS 120B fallback remains text-only and is not used to make visual pass/fail decisions.
+
 The model roles are intentionally separated:
 
 - Groq Qwen 3.6 27B: Blender MCP tool loop and multimodal-capable asset interpretation.

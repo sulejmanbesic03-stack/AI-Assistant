@@ -33,11 +33,13 @@ namespace AI_Assistant.AI
         private const string OfficialMcpSource =
             "git+https://projects.blender.org/lab/blender_mcp.git@4309a39646e644261624bfcd2bca669b343b7621#subdirectory=mcp";
 
-        private const int MaxToolCycles = 8;
+        private const int MaxToolCycles = 10;
         private const int RequestTimeoutSeconds = 120;
         private const int MaxToolResultChars = 4000;
         private const int DefaultGroqMaxCompletionTokens = 2200;
         private const int DefaultGroqFallbackMaxCompletionTokens = 2600;
+        private const string ViewportScreenshotToolName = "get_viewport_screenshot";
+        private const int MaxViewportReviews = 3;
 
         // The official server exposes useful inspection and documentation tools,
         // but sending every schema on every Groq turn needlessly consumes the
@@ -79,7 +81,11 @@ namespace AI_Assistant.AI
             this.activity = activity;
         }
 
-        public async Task<string> AskAsync(string prompt)
+        public async Task<string> AskAsync(
+            string prompt,
+            string? referenceImagePath = null,
+            bool requireViewportReview = false
+        )
         {
             await gate.WaitAsync(AgentCancellationHub.Token);
 
@@ -99,6 +105,13 @@ namespace AI_Assistant.AI
                     model = DefaultGroqModel;
                 }
 
+                bool hasReferenceImage = HasUsableImage(referenceImagePath);
+                bool visualReviewRequired = requireViewportReview || hasReferenceImage;
+                int viewportReviewCount = 0;
+                bool mutationSinceReview = false;
+                bool viewportReviewCompleted = false;
+                bool viewportReviewPassed = false;
+
                 List<object> messages = new List<object>
                 {
                     new
@@ -111,6 +124,11 @@ namespace AI_Assistant.AI
                             + "Make the smallest reliable change, save when the user asks, and report exactly what happened. "
                             + "Keep reasoning concise, emit only the required tool arguments, and keep the final confirmation short. "
                             + "For large Blender edits, split execute_blender_code into several short calls. "
+                            + "When viewport review is required, a separate vision reviewer compares the internal reference "
+                            + "when available, or the original request otherwise, with the real Blender viewport after geometry mutations. Use that review feedback to repair visible "
+                            + "mismatches before continuing. Never claim that "
+                            + "an asset is complete from text or object names alone, and never export before the visual "
+                            + "review passes. "
                             + "Every tool arguments value must be valid JSON with escaped newlines; never emit raw newlines "
                             + "inside a JSON string and never cut a code argument off mid-script."
                     },
@@ -145,6 +163,12 @@ namespace AI_Assistant.AI
 
                     if (calls.Count == 0)
                     {
+                        if (visualReviewRequired
+                            && (!viewportReviewCompleted || !viewportReviewPassed))
+                        {
+                            return "Blender agent nije završio obaveznu vizuelnu provjeru viewporta; export nije dozvoljen.";
+                        }
+
                         return string.IsNullOrWhiteSpace(content)
                             ? "Blender agent nije vratio tekstualni odgovor."
                             : content.Trim();
@@ -180,6 +204,21 @@ namespace AI_Assistant.AI
                         string arguments = NormalizeToolArguments(call.Function?.Arguments);
                         activity("[BLENDER MCP] " + toolName);
 
+                        if (visualReviewRequired
+                            && !viewportReviewPassed
+                            && ContainsExportOperation(toolName, arguments))
+                        {
+                            activity("[BLENDER REVIEW] export blocked until viewport passes");
+                            messages.Add(new
+                            {
+                                role = "tool",
+                                tool_call_id = call.Id,
+                                name = toolName,
+                                content = "{\"error\":\"Export is blocked until the real Blender viewport review returns pass=true. Finish modeling first; do not export in this call.\"}"
+                            });
+                            continue;
+                        }
+
                         string toolResult = await CallMcpToolAsync(toolName, arguments);
                         messages.Add(new
                         {
@@ -188,6 +227,32 @@ namespace AI_Assistant.AI
                             name = toolName,
                             content = Trim(toolResult, MaxToolResultChars)
                         });
+
+                        if (IsMutationTool(toolName))
+                        {
+                            mutationSinceReview = true;
+                            viewportReviewCompleted = false;
+                        }
+                    }
+
+                    if (visualReviewRequired
+                        && mutationSinceReview
+                        && viewportReviewCount < MaxViewportReviews)
+                    {
+                        ViewportReviewResult? review = await AttachViewportReviewAsync(
+                            messages,
+                            prompt,
+                            referenceImagePath,
+                            ++viewportReviewCount
+                        );
+                        mutationSinceReview = false;
+                        viewportReviewCompleted = review?.Succeeded == true;
+                        viewportReviewPassed = review?.Passed == true;
+
+                        if (review == null || !review.Succeeded)
+                        {
+                            return "Blender agent nije mogao dobiti stvarni viewport screenshot; export nije dozvoljen.";
+                        }
                     }
                 }
 
@@ -359,7 +424,397 @@ namespace AI_Assistant.AI
                 + " official tools, "
                 + modelTools.Count
                 + " sent to Groq"
+                + (tools.Any(tool => string.Equals(
+                        tool.Name,
+                        ViewportScreenshotToolName,
+                        StringComparison.Ordinal))
+                    ? " · viewport screenshot available"
+                    : " · viewport screenshot unavailable")
             );
+        }
+
+        private async Task<ViewportReviewResult?> AttachViewportReviewAsync(
+            List<object> messages,
+            string prompt,
+            string? referenceImagePath,
+            int reviewNumber
+        )
+        {
+            if (!tools.Any(tool => string.Equals(
+                    tool.Name,
+                    ViewportScreenshotToolName,
+                    StringComparison.Ordinal)))
+            {
+                activity("[BLENDER REVIEW] get_viewport_screenshot nije objavljen od MCP servera");
+                return null;
+            }
+
+            try
+            {
+                activity("[BLENDER REVIEW] capturing viewport · review " + reviewNumber);
+                string rawResult = await CallMcpToolAsync(
+                    ViewportScreenshotToolName,
+                    "{}"
+                );
+                McpImagePayload? image = FindMcpImage(rawResult);
+                if (image == null || string.IsNullOrWhiteSpace(image.Data))
+                {
+                    activity("[BLENDER REVIEW] MCP nije vratio image content");
+                    return null;
+                }
+
+                ViewportReviewResult review = await SendVisionReviewAsync(
+                    prompt,
+                    referenceImagePath,
+                    image,
+                    reviewNumber
+                );
+                messages.Add(new
+                {
+                    role = "user",
+                    content =
+                        "VISUAL REVIEW #"
+                        + reviewNumber
+                        + " from the real Blender viewport: "
+                        + review.Feedback
+                        + (review.Passed
+                            ? " The visual target passes; continue only with remaining required steps."
+                            : " The visual target does not pass. Repair the listed issues with execute_blender_code, then wait for another viewport review. Do not export yet.")
+                });
+                activity(
+                    "[BLENDER REVIEW] "
+                    + (review.Passed ? "passed" : "mismatch found")
+                    + " · vision feedback returned"
+                );
+                return review;
+            }
+            catch (Exception ex)
+            {
+                activity("[BLENDER REVIEW] screenshot failed · " + Trim(ex.Message, 500));
+                return null;
+            }
+        }
+
+        private static bool IsMutationTool(string toolName)
+        {
+            // The model-facing allow-list currently contains execute_blender_code
+            // plus read-only summaries. Keep this explicit so a future read tool
+            // cannot trigger unnecessary screenshots.
+            return string.Equals(
+                toolName,
+                "execute_blender_code",
+                StringComparison.Ordinal
+            );
+        }
+
+        private static bool ContainsExportOperation(string toolName, string arguments)
+        {
+            if (!string.Equals(toolName, "execute_blender_code", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            string code = (arguments ?? "").ToLowerInvariant();
+            string[] exportOperations =
+            {
+                "export_scene.",
+                "export_mesh.",
+                "wm.fbx_export",
+                "wm.obj_export",
+                "wm.ply_export",
+                "wm.stl_export",
+                "wm.usd_export",
+                "wm.alembic_export",
+                "wm.collada_export"
+            };
+            return exportOperations.Any(operation =>
+                code.Contains(operation, StringComparison.Ordinal));
+        }
+
+        private static bool HasUsableImage(string? path)
+        {
+            try
+            {
+                return !string.IsNullOrWhiteSpace(path)
+                    && File.Exists(path)
+                    && new FileInfo(path).Length >= 64;
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+
+        private async Task<ViewportReviewResult> SendVisionReviewAsync(
+            string prompt,
+            string? referenceImagePath,
+            McpImagePayload viewportImage,
+            int reviewNumber
+        )
+        {
+            string visionModel = Environment.GetEnvironmentVariable(
+                "GROQ_BLENDER_VISION_MODEL"
+            ) ?? "";
+            if (string.IsNullOrWhiteSpace(visionModel))
+            {
+                visionModel = DefaultGroqModel;
+            }
+
+            bool hasReference = TryReadImageBase64(referenceImagePath, out string? referenceBase64);
+            string comparisonInstruction = hasReference
+                ? "Compare the design reference image (first image) with the real current Blender viewport (last image)."
+                : "There is no design reference image; judge the real current Blender viewport directly against the original request.";
+
+            List<object> imageParts = new List<object>
+            {
+                new
+                {
+                    type = "text",
+                    text =
+                        "You are the strict visual QA reviewer for a Blender asset. "
+                        + comparisonInstruction
+                        + " Original request: "
+                        + prompt
+                        + ". Check whether the requested subject is actually present, whether all essential parts "
+                        + "exist, and whether the silhouette and proportions are usable as a game asset. Ignore UI, "
+                        + "grid and camera framing. Return ONLY a compact JSON object with this exact shape: "
+                        + "{\"pass\":true_or_false,\"issues\":[\"short issue\"],\"repair\":\"short concrete repair instruction\"}. "
+                        + "Set pass=false if the object is merely a placeholder, missing a major part, or visibly "
+                        + "does not match the requested subject. This is visual review #"
+                        + reviewNumber
+                        + "."
+                }
+            };
+
+            if (hasReference)
+            {
+                imageParts.Add(new
+                {
+                    type = "image_url",
+                    image_url = new
+                    {
+                        url = "data:image/png;base64," + referenceBase64
+                    }
+                });
+            }
+
+            imageParts.Add(new
+            {
+                type = "image_url",
+                image_url = new
+                {
+                    url = "data:"
+                        + (string.IsNullOrWhiteSpace(viewportImage.MimeType)
+                            ? "image/png"
+                            : viewportImage.MimeType)
+                        + ";base64,"
+                        + viewportImage.Data
+                }
+            });
+
+            Dictionary<string, object?> body = new Dictionary<string, object?>
+            {
+                ["model"] = visionModel,
+                ["messages"] = new object[]
+                {
+                    new
+                    {
+                        role = "system",
+                        content = comparisonInstruction + " Never infer missing geometry from the text report."
+                    },
+                    new
+                    {
+                        role = "user",
+                        content = imageParts.ToArray()
+                    }
+                },
+                ["temperature"] = 0.0,
+                ["max_completion_tokens"] = 512
+            };
+
+            using HttpRequestMessage request = new HttpRequestMessage(
+                HttpMethod.Post,
+                GroqEndpoint
+            );
+            request.Headers.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue(
+                    "Bearer",
+                    Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? ""
+                );
+            request.Content = new StringContent(
+                JsonSerializer.Serialize(body),
+                Encoding.UTF8,
+                "application/json"
+            );
+
+            activity("[BLENDER REVIEW] Groq vision · " + visionModel);
+            using HttpResponseMessage response = await httpClient.SendAsync(
+                request,
+                AgentCancellationHub.Token
+            );
+            string responseText = await response.Content.ReadAsStringAsync(
+                AgentCancellationHub.Token
+            );
+            if (!response.IsSuccessStatusCode)
+            {
+                throw new InvalidOperationException(
+                    "Vision provider HTTP "
+                    + (int)response.StatusCode
+                    + ": "
+                    + Trim(responseText, 1200)
+                );
+            }
+
+            using JsonDocument document = JsonDocument.Parse(responseText);
+            string feedback = ReadTextContent(document.RootElement);
+            bool passed = TryReadReviewPass(feedback, out bool parsedPass)
+                && parsedPass;
+            if (!TryReadReviewPass(feedback, out _))
+            {
+                throw new InvalidOperationException(
+                    "Vision provider nije vratio validan review JSON: "
+                    + Trim(feedback, 800)
+                );
+            }
+
+            return new ViewportReviewResult(true, passed, Trim(feedback, 1800));
+        }
+
+        private static bool TryReadImageBase64(string? path, out string? base64)
+        {
+            base64 = null;
+            if (!HasUsableImage(path))
+            {
+                return false;
+            }
+
+            try
+            {
+                base64 = Convert.ToBase64String(File.ReadAllBytes(path!));
+                return !string.IsNullOrWhiteSpace(base64);
+            }
+            catch (IOException)
+            {
+                return false;
+            }
+            catch (UnauthorizedAccessException)
+            {
+                return false;
+            }
+        }
+
+        private static string ReadTextContent(JsonElement root)
+        {
+            if (root.TryGetProperty("choices", out JsonElement choices)
+                && choices.ValueKind == JsonValueKind.Array
+                && choices.GetArrayLength() > 0
+                && choices[0].TryGetProperty("message", out JsonElement message)
+                && message.TryGetProperty("content", out JsonElement content)
+                && content.ValueKind == JsonValueKind.String)
+            {
+                return content.GetString() ?? "";
+            }
+
+            return "";
+        }
+
+        private static bool TryReadReviewPass(string text, out bool pass)
+        {
+            pass = false;
+            int start = text.IndexOf('{');
+            int end = text.LastIndexOf('}');
+            if (start < 0 || end <= start)
+            {
+                return false;
+            }
+
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(
+                    text.Substring(start, end - start + 1)
+                );
+                if (!document.RootElement.TryGetProperty("pass", out JsonElement value)
+                    || (value.ValueKind != JsonValueKind.True
+                        && value.ValueKind != JsonValueKind.False))
+                {
+                    return false;
+                }
+
+                pass = value.GetBoolean();
+                return true;
+            }
+            catch (JsonException)
+            {
+                return false;
+            }
+        }
+
+        private static McpImagePayload? FindMcpImage(string rawResult)
+        {
+            try
+            {
+                using JsonDocument document = JsonDocument.Parse(rawResult);
+                return FindMcpImage(document.RootElement, 0);
+            }
+            catch (JsonException)
+            {
+                return null;
+            }
+        }
+
+        private static McpImagePayload? FindMcpImage(
+            JsonElement element,
+            int depth
+        )
+        {
+            if (depth > 10)
+            {
+                return null;
+            }
+
+            if (element.ValueKind == JsonValueKind.Object)
+            {
+                bool isImage = element.TryGetProperty("type", out JsonElement type)
+                    && type.ValueKind == JsonValueKind.String
+                    && string.Equals(type.GetString(), "image", StringComparison.OrdinalIgnoreCase);
+                if (isImage
+                    && element.TryGetProperty("data", out JsonElement data)
+                    && data.ValueKind == JsonValueKind.String
+                    && !string.IsNullOrWhiteSpace(data.GetString()))
+                {
+                    string mimeType = element.TryGetProperty("mimeType", out JsonElement mime)
+                        && mime.ValueKind == JsonValueKind.String
+                        ? mime.GetString() ?? "image/png"
+                        : "image/png";
+                    return new McpImagePayload(data.GetString() ?? "", mimeType);
+                }
+
+                foreach (JsonProperty property in element.EnumerateObject())
+                {
+                    McpImagePayload? nested = FindMcpImage(property.Value, depth + 1);
+                    if (nested != null)
+                    {
+                        return nested;
+                    }
+                }
+            }
+            else if (element.ValueKind == JsonValueKind.Array)
+            {
+                foreach (JsonElement child in element.EnumerateArray())
+                {
+                    McpImagePayload? nested = FindMcpImage(child, depth + 1);
+                    if (nested != null)
+                    {
+                        return nested;
+                    }
+                }
+            }
+
+            return null;
         }
 
         private async Task<string> CallMcpToolAsync(string name, string arguments)
@@ -958,6 +1413,32 @@ namespace AI_Assistant.AI
 
             [JsonPropertyName("inputSchema")]
             public JsonElement InputSchema { get; set; }
+        }
+
+        private sealed class McpImagePayload
+        {
+            public string Data { get; }
+            public string MimeType { get; }
+
+            public McpImagePayload(string data, string mimeType)
+            {
+                Data = data;
+                MimeType = mimeType;
+            }
+        }
+
+        private sealed class ViewportReviewResult
+        {
+            public bool Succeeded { get; }
+            public bool Passed { get; }
+            public string Feedback { get; }
+
+            public ViewportReviewResult(bool succeeded, bool passed, string feedback)
+            {
+                Succeeded = succeeded;
+                Passed = passed;
+                Feedback = feedback;
+            }
         }
 
         private sealed class GroqToolCall
