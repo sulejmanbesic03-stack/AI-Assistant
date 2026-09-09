@@ -24,7 +24,7 @@ For Blender asset requests the desktop app can create an internal concept previe
 
 The preview is optional and best-effort: if `GEMINI_API_KEY` is missing, the image model is unavailable, or the request fails, the Blender and Unity stages continue normally. Set `AI_PREVIEW_ENABLED=0` to disable it. Override the image model with `GEMINI_IMAGE_MODEL`; the default is `gemini-3.1-flash-image`.
 
-For asset-generation requests that enter the Blender → Unity pipeline, the app also requires a visual QA pass before export. After a real Blender geometry mutation it calls the MCP `get_viewport_screenshot` tool, sends the actual viewport together with the internal reference to the vision-capable Groq model, and feeds the structured review back into Blender for repair. A missing screenshot tool, invalid image response, or failed review blocks export instead of accepting the model's textual success claim. The vision reviewer defaults to `qwen/qwen3.6-27b` and can be overridden with `GROQ_BLENDER_VISION_MODEL`. The separate GPT-OSS 120B fallback remains text-only and is not used to make visual pass/fail decisions.
+For asset-generation requests that enter the Blender → Unity pipeline, the app also requires a visual QA pass before export. After a real Blender geometry mutation it calls the MCP `get_viewport_screenshot` tool, sends the actual viewport together with the internal reference to a vision-capable provider, and feeds the structured review back into Blender for repair. A missing screenshot tool, invalid image response, or failed review blocks export instead of accepting the model’s textual success claim. The reviewer defaults to `qwen/qwen3.6-27b`, can be overridden with `GROQ_BLENDER_VISION_MODEL`, and falls back to `MiniMax-M3` when `MINIMAX_API_KEY` is configured. The separate GPT-OSS 120B fallback remains text-only and is not used to make visual pass/fail decisions.
 
 The model roles are intentionally separated:
 
@@ -48,17 +48,33 @@ git+https://projects.blender.org/lab/blender_mcp.git@4309a39646e644261624bfcd2bc
 
 The server revision is pinned so a future upstream change cannot silently break a production build. Upgrade it deliberately after testing the matching Blender add-on. AI Assistant also constrains the temporary `uvx` environment to `mcp>=1.2,<2`, matching the official server source revision's `mcp.server.fastmcp` import.
 
-The Blender MCP provider uses direct Groq only:
+The Blender MCP provider uses a controlled fallback chain:
 
 1. `qwen/qwen3.6-27b` primary
 2. `openai/gpt-oss-120b` fallback
+3. MiniMax direct API when `MINIMAX_API_KEY` is configured
+4. InclusionAI through a configured OpenAI-compatible endpoint (`INCLUSIONAI_API_KEY` + `INCLUSIONAI_BASE_URL`)
 
-OpenRouter is not in the Blender MCP path. To override the models:
+OpenRouter is not in the Blender MCP path. Each provider gets at most two attempts for transient timeout/5xx failures; a 429 is skipped immediately and the next configured provider is tried. The fallback chain is per model request, so a Groq timeout does not kill the complete Blender task.
+
+To override the models and provider timeouts:
 
 ```powershell
 [Environment]::SetEnvironmentVariable("GROQ_BLENDER_MODEL","qwen/qwen3.6-27b","User")
 [Environment]::SetEnvironmentVariable("GROQ_BLENDER_FALLBACK_MODEL","openai/gpt-oss-120b","User")
 [Environment]::SetEnvironmentVariable("GROQ_ROUTER_MODEL","openai/gpt-oss-120b","User")
+[Environment]::SetEnvironmentVariable("MINIMAX_API_KEY","your-key","User")
+[Environment]::SetEnvironmentVariable("MINIMAX_MODEL","MiniMax-M2.7","User")
+[Environment]::SetEnvironmentVariable("MINIMAX_VISION_MODEL","MiniMax-M3","User")
+[Environment]::SetEnvironmentVariable("INCLUSIONAI_API_KEY","your-key","User")
+[Environment]::SetEnvironmentVariable("INCLUSIONAI_BASE_URL","https://your-inclusionai-endpoint/v1","User")
+[Environment]::SetEnvironmentVariable("INCLUSIONAI_MODEL","inclusionai/ling-3.0-flash","User")
+[Environment]::SetEnvironmentVariable("INCLUSIONAI_VISION_MODEL","your-vision-model-id","User")
+[Environment]::SetEnvironmentVariable("GROQ_BLENDER_REQUEST_TIMEOUT_SECONDS","180","User")
+[Environment]::SetEnvironmentVariable("BLENDER_MCP_REQUEST_TIMEOUT_SECONDS","240","User")
+[Environment]::SetEnvironmentVariable("GROQ_BLENDER_VISION_TIMEOUT_SECONDS","90","User")
+[Environment]::SetEnvironmentVariable("BLENDER_VISION_FALLBACK_TIMEOUT_SECONDS","90","User")
+[Environment]::SetEnvironmentVariable("GROQ_ROUTER_TIMEOUT_SECONDS","45","User")
 ```
 
 If `uvx` is not on PATH, set its full executable path:
@@ -70,11 +86,11 @@ If `uvx` is not on PATH, set its full executable path:
 
 ## General provider routing
 
-Unity Agent V2 keeps its own provider routing and compatibility behavior. The Blender MCP path above is intentionally isolated so an OpenRouter rate limit or malformed OpenRouter tool history cannot corrupt a Blender MCP run. Model IDs can be overridden with environment variables.
+Unity Agent V2 keeps its own provider routing and compatibility behavior. The Blender MCP path above is intentionally isolated so an OpenRouter rate limit or malformed OpenRouter tool history cannot corrupt a Blender MCP run. The natural-language intent router uses the same configured Groq → MiniMax → InclusionAI order, so a simple prompt can still reach Blender when Groq is unavailable. The viewport reviewer uses Groq first and MiniMax-M3 when MiniMax is configured; M2.x text models are not used for images. Model IDs can be overridden with environment variables.
 
 ## Required environment keys
 
-For Blender MCP, `GROQ_API_KEY` is required. Unity Agent V2 may use the other configured providers for its separate compatibility path:
+For Blender MCP, configure at least one provider. `GROQ_API_KEY` is the primary path; MiniMax can run without Groq, and InclusionAI requires its key plus an OpenAI-compatible base URL. Unity Agent V2 keeps its separate compatibility path:
 
 ```powershell
 setx GEMINI_API_KEY "your-key"

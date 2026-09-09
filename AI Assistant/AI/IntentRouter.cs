@@ -32,11 +32,12 @@ namespace AI_Assistant.AI
             "https://api.groq.com/openai/v1/chat/completions";
 
         private const string DefaultModel = "openai/gpt-oss-120b";
-        private const int TimeoutSeconds = 20;
+        private const int DefaultTimeoutSeconds = 45;
+        private const int MaxProviderAttempts = 2;
 
         private readonly HttpClient client = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(TimeoutSeconds)
+            Timeout = System.Threading.Timeout.InfiniteTimeSpan
         };
 
         private readonly Action<string> activity;
@@ -51,24 +52,83 @@ namespace AI_Assistant.AI
             CancellationToken cancellationToken = default
         )
         {
-            string? apiKey = Environment.GetEnvironmentVariable("GROQ_API_KEY");
-            if (string.IsNullOrWhiteSpace(apiKey))
+            List<RouterProvider> providers = BuildProviders();
+            if (providers.Count == 0)
             {
                 return new IntentResult
                 {
                     Intent = AssistantIntent.Unknown,
-                    Reason = "GROQ_API_KEY nije konfigurisan.",
+                    Reason = "Nijedan intent-router provider nije konfigurisan.",
                     UsedModel = false
                 };
             }
 
-            string model = Environment.GetEnvironmentVariable("GROQ_ROUTER_MODEL")
-                ?? Environment.GetEnvironmentVariable("GROQ_MODEL")
-                ?? DefaultModel;
+            Exception? lastFailure = null;
+            foreach (RouterProvider provider in providers)
+            {
+                for (int attempt = 1; attempt <= MaxProviderAttempts; attempt++)
+                {
+                    try
+                    {
+                        activity("[ROUTER MODEL] trying " + provider.Name + " · " + provider.Model);
+                        string responseText = await SendProviderRequestAsync(
+                            provider,
+                            prompt,
+                            cancellationToken
+                        );
+                        string? content = ReadContent(responseText);
+                        if (string.IsNullOrWhiteSpace(content))
+                        {
+                            throw new InvalidOperationException("Router nije vratio sadržaj.");
+                        }
 
+                        return ParseResult(content);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (Exception ex)
+                    {
+                        lastFailure = ex;
+                        activity(
+                            "[ROUTER MODEL] "
+                            + provider.Name
+                            + " failed · "
+                            + Trim(ex.Message, 500)
+                        );
+                        if (IsTransientFailure(ex) && attempt < MaxProviderAttempts)
+                        {
+                            await Task.Delay(
+                                TimeSpan.FromSeconds(Math.Min(4, attempt * 2)),
+                                cancellationToken
+                            );
+                            continue;
+                        }
+
+                        break;
+                    }
+                }
+            }
+
+            return new IntentResult
+            {
+                Intent = AssistantIntent.Unknown,
+                Reason = "Intent router fallback provideri su nedostupni: "
+                    + Trim(lastFailure?.Message ?? "nepoznata greška", 800),
+                UsedModel = true
+            };
+        }
+
+        private async Task<string> SendProviderRequestAsync(
+            RouterProvider provider,
+            string prompt,
+            CancellationToken cancellationToken
+        )
+        {
             Dictionary<string, object?> body = new Dictionary<string, object?>
             {
-                ["model"] = model,
+                ["model"] = provider.Model,
                 ["messages"] = new object[]
                 {
                     new
@@ -92,69 +152,115 @@ namespace AI_Assistant.AI
                     }
                 },
                 ["temperature"] = 0,
-                ["max_completion_tokens"] = 120,
-                ["reasoning_effort"] = "low",
-                ["response_format"] = new { type = "json_object" }
+                ["max_completion_tokens"] = 160
             };
-
-            try
+            if (provider.IsGroq)
             {
-                activity("[ROUTER MODEL] classifying task intent");
-
-                using HttpRequestMessage request = new HttpRequestMessage(
-                    HttpMethod.Post,
-                    Endpoint
-                );
-                request.Headers.Authorization =
-                    new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
-                request.Content = new StringContent(
-                    JsonSerializer.Serialize(body),
-                    Encoding.UTF8,
-                    "application/json"
-                );
-
-                using HttpResponseMessage response = await client.SendAsync(
-                    request,
-                    cancellationToken
-                );
-                string responseText = await response.Content.ReadAsStringAsync(cancellationToken);
-
-                if (!response.IsSuccessStatusCode)
-                {
-                    return new IntentResult
-                    {
-                        Intent = AssistantIntent.Unknown,
-                        Reason = "Router HTTP " + (int)response.StatusCode + ": " + Trim(responseText, 800),
-                        UsedModel = true
-                    };
-                }
-
-                string? content = ReadContent(responseText);
-                if (string.IsNullOrWhiteSpace(content))
-                {
-                    return new IntentResult
-                    {
-                        Intent = AssistantIntent.Unknown,
-                        Reason = "Router nije vratio sadržaj.",
-                        UsedModel = true
-                    };
-                }
-
-                return ParseResult(content);
+                body["reasoning_effort"] = "low";
+                body["response_format"] = new { type = "json_object" };
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+
+            using HttpRequestMessage request = new HttpRequestMessage(
+                HttpMethod.Post,
+                provider.Endpoint
+            );
+            request.Headers.Authorization =
+                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", provider.ApiKey);
+            request.Content = new StringContent(
+                JsonSerializer.Serialize(body),
+                Encoding.UTF8,
+                "application/json"
+            );
+
+            using CancellationTokenSource timeout = new CancellationTokenSource(
+                TimeSpan.FromSeconds(ResolveTimeoutSeconds(provider.IsGroq))
+            );
+            using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+                timeout.Token,
+                cancellationToken
+            );
+            using HttpResponseMessage response = await client.SendAsync(
+                request,
+                linked.Token
+            );
+            string responseText = await response.Content.ReadAsStringAsync(linked.Token);
+            if (!response.IsSuccessStatusCode)
             {
-                throw;
+                throw new InvalidOperationException(
+                    "Router HTTP " + (int)response.StatusCode + ": " + Trim(responseText, 800)
+                );
             }
-            catch (Exception ex)
+
+            return responseText;
+        }
+
+        private static List<RouterProvider> BuildProviders()
+        {
+            List<RouterProvider> providers = new List<RouterProvider>();
+            string? groqKey = Environment.GetEnvironmentVariable("GROQ_API_KEY");
+            if (!string.IsNullOrWhiteSpace(groqKey))
             {
-                return new IntentResult
-                {
-                    Intent = AssistantIntent.Unknown,
-                    Reason = ex.GetType().Name + ": " + ex.Message,
-                    UsedModel = true
-                };
+                providers.Add(new RouterProvider(
+                    "Groq",
+                    Endpoint,
+                    groqKey,
+                    Environment.GetEnvironmentVariable("GROQ_ROUTER_MODEL")
+                        ?? Environment.GetEnvironmentVariable("GROQ_MODEL")
+                        ?? DefaultModel,
+                    true
+                ));
             }
+
+            string? minimaxKey = Environment.GetEnvironmentVariable("MINIMAX_API_KEY");
+            if (!string.IsNullOrWhiteSpace(minimaxKey))
+            {
+                providers.Add(new RouterProvider(
+                    "MiniMax",
+                    ToCompletionEndpoint(Environment.GetEnvironmentVariable("MINIMAX_BASE_URL")
+                        ?? "https://api.minimax.io/v1"),
+                    minimaxKey,
+                    Environment.GetEnvironmentVariable("MINIMAX_MODEL") ?? "MiniMax-M2.7",
+                    false
+                ));
+            }
+
+            string? inclusionKey = Environment.GetEnvironmentVariable("INCLUSIONAI_API_KEY");
+            string? inclusionBase = Environment.GetEnvironmentVariable("INCLUSIONAI_BASE_URL");
+            if (!string.IsNullOrWhiteSpace(inclusionKey)
+                && !string.IsNullOrWhiteSpace(inclusionBase))
+            {
+                providers.Add(new RouterProvider(
+                    "InclusionAI",
+                    ToCompletionEndpoint(inclusionBase),
+                    inclusionKey,
+                    Environment.GetEnvironmentVariable("INCLUSIONAI_MODEL")
+                        ?? "inclusionai/ling-3.0-flash",
+                    false
+                ));
+            }
+
+            return providers;
+        }
+
+        private static string ToCompletionEndpoint(string baseUrl)
+        {
+            string value = baseUrl.Trim().TrimEnd('/');
+            return value.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase)
+                ? value
+                : value + "/chat/completions";
+        }
+
+        private static bool IsTransientFailure(Exception failure)
+        {
+            string message = failure.ToString();
+            return failure is HttpRequestException
+                || message.Contains("timeout", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("abort", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("Router HTTP 408", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("Router HTTP 500", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("Router HTTP 502", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("Router HTTP 503", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("Router HTTP 504", StringComparison.OrdinalIgnoreCase);
         }
 
         private static IntentResult ParseResult(string content)
@@ -198,13 +304,22 @@ namespace AI_Assistant.AI
             }
             catch (Exception ex)
             {
-                return new IntentResult
-                {
-                    Intent = AssistantIntent.Unknown,
-                    Reason = "Router JSON nije validan: " + ex.Message,
-                    UsedModel = true
-                };
+                throw new InvalidOperationException(
+                    "Router JSON nije validan: " + ex.Message,
+                    ex
+                );
             }
+        }
+
+        private static int ResolveTimeoutSeconds(bool isGroq)
+        {
+            string variable = isGroq
+                ? "GROQ_ROUTER_TIMEOUT_SECONDS"
+                : "BLENDER_FALLBACK_REQUEST_TIMEOUT_SECONDS";
+            string? configured = Environment.GetEnvironmentVariable(variable);
+            return int.TryParse(configured, out int value)
+                ? Math.Clamp(value, 15, 180)
+                : DefaultTimeoutSeconds;
         }
 
         private static string? ReadContent(string responseText)
@@ -262,6 +377,30 @@ namespace AI_Assistant.AI
         public void Dispose()
         {
             client.Dispose();
+        }
+
+        private sealed class RouterProvider
+        {
+            public string Name { get; }
+            public string Endpoint { get; }
+            public string ApiKey { get; }
+            public string Model { get; }
+            public bool IsGroq { get; }
+
+            public RouterProvider(
+                string name,
+                string endpoint,
+                string apiKey,
+                string model,
+                bool isGroq
+            )
+            {
+                Name = name;
+                Endpoint = endpoint;
+                ApiKey = apiKey;
+                Model = model;
+                IsGroq = isGroq;
+            }
         }
     }
 }

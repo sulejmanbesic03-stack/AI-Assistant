@@ -3,6 +3,7 @@ using System.ComponentModel;
 using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
+using System.Net;
 using System.Linq;
 using System.Net.Http;
 using System.Text;
@@ -17,7 +18,7 @@ namespace AI_Assistant.AI
     /// <summary>
     /// Small MCP client for the official Blender Lab server.
     /// The MCP server is launched through uvx and talks to Blender's addon on localhost:9876.
-    /// Groq is used for Blender MCP with a direct Groq model fallback.
+    /// Blender MCP uses Groq first, then configured direct provider fallbacks.
     /// </summary>
     public sealed class BlenderMcpAgent : IDisposable
     {
@@ -34,7 +35,10 @@ namespace AI_Assistant.AI
             "git+https://projects.blender.org/lab/blender_mcp.git@4309a39646e644261624bfcd2bca669b343b7621#subdirectory=mcp";
 
         private const int MaxToolCycles = 10;
-        private const int RequestTimeoutSeconds = 120;
+        private const int DefaultProviderRequestTimeoutSeconds = 180;
+        private const int DefaultMcpRequestTimeoutSeconds = 240;
+        private const int DefaultVisionRequestTimeoutSeconds = 90;
+        private const int MaxProviderAttempts = 2;
         private const int MaxToolResultChars = 4000;
         private const int DefaultGroqMaxCompletionTokens = 2200;
         private const int DefaultGroqFallbackMaxCompletionTokens = 2600;
@@ -62,7 +66,7 @@ namespace AI_Assistant.AI
 
         private readonly HttpClient httpClient = new HttpClient
         {
-            Timeout = TimeSpan.FromSeconds(RequestTimeoutSeconds)
+            Timeout = System.Threading.Timeout.InfiniteTimeSpan
         };
 
         private readonly Action<string> activity;
@@ -94,9 +98,17 @@ namespace AI_Assistant.AI
                 await EnsureConnectedAsync();
 
                 string? apiKey = Environment.GetEnvironmentVariable("GROQ_API_KEY");
-                if (string.IsNullOrWhiteSpace(apiKey))
+                bool hasMiniMax = !string.IsNullOrWhiteSpace(
+                    Environment.GetEnvironmentVariable("MINIMAX_API_KEY")
+                );
+                bool hasInclusionAi = !string.IsNullOrWhiteSpace(
+                    Environment.GetEnvironmentVariable("INCLUSIONAI_API_KEY")
+                ) && !string.IsNullOrWhiteSpace(
+                    Environment.GetEnvironmentVariable("INCLUSIONAI_BASE_URL")
+                );
+                if (string.IsNullOrWhiteSpace(apiKey) && !hasMiniMax && !hasInclusionAi)
                 {
-                    return "GROQ_API_KEY nije pronađen.";
+                    return "Nijedan Blender LLM provider nije konfigurisan. Postavi GROQ_API_KEY, MINIMAX_API_KEY ili INCLUSIONAI_API_KEY + INCLUSIONAI_BASE_URL.";
                 }
 
                 string model = Environment.GetEnvironmentVariable("GROQ_BLENDER_MODEL") ?? "";
@@ -618,7 +630,6 @@ namespace AI_Assistant.AI
 
             Dictionary<string, object?> body = new Dictionary<string, object?>
             {
-                ["model"] = visionModel,
                 ["messages"] = new object[]
                 {
                     new
@@ -636,52 +647,133 @@ namespace AI_Assistant.AI
                 ["max_completion_tokens"] = 512
             };
 
-            using HttpRequestMessage request = new HttpRequestMessage(
-                HttpMethod.Post,
-                GroqEndpoint
-            );
-            request.Headers.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue(
-                    "Bearer",
-                    Environment.GetEnvironmentVariable("GROQ_API_KEY") ?? ""
-                );
-            request.Content = new StringContent(
-                JsonSerializer.Serialize(body),
-                Encoding.UTF8,
-                "application/json"
-            );
-
-            activity("[BLENDER REVIEW] Groq vision · " + visionModel);
-            using HttpResponseMessage response = await httpClient.SendAsync(
-                request,
-                AgentCancellationHub.Token
-            );
-            string responseText = await response.Content.ReadAsStringAsync(
-                AgentCancellationHub.Token
-            );
-            if (!response.IsSuccessStatusCode)
+            List<CompletionProvider> providers = BuildVisionProviders(visionModel);
+            if (providers.Count == 0)
             {
                 throw new InvalidOperationException(
-                    "Vision provider HTTP "
-                    + (int)response.StatusCode
-                    + ": "
-                    + Trim(responseText, 1200)
+                    "Nijedan vision provider nije konfigurisan. Za Groq postavi GROQ_API_KEY; za MiniMax postavi MINIMAX_API_KEY."
                 );
             }
 
-            using JsonDocument document = JsonDocument.Parse(responseText);
-            string feedback = ReadTextContent(document.RootElement);
-            bool passed = TryReadReviewPass(feedback, out bool parsedPass)
-                && parsedPass;
-            if (!TryReadReviewPass(feedback, out _))
+            Exception? lastFailure = null;
+            foreach (CompletionProvider provider in providers)
             {
-                throw new InvalidOperationException(
-                    "Vision provider nije vratio validan review JSON: "
-                    + Trim(feedback, 800)
-                );
+                for (int attempt = 1; attempt <= MaxProviderAttempts; attempt++)
+                {
+                    try
+                    {
+                        body["model"] = provider.Model;
+                        using HttpRequestMessage request = new HttpRequestMessage(
+                            HttpMethod.Post,
+                            provider.Endpoint
+                        );
+                        request.Headers.Authorization =
+                            new System.Net.Http.Headers.AuthenticationHeaderValue(
+                                "Bearer",
+                                provider.ApiKey
+                            );
+                        request.Content = new StringContent(
+                            JsonSerializer.Serialize(body),
+                            Encoding.UTF8,
+                            "application/json"
+                        );
+
+                        activity(
+                            "[BLENDER REVIEW] "
+                            + provider.Name
+                            + " vision · "
+                            + provider.Model
+                        );
+                        using CancellationTokenSource visionTimeout = new CancellationTokenSource(
+                            TimeSpan.FromSeconds(ResolveTimeoutSeconds(
+                                provider.IsGroq
+                                    ? "GROQ_BLENDER_VISION_TIMEOUT_SECONDS"
+                                    : "BLENDER_VISION_FALLBACK_TIMEOUT_SECONDS",
+                                DefaultVisionRequestTimeoutSeconds
+                            ))
+                        );
+                        using CancellationTokenSource visionLinked = CancellationTokenSource.CreateLinkedTokenSource(
+                            visionTimeout.Token,
+                            AgentCancellationHub.Token
+                        );
+                        using HttpResponseMessage response = await httpClient.SendAsync(
+                            request,
+                            visionLinked.Token
+                        );
+                        string responseText = await response.Content.ReadAsStringAsync(
+                            visionLinked.Token
+                        );
+                        if (!response.IsSuccessStatusCode)
+                        {
+                            string message =
+                                "Vision provider HTTP "
+                                + (int)response.StatusCode
+                                + ": "
+                                + Trim(responseText, 1200);
+                            if (IsTransientStatus(response.StatusCode)
+                                && attempt < MaxProviderAttempts)
+                            {
+                                lastFailure = new InvalidOperationException(message);
+                                await DelayProviderRetryAsync(provider.Name + " vision", attempt);
+                                continue;
+                            }
+
+                            throw new InvalidOperationException(message);
+                        }
+
+                        using JsonDocument document = JsonDocument.Parse(responseText);
+                        string feedback = ReadTextContent(document.RootElement);
+                        if (!TryReadReviewPass(feedback, out bool parsedPass))
+                        {
+                            throw new InvalidOperationException(
+                                "Vision provider nije vratio validan review JSON: "
+                                + Trim(feedback, 800)
+                            );
+                        }
+
+                        return new ViewportReviewResult(
+                            true,
+                            parsedPass,
+                            Trim(feedback, 1800)
+                        );
+                    }
+                    catch (OperationCanceledException) when (AgentCancellationHub.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (OperationCanceledException ex)
+                    {
+                        lastFailure = new InvalidOperationException(
+                            provider.Name + " vision timeout/abort: " + ex.Message,
+                            ex
+                        );
+                        if (attempt < MaxProviderAttempts)
+                        {
+                            await DelayProviderRetryAsync(provider.Name + " vision", attempt);
+                            continue;
+                        }
+
+                        break;
+                    }
+                    catch (Exception ex)
+                    {
+                        lastFailure = ex;
+                        activity(
+                            "[BLENDER REVIEW] "
+                            + provider.Name
+                            + " failed · "
+                            + Trim(ex.Message, 500)
+                        );
+                        break;
+                    }
+                }
             }
 
-            return new ViewportReviewResult(true, passed, Trim(feedback, 1800));
+            throw new InvalidOperationException(
+                "Svi Blender vision fallback provideri su nedostupni. Posljednja greška: "
+                + Trim(lastFailure?.Message ?? "nepoznata greška", 1000),
+                lastFailure
+            );
         }
 
         private static bool TryReadImageBase64(string? path, out string? base64)
@@ -837,21 +929,61 @@ namespace AI_Assistant.AI
             List<object> messages
         )
         {
-            Exception? groqError = null;
-
-            if (!string.IsNullOrWhiteSpace(groqApiKey))
+            List<CompletionProvider> providers = BuildCompletionProviders(
+                groqApiKey,
+                groqModel
+            );
+            if (providers.Count == 0)
             {
+                throw new InvalidOperationException(
+                    "Nijedan Blender LLM provider nije konfigurisan."
+                );
+            }
+
+            Exception? lastFailure = null;
+            List<object> providerMessages = messages;
+            bool skipSameGroqFallback = false;
+            foreach (CompletionProvider provider in providers)
+            {
+                if (skipSameGroqFallback
+                    && string.Equals(provider.Name, "Groq direct fallback", StringComparison.Ordinal))
+                {
+                    activity(
+                        "[BLENDER PROVIDER] skipping Groq direct fallback after Groq transport/rate-limit failure"
+                    );
+                    continue;
+                }
+
                 try
                 {
-                    activity("[BLENDER PROVIDER] trying Groq · " + groqModel);
+                    activity(
+                        "[BLENDER PROVIDER] trying "
+                        + provider.Name
+                        + " · "
+                        + provider.Model
+                    );
                     return await SendCompletionAsync(
-                        GroqEndpoint,
-                        groqApiKey ?? "",
-                        groqModel,
-                        messages,
+                        provider,
+                        providerMessages,
                         ResolveMaxCompletionTokens(
-                            "GROQ_BLENDER_MAX_TOKENS",
-                            DefaultGroqMaxCompletionTokens
+                            provider.IsGroq
+                                ? (string.Equals(
+                                    provider.Model,
+                                    groqModel,
+                                    StringComparison.OrdinalIgnoreCase
+                                )
+                                    ? "GROQ_BLENDER_MAX_TOKENS"
+                                    : "GROQ_BLENDER_FALLBACK_MAX_TOKENS")
+                                : "BLENDER_FALLBACK_MAX_TOKENS",
+                            provider.IsGroq
+                                ? (string.Equals(
+                                    provider.Model,
+                                    groqModel,
+                                    StringComparison.OrdinalIgnoreCase
+                                )
+                                    ? DefaultGroqMaxCompletionTokens
+                                    : DefaultGroqFallbackMaxCompletionTokens)
+                                : DefaultGroqFallbackMaxCompletionTokens
                         )
                     );
                 }
@@ -859,58 +991,163 @@ namespace AI_Assistant.AI
                 {
                     throw;
                 }
-                catch (OperationCanceledException ex)
-                {
-                    groqError = new InvalidOperationException(
-                        "Groq provider timeout/abort: " + ex.Message,
-                        ex
-                    );
-                }
                 catch (Exception ex)
                 {
-                    groqError = ex;
+                    lastFailure = ex;
+                    if (provider.IsGroq
+                        && !IsToolCallFormatFailure(ex)
+                        && IsProviderTransportFailure(ex))
+                    {
+                        skipSameGroqFallback = true;
+                    }
+                    activity(
+                        "[BLENDER PROVIDER] "
+                        + provider.Name
+                        + " failed · "
+                        + Trim(ex.Message, 500)
+                    );
+                    if (IsToolCallFormatFailure(ex))
+                    {
+                        providerMessages = AddToolCallRepairHint(messages);
+                    }
                 }
             }
-            else
+
+            throw new InvalidOperationException(
+                "Svi Blender LLM fallback provideri su nedostupni. Posljednja greška: "
+                + Trim(lastFailure?.Message ?? "nepoznata greška", 1200),
+                lastFailure
+            );
+        }
+
+        private static List<CompletionProvider> BuildCompletionProviders(
+            string? groqApiKey,
+            string groqModel
+        )
+        {
+            List<CompletionProvider> providers = new List<CompletionProvider>();
+            if (!string.IsNullOrWhiteSpace(groqApiKey))
             {
-                groqError = new InvalidOperationException("GROQ_API_KEY nije konfigurisan.");
+                providers.Add(
+                    new CompletionProvider(
+                        "Groq",
+                        GroqEndpoint,
+                        groqApiKey,
+                        groqModel,
+                        true
+                    )
+                );
+
+                string fallbackModel =
+                    Environment.GetEnvironmentVariable("GROQ_BLENDER_FALLBACK_MODEL")
+                    ?? Environment.GetEnvironmentVariable("GROQ_MODEL")
+                    ?? DefaultGroqFallbackModel;
+                if (string.IsNullOrWhiteSpace(fallbackModel)
+                    || string.Equals(fallbackModel, groqModel, StringComparison.OrdinalIgnoreCase))
+                {
+                    fallbackModel = DefaultGroqFallbackModel;
+                }
+
+                providers.Add(
+                    new CompletionProvider(
+                        "Groq direct fallback",
+                        GroqEndpoint,
+                        groqApiKey,
+                        fallbackModel,
+                        true
+                    )
+                );
             }
 
-            Exception failure = groqError
-                ?? new InvalidOperationException("Groq provider nije vratio odgovor.");
-
-            List<object> fallbackMessages = IsToolCallFormatFailure(failure)
-                ? AddToolCallRepairHint(messages)
-                : messages;
-
-            string fallbackModel =
-                Environment.GetEnvironmentVariable("GROQ_BLENDER_FALLBACK_MODEL")
-                ?? Environment.GetEnvironmentVariable("GROQ_MODEL")
-                ?? DefaultGroqFallbackModel;
-            if (string.IsNullOrWhiteSpace(fallbackModel)
-                || string.Equals(fallbackModel, groqModel, StringComparison.OrdinalIgnoreCase))
+            string? minimaxKey = Environment.GetEnvironmentVariable("MINIMAX_API_KEY");
+            if (!string.IsNullOrWhiteSpace(minimaxKey))
             {
-                fallbackModel = DefaultGroqFallbackModel;
+                string minimaxBase = Environment.GetEnvironmentVariable("MINIMAX_BASE_URL")
+                    ?? "https://api.minimax.io/v1";
+                providers.Add(
+                    new CompletionProvider(
+                        "MiniMax",
+                        ToCompletionEndpoint(minimaxBase),
+                        minimaxKey,
+                        Environment.GetEnvironmentVariable("MINIMAX_MODEL") ?? "MiniMax-M2.7",
+                        false
+                    )
+                );
             }
 
-            activity(
-                "[BLENDER PROVIDER] Groq primary unavailable; using direct Groq fallback · "
-                + fallbackModel
-                + " ("
-                + Trim(failure.Message, 300)
-                + ")"
-            );
+            string? inclusionKey = Environment.GetEnvironmentVariable("INCLUSIONAI_API_KEY");
+            string? inclusionBase = Environment.GetEnvironmentVariable("INCLUSIONAI_BASE_URL");
+            if (!string.IsNullOrWhiteSpace(inclusionKey)
+                && !string.IsNullOrWhiteSpace(inclusionBase))
+            {
+                providers.Add(
+                    new CompletionProvider(
+                        "InclusionAI",
+                        ToCompletionEndpoint(inclusionBase),
+                        inclusionKey,
+                        Environment.GetEnvironmentVariable("INCLUSIONAI_MODEL")
+                            ?? "inclusionai/ling-3.0-flash",
+                        false
+                    )
+                );
+            }
 
-            return await SendCompletionAsync(
-                GroqEndpoint,
-                groqApiKey ?? "",
-                fallbackModel,
-                fallbackMessages,
-                ResolveMaxCompletionTokens(
-                    "GROQ_BLENDER_FALLBACK_MAX_TOKENS",
-                    DefaultGroqFallbackMaxCompletionTokens
-                )
-            );
+            return providers;
+        }
+
+        private static List<CompletionProvider> BuildVisionProviders(string groqVisionModel)
+        {
+            List<CompletionProvider> providers = new List<CompletionProvider>();
+            string? groqKey = Environment.GetEnvironmentVariable("GROQ_API_KEY");
+            if (!string.IsNullOrWhiteSpace(groqKey))
+            {
+                providers.Add(new CompletionProvider(
+                    "Groq",
+                    GroqEndpoint,
+                    groqKey,
+                    groqVisionModel,
+                    true
+                ));
+            }
+
+            string? minimaxKey = Environment.GetEnvironmentVariable("MINIMAX_API_KEY");
+            if (!string.IsNullOrWhiteSpace(minimaxKey))
+            {
+                providers.Add(new CompletionProvider(
+                    "MiniMax",
+                    ToCompletionEndpoint(Environment.GetEnvironmentVariable("MINIMAX_BASE_URL")
+                        ?? "https://api.minimax.io/v1"),
+                    minimaxKey,
+                    Environment.GetEnvironmentVariable("MINIMAX_VISION_MODEL") ?? "MiniMax-M3",
+                    false
+                ));
+            }
+
+            string? inclusionKey = Environment.GetEnvironmentVariable("INCLUSIONAI_API_KEY");
+            string? inclusionBase = Environment.GetEnvironmentVariable("INCLUSIONAI_BASE_URL");
+            string? inclusionVisionModel = Environment.GetEnvironmentVariable("INCLUSIONAI_VISION_MODEL");
+            if (!string.IsNullOrWhiteSpace(inclusionKey)
+                && !string.IsNullOrWhiteSpace(inclusionBase)
+                && !string.IsNullOrWhiteSpace(inclusionVisionModel))
+            {
+                providers.Add(new CompletionProvider(
+                    "InclusionAI",
+                    ToCompletionEndpoint(inclusionBase),
+                    inclusionKey,
+                    inclusionVisionModel,
+                    false
+                ));
+            }
+
+            return providers;
+        }
+
+        private static string ToCompletionEndpoint(string baseUrl)
+        {
+            string value = baseUrl.Trim().TrimEnd('/');
+            return value.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase)
+                ? value
+                : value + "/chat/completions";
         }
 
         private static bool IsToolCallFormatFailure(Exception failure)
@@ -920,6 +1157,24 @@ namespace AI_Assistant.AI
                 || message.Contains("parse tool call arguments", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("unexpected end of JSON", StringComparison.OrdinalIgnoreCase)
                 || message.Contains("neispravan Blender MCP tool call", StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool IsProviderTransportFailure(Exception failure)
+        {
+            if (failure is HttpRequestException)
+            {
+                return true;
+            }
+
+            string message = failure.ToString();
+            return message.Contains("timeout/abort", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("Provider HTTP 408", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("Provider HTTP 429", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("Provider HTTP 499", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("Provider HTTP 500", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("Provider HTTP 502", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("Provider HTTP 503", StringComparison.OrdinalIgnoreCase)
+                || message.Contains("Provider HTTP 504", StringComparison.OrdinalIgnoreCase);
         }
 
         private static List<object> AddToolCallRepairHint(List<object> messages)
@@ -1028,9 +1283,7 @@ namespace AI_Assistant.AI
         }
 
         private async Task<JsonDocument> SendCompletionAsync(
-            string endpoint,
-            string apiKey,
-            string model,
+            CompletionProvider provider,
             List<object> messages,
             int maxCompletionTokens
         )
@@ -1050,58 +1303,152 @@ namespace AI_Assistant.AI
 
             Dictionary<string, object?> body = new Dictionary<string, object?>
             {
-                ["model"] = model,
+                ["model"] = provider.Model,
                 ["messages"] = messages,
                 ["tools"] = groqTools,
                 ["tool_choice"] = "auto",
-                ["parallel_tool_calls"] = false,
                 ["temperature"] = 0.1,
                 ["max_completion_tokens"] = maxCompletionTokens,
-                ["reasoning_effort"] = model.StartsWith(
-                    "qwen/",
-                    StringComparison.OrdinalIgnoreCase
-                ) ? "none" : "low"
             };
 
-            using HttpRequestMessage request = new HttpRequestMessage(
-                HttpMethod.Post,
-                endpoint
-            );
-            request.Headers.Authorization =
-                new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", apiKey);
-            request.Content = new StringContent(
-                JsonSerializer.Serialize(body),
-                Encoding.UTF8,
-                "application/json"
-            );
+            if (provider.IsGroq)
+            {
+                body["parallel_tool_calls"] = false;
+                body["reasoning_effort"] = provider.Model.StartsWith(
+                    "qwen/",
+                    StringComparison.OrdinalIgnoreCase
+                ) ? "none" : "low";
+            }
 
-            using HttpResponseMessage response = await httpClient.SendAsync(
-                request,
+            string serializedBody = JsonSerializer.Serialize(body);
+            Exception? lastFailure = null;
+            for (int attempt = 1; attempt <= MaxProviderAttempts; attempt++)
+            {
+                try
+                {
+                    using HttpRequestMessage request = new HttpRequestMessage(
+                        HttpMethod.Post,
+                        provider.Endpoint
+                    );
+                    request.Headers.Authorization =
+                        new System.Net.Http.Headers.AuthenticationHeaderValue(
+                            "Bearer",
+                            provider.ApiKey
+                        );
+                    request.Content = new StringContent(
+                        serializedBody,
+                        Encoding.UTF8,
+                        "application/json"
+                    );
+
+                    using CancellationTokenSource timeout = new CancellationTokenSource(
+                        TimeSpan.FromSeconds(ResolveTimeoutSeconds(
+                            provider.IsGroq
+                                ? "GROQ_BLENDER_REQUEST_TIMEOUT_SECONDS"
+                                : "BLENDER_FALLBACK_REQUEST_TIMEOUT_SECONDS",
+                            DefaultProviderRequestTimeoutSeconds
+                        ))
+                    );
+                    using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
+                        timeout.Token,
+                        AgentCancellationHub.Token
+                    );
+
+                    using HttpResponseMessage response = await httpClient.SendAsync(
+                        request,
+                        linked.Token
+                    );
+                    string text = await response.Content.ReadAsStringAsync(linked.Token);
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        string message =
+                            "Provider HTTP "
+                            + (int)response.StatusCode
+                            + ": "
+                            + Trim(text, 2000);
+                        if (IsTransientStatus(response.StatusCode)
+                            && attempt < MaxProviderAttempts)
+                        {
+                            lastFailure = new InvalidOperationException(message);
+                            await DelayProviderRetryAsync(provider.Name, attempt);
+                            continue;
+                        }
+
+                        throw new InvalidOperationException(message);
+                    }
+
+                    JsonDocument document = JsonDocument.Parse(text);
+                    // Validate the OpenAI-compatible envelope here so a malformed
+                    // provider response can enter the next fallback instead of
+                    // failing later with an opaque dictionary lookup exception.
+                    try
+                    {
+                        _ = ReadAssistantMessage(document);
+                        return document;
+                    }
+                    catch
+                    {
+                        document.Dispose();
+                        throw;
+                    }
+                }
+                catch (OperationCanceledException) when (AgentCancellationHub.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (OperationCanceledException ex)
+                {
+                    lastFailure = new InvalidOperationException(
+                        provider.Name + " request timeout/abort: " + ex.Message,
+                        ex
+                    );
+                    if (attempt >= MaxProviderAttempts)
+                    {
+                        throw lastFailure;
+                    }
+
+                    await DelayProviderRetryAsync(provider.Name, attempt);
+                }
+                catch (HttpRequestException ex)
+                {
+                    lastFailure = ex;
+                    if (attempt >= MaxProviderAttempts)
+                    {
+                        throw;
+                    }
+
+                    await DelayProviderRetryAsync(provider.Name, attempt);
+                }
+            }
+
+            throw lastFailure
+                ?? new InvalidOperationException(provider.Name + " nije vratio odgovor.");
+        }
+
+        private async Task DelayProviderRetryAsync(string providerName, int attempt)
+        {
+            int delaySeconds = Math.Min(6, Math.Max(1, attempt * 2));
+            activity(
+                "[BLENDER PROVIDER] "
+                + providerName
+                + " transient failure; retrying in "
+                + delaySeconds
+                + "s"
+            );
+            await Task.Delay(
+                TimeSpan.FromSeconds(delaySeconds),
                 AgentCancellationHub.Token
             );
-            string text = await response.Content.ReadAsStringAsync(AgentCancellationHub.Token);
+        }
 
-            if (!response.IsSuccessStatusCode)
-            {
-                throw new InvalidOperationException(
-                    "Provider HTTP " + (int)response.StatusCode + ": " + Trim(text, 2000)
-                );
-            }
-
-            JsonDocument document = JsonDocument.Parse(text);
-            // Validate the OpenAI-compatible envelope here so a malformed
-            // Groq response can enter the direct Groq model fallback instead
-            // of failing later with an opaque dictionary lookup exception.
-            try
-            {
-                _ = ReadAssistantMessage(document);
-                return document;
-            }
-            catch
-            {
-                document.Dispose();
-                throw;
-            }
+        private static bool IsTransientStatus(HttpStatusCode statusCode)
+        {
+            return statusCode == HttpStatusCode.RequestTimeout
+                || statusCode == HttpStatusCode.InternalServerError
+                || statusCode == HttpStatusCode.BadGateway
+                || statusCode == HttpStatusCode.ServiceUnavailable
+                || statusCode == HttpStatusCode.GatewayTimeout;
         }
 
         private static int ResolveMaxCompletionTokens(string variableName, int defaultValue)
@@ -1113,6 +1460,14 @@ namespace AI_Assistant.AI
             }
 
             return defaultValue;
+        }
+
+        private static int ResolveTimeoutSeconds(string variableName, int defaultValue)
+        {
+            string? configured = Environment.GetEnvironmentVariable(variableName);
+            return int.TryParse(configured, out int value)
+                ? Math.Clamp(value, 15, 600)
+                : defaultValue;
         }
 
         private static JsonElement CompactSchema(JsonElement schema)
@@ -1207,7 +1562,10 @@ namespace AI_Assistant.AI
             await mcpInput.FlushAsync();
 
             using CancellationTokenSource timeout = new CancellationTokenSource(
-                TimeSpan.FromSeconds(RequestTimeoutSeconds)
+                TimeSpan.FromSeconds(ResolveTimeoutSeconds(
+                    "BLENDER_MCP_REQUEST_TIMEOUT_SECONDS",
+                    DefaultMcpRequestTimeoutSeconds
+                ))
             );
             using CancellationTokenSource linked = CancellationTokenSource.CreateLinkedTokenSource(
                 timeout.Token,
@@ -1438,6 +1796,30 @@ namespace AI_Assistant.AI
                 Succeeded = succeeded;
                 Passed = passed;
                 Feedback = feedback;
+            }
+        }
+
+        private sealed class CompletionProvider
+        {
+            public string Name { get; }
+            public string Endpoint { get; }
+            public string ApiKey { get; }
+            public string Model { get; }
+            public bool IsGroq { get; }
+
+            public CompletionProvider(
+                string name,
+                string endpoint,
+                string apiKey,
+                string model,
+                bool isGroq
+            )
+            {
+                Name = name;
+                Endpoint = endpoint;
+                ApiKey = apiKey;
+                Model = model;
+                IsGroq = isGroq;
             }
         }
 
