@@ -1371,7 +1371,9 @@ namespace AI_Assistant.AI
                 ["model"] = provider.Model,
                 ["messages"] = messages,
                 ["tools"] = groqTools,
-                ["tool_choice"] = "auto",
+                ["tool_choice"] = provider.IsGroq || messages.Count > 2
+                    ? "auto"
+                    : "required",
                 ["temperature"] = 0.1,
             };
 
