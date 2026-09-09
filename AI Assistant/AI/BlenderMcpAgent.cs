@@ -461,12 +461,15 @@ namespace AI_Assistant.AI
                 activity("[BLENDER REVIEW] capturing viewport · review " + reviewNumber);
                 string rawResult = await CallMcpToolAsync(
                     ViewportScreenshotToolName,
-                    "{}"
+                    "{\"max_size\":800}"
                 );
                 McpImagePayload? image = FindMcpImage(rawResult);
                 if (image == null || string.IsNullOrWhiteSpace(image.Data))
                 {
-                    activity("[BLENDER REVIEW] MCP nije vratio image content");
+                    activity(
+                        "[BLENDER REVIEW] MCP nije vratio image content · "
+                        + Trim(rawResult, 800)
+                    );
                     return null;
                 }
 
@@ -891,7 +894,10 @@ namespace AI_Assistant.AI
                     string mimeType = element.TryGetProperty("mimeType", out JsonElement mime)
                         && mime.ValueKind == JsonValueKind.String
                         ? mime.GetString() ?? "image/png"
-                        : "image/png";
+                        : element.TryGetProperty("mime_type", out JsonElement snakeMime)
+                            && snakeMime.ValueKind == JsonValueKind.String
+                            ? snakeMime.GetString() ?? "image/png"
+                            : "image/png";
                     return new McpImagePayload(data.GetString() ?? "", mimeType);
                 }
 
