@@ -18,7 +18,7 @@ namespace AI_Assistant.AI
     /// <summary>
     /// Small MCP client for the official Blender Lab server.
     /// The MCP server is launched through uvx and talks to Blender's addon on localhost:9876.
-    /// Blender MCP uses Groq first, then configured direct provider fallbacks.
+    /// Blender MCP uses Groq first, then OpenRouter as the provider aggregator.
     /// </summary>
     public sealed class BlenderMcpAgent : IDisposable
     {
@@ -650,6 +650,7 @@ namespace AI_Assistant.AI
             }
 
             Exception? lastFailure = null;
+            List<string> failures = new List<string>();
             foreach (CompletionProvider provider in providers)
             {
                 for (int attempt = 1; attempt <= MaxProviderAttempts; attempt++)
@@ -752,6 +753,7 @@ namespace AI_Assistant.AI
                             provider.Name + " vision timeout/abort: " + ex.Message,
                             ex
                         );
+                        failures.Add(provider.Name + ": " + Trim(lastFailure.Message, 500));
                         if (attempt < MaxProviderAttempts)
                         {
                             await DelayProviderRetryAsync(provider.Name + " vision", attempt);
@@ -763,6 +765,7 @@ namespace AI_Assistant.AI
                     catch (Exception ex)
                     {
                         lastFailure = ex;
+                        failures.Add(provider.Name + ": " + Trim(ex.Message, 500));
                         activity(
                             "[BLENDER REVIEW] "
                             + provider.Name
@@ -775,8 +778,10 @@ namespace AI_Assistant.AI
             }
 
             throw new InvalidOperationException(
-                "Svi Blender vision fallback provideri su nedostupni. Posljednja greška: "
-                + Trim(lastFailure?.Message ?? "nepoznata greška", 1000),
+                "Blender vision provider chain nije uspio. Detalji: "
+                + (failures.Count > 0
+                    ? string.Join(" | ", failures)
+                    : Trim(lastFailure?.Message ?? "nepoznata greška", 1000)),
                 lastFailure
             );
         }
@@ -946,6 +951,7 @@ namespace AI_Assistant.AI
             }
 
             Exception? lastFailure = null;
+            List<string> failures = new List<string>();
             List<object> providerMessages = messages;
             bool skipSameGroqFallback = false;
             foreach (CompletionProvider provider in providers)
@@ -999,6 +1005,7 @@ namespace AI_Assistant.AI
                 catch (Exception ex)
                 {
                     lastFailure = ex;
+                    failures.Add(provider.Name + ": " + Trim(ex.Message, 500));
                     if (provider.IsGroq
                         && !IsToolCallFormatFailure(ex)
                         && IsProviderTransportFailure(ex))
@@ -1019,8 +1026,10 @@ namespace AI_Assistant.AI
             }
 
             throw new InvalidOperationException(
-                "Svi Blender LLM fallback provideri su nedostupni. Posljednja greška: "
-                + Trim(lastFailure?.Message ?? "nepoznata greška", 1200),
+                "Blender provider chain nije uspio. Detalji: "
+                + (failures.Count > 0
+                    ? string.Join(" | ", failures)
+                    : Trim(lastFailure?.Message ?? "nepoznata greška", 1200)),
                 lastFailure
             );
         }
