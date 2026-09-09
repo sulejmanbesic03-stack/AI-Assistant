@@ -9,6 +9,7 @@ using System.Threading.Tasks;
 using System.Windows;
 using System.Windows.Input;
 using System.Windows.Media;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 
 namespace AI_Assistant
@@ -33,6 +34,11 @@ namespace AI_Assistant
 
         private void MainWindow_Closed(object? sender, EventArgs e)
         {
+            if (ai != null)
+            {
+                ai.PreviewReady -= OnPreviewReady;
+                ai.Activity -= OnAgentActivity;
+            }
             ai?.Dispose();
             ai = null;
         }
@@ -43,6 +49,7 @@ namespace AI_Assistant
             {
                 ai = CreateAgent();
                 ai.Activity += OnAgentActivity;
+                ai.PreviewReady += OnPreviewReady;
 
                 SetStatus(
                     "Spreman · " + AgentVersion.Version,
@@ -51,6 +58,7 @@ namespace AI_Assistant
 
                 SetBusy(false);
                 RefreshLiveInspector();
+                LoadPreview(ai.LastPreviewPath);
 
                 AddMessage(
                     "Assistant",
@@ -215,6 +223,57 @@ namespace AI_Assistant
                 + latestActivity;
         }
 
+        private void OnPreviewReady(string path)
+        {
+            void Apply()
+            {
+                LoadPreview(path);
+                RefreshLiveInspector();
+            }
+
+            if (Dispatcher.CheckAccess())
+            {
+                Apply();
+                return;
+            }
+
+            Dispatcher.BeginInvoke((Action)Apply);
+        }
+
+        private void LoadPreview(string? path)
+        {
+            if (string.IsNullOrWhiteSpace(path) || !File.Exists(path))
+            {
+                PreviewImage.Source = null;
+                PreviewImage.Visibility = Visibility.Collapsed;
+                PreviewEmptyState.Visibility = Visibility.Visible;
+                PreviewStatusText.Text = "Čeka vizuelnu referencu";
+                return;
+            }
+
+            try
+            {
+                BitmapImage image = new BitmapImage();
+                image.BeginInit();
+                image.UriSource = new Uri(path, UriKind.Absolute);
+                image.CacheOption = BitmapCacheOption.OnLoad;
+                image.EndInit();
+                image.Freeze();
+
+                PreviewImage.Source = image;
+                PreviewImage.Visibility = Visibility.Visible;
+                PreviewEmptyState.Visibility = Visibility.Collapsed;
+                PreviewStatusText.Text = "Nova interna referenca";
+            }
+            catch (Exception ex)
+            {
+                PreviewImage.Source = null;
+                PreviewImage.Visibility = Visibility.Collapsed;
+                PreviewEmptyState.Visibility = Visibility.Visible;
+                PreviewStatusText.Text = "Preview nije moguće učitati: " + ex.GetType().Name;
+            }
+        }
+
         private static string FormatActivity(string message)
         {
             string raw = (message ?? "").Trim();
@@ -275,6 +334,11 @@ namespace AI_Assistant
             if (raw.StartsWith("[ROUTER]", StringComparison.OrdinalIgnoreCase))
             {
                 return "Routing task · " + TrimPrefix(raw, "[ROUTER]");
+            }
+
+            if (raw.StartsWith("[PREVIEW]", StringComparison.OrdinalIgnoreCase))
+            {
+                return "Visual preview · " + TrimPrefix(raw, "[PREVIEW]");
             }
 
             if (raw.StartsWith("[BLENDER PROVIDER]", StringComparison.OrdinalIgnoreCase))

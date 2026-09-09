@@ -17,6 +17,7 @@ namespace AI_Assistant.AI
         private readonly AgentOrchestratorV2 agentV2;
         private readonly BlenderMcpAgent blenderMcp;
         private readonly IntentRouter intentRouter;
+        private readonly VisualPreviewService visualPreview;
         private readonly RuntimeSettings settings;
         private readonly UnityBridgeTools unityTools;
 
@@ -25,7 +26,9 @@ namespace AI_Assistant.AI
         private string pendingHighRiskPrompt = "";
 
         public event Action<string>? Activity;
+        public event Action<string>? PreviewReady;
         public RuntimeSettings Settings => settings;
+        public string? LastPreviewPath => visualPreview.LastPreviewPath;
 
         public AssistantRuntime(List<string> allowedRoots, string projectFilePath, string sourceRoot, string updaterProjectPath)
         {
@@ -38,6 +41,7 @@ namespace AI_Assistant.AI
             agentV2 = new AgentOrchestratorV2(unityTools, tempCapabilities, ReportActivity);
             blenderMcp = new BlenderMcpAgent(ReportActivity);
             intentRouter = new IntentRouter(ReportActivity);
+            visualPreview = new VisualPreviewService(ReportActivity);
         }
 
         public async Task<string> Ask(string prompt)
@@ -72,6 +76,7 @@ namespace AI_Assistant.AI
             AgentCancellationHub.CancelCurrent();
             blenderMcp.Dispose();
             intentRouter.Dispose();
+            visualPreview.Dispose();
         }
 
         private async Task<string> RouteApprovedAsync(string normalizedPrompt)
@@ -101,6 +106,7 @@ namespace AI_Assistant.AI
                 lastBlenderGoal = normalizedPrompt;
                 lastUnityV2Goal = "";
                 ReportActivity("[ROUTER] Blender MCP · Groq Qwen 3.6 27B");
+                await GenerateVisualPreviewAsync(normalizedPrompt);
                 return await blenderMcp.AskAsync(normalizedPrompt);
             }
 
@@ -134,6 +140,7 @@ namespace AI_Assistant.AI
                     lastBlenderGoal = normalizedPrompt;
                     lastUnityV2Goal = "";
                     ReportActivity("[ROUTER] Blender MCP · Groq Qwen 3.6 27B");
+                    await GenerateVisualPreviewAsync(normalizedPrompt);
                     return await blenderMcp.AskAsync(normalizedPrompt);
 
                 case AssistantIntent.Unity:
@@ -162,6 +169,7 @@ namespace AI_Assistant.AI
                 lastBlenderGoal = normalizedPrompt;
                 lastUnityV2Goal = "";
                 ReportActivity("[ROUTER] Blender MCP · emergency fallback");
+                await GenerateVisualPreviewAsync(normalizedPrompt);
                 return await blenderMcp.AskAsync(normalizedPrompt);
             }
 
@@ -214,6 +222,12 @@ namespace AI_Assistant.AI
             {
                 return "Blender → Unity pipeline nije spreman: Unity project root nije konfigurisan ili nema Assets folder.";
             }
+
+            // Visual feedback is deliberately best-effort. It runs before the
+            // Blender stage so the user can see what the asset request was
+            // interpreted as, but a Gemini/image failure must never block MCP
+            // execution or make the app claim that Blender failed.
+            await GenerateVisualPreviewAsync(prompt);
 
             const string generatedAssetName = "GeneratedAsset";
             string relativeAssetPath =
@@ -299,6 +313,18 @@ namespace AI_Assistant.AI
                 + await agentV2.HandleAsync(unityPrompt);
         }
 
+        private async Task GenerateVisualPreviewAsync(string prompt)
+        {
+            string? previewPath = await visualPreview.GenerateAsync(
+                prompt,
+                AgentCancellationHub.Token
+            );
+            if (!string.IsNullOrWhiteSpace(previewPath))
+            {
+                PreviewReady?.Invoke(previewPath);
+            }
+        }
+
         private static bool HasNewExport(
             string path,
             bool hadPreviousExport,
@@ -368,6 +394,9 @@ namespace AI_Assistant.AI
             lines.Add("Blender model: " + (Environment.GetEnvironmentVariable("GROQ_BLENDER_MODEL") ?? "qwen/qwen3.6-27b"));
             lines.Add("Blender fallback model: " + (Environment.GetEnvironmentVariable("GROQ_BLENDER_FALLBACK_MODEL") ?? Environment.GetEnvironmentVariable("GROQ_MODEL") ?? "openai/gpt-oss-120b"));
             lines.Add("Gemini: " + IsKeyConfigured("GEMINI_API_KEY"));
+            lines.Add("Visual preview: " + (IsKeyConfigured("GEMINI_API_KEY") == "configured"
+                ? (Environment.GetEnvironmentVariable("AI_PREVIEW_ENABLED") == "0" ? "disabled" : "Gemini image")
+                : "unavailable (GEMINI_API_KEY missing)"));
             lines.Add("Groq: " + IsKeyConfigured("GROQ_API_KEY"));
             lines.Add("Risk gate: " + (settings.RequireApprovalForDestructiveChanges ? "on" : "off"));
             foreach (string issue in settings.Validate()) lines.Add("Warning: " + issue);

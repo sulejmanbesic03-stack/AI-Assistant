@@ -18,6 +18,20 @@ Blender work uses the official Blender Lab MCP server. AI Assistant is the MCP c
 
 Natural-language requests are classified by a small Groq intent pass. A request such as “napravi muški survival character i pošalji ga u Unity” therefore enters the Blender → Unity pipeline without relying on a hardcoded keyword combination. The original request is passed to Blender unchanged in meaning; the pipeline does not impose a humanoid, gender, or visual style.
 
+### Internal visual preview
+
+For Blender asset requests the desktop app can create an internal concept preview before the MCP run. The preview is generated directly through the Gemini image API, saved outside the repository at `%LOCALAPPDATA%\AI Assistant\Previews\latest.png`, and shown only in the right-side Asset preview panel. It is visual feedback, not a claim that the image itself is the final mesh, and it is never added to the conversation as a chat message.
+
+The preview is optional and best-effort: if `GEMINI_API_KEY` is missing, the image model is unavailable, or the request fails, the Blender and Unity stages continue normally. Set `AI_PREVIEW_ENABLED=0` to disable it. Override the image model with `GEMINI_IMAGE_MODEL`; the default is `gemini-3.1-flash-image`.
+
+The model roles are intentionally separated:
+
+- Groq Qwen 3.6 27B: Blender MCP tool loop and multimodal-capable asset interpretation.
+- Direct Groq GPT-OSS 120B: Blender MCP fallback and intent classification.
+- Gemini image model: internal visual concept/reference preview only.
+- Official Blender MCP: Blender execution transport; it does not pretend to be a text-to-3D generator.
+- Unity Agent V2: Unity project changes, import, scene handoff and live verification.
+
 Requirements:
 
 - Blender 5.1 or newer with the official MCP add-on enabled.

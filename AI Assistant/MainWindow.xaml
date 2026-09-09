@@ -356,6 +356,57 @@
                         </StackPanel>
                     </Border>
 
+                    <Border Style="{StaticResource CardBorder}" Padding="12" Margin="0,12,0,0">
+                        <StackPanel>
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="Asset preview" FontSize="12" FontWeight="Bold" />
+                                    <TextBlock x:Name="PreviewStatusText"
+                                               Text="Čeka vizuelnu referencu"
+                                               Margin="0,3,0,0"
+                                               FontSize="9"
+                                               Foreground="#657186" />
+                                </StackPanel>
+                                <Border Grid.Column="1"
+                                        Style="{StaticResource ChipBorder}"
+                                        VerticalAlignment="Top">
+                                    <TextBlock Text="INTERNAL"
+                                               FontSize="8"
+                                               FontWeight="Bold"
+                                               Foreground="#B9A9FF" />
+                                </Border>
+                            </Grid>
+                            <Border Margin="0,10,0,0"
+                                    Height="178"
+                                    CornerRadius="10"
+                                    Background="#0A101A"
+                                    BorderBrush="#202A3D"
+                                    BorderThickness="1">
+                                <Grid>
+                                    <Image x:Name="PreviewImage"
+                                           Stretch="Uniform"
+                                           SnapsToDevicePixels="True" />
+                                    <StackPanel x:Name="PreviewEmptyState"
+                                                HorizontalAlignment="Center"
+                                                VerticalAlignment="Center">
+                                        <TextBlock Text="✦"
+                                                   HorizontalAlignment="Center"
+                                                   FontSize="25"
+                                                   Foreground="#51477A" />
+                                        <TextBlock Text="Preview će se pojaviti ovdje"
+                                                   Margin="0,5,0,0"
+                                                   FontSize="10"
+                                                   Foreground="#657186" />
+                                    </StackPanel>
+                                </Grid>
+                            </Border>
+                        </StackPanel>
+                    </Border>
+
                     <Border Style="{StaticResource CardBorder}" Padding="15" Margin="0,12,0,0">
                         <StackPanel>
                             <Grid>
