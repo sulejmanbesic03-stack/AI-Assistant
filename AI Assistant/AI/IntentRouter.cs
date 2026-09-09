@@ -230,43 +230,7 @@ namespace AI_Assistant.AI
                 ));
             }
 
-            string? minimaxKey = Environment.GetEnvironmentVariable("MINIMAX_API_KEY");
-            if (!string.IsNullOrWhiteSpace(minimaxKey))
-            {
-                providers.Add(new RouterProvider(
-                    "MiniMax",
-                    ToCompletionEndpoint(Environment.GetEnvironmentVariable("MINIMAX_BASE_URL")
-                        ?? "https://api.minimax.io/v1"),
-                    minimaxKey,
-                    Environment.GetEnvironmentVariable("MINIMAX_MODEL") ?? "MiniMax-M2.7",
-                    false
-                ));
-            }
-
-            string? inclusionKey = Environment.GetEnvironmentVariable("INCLUSIONAI_API_KEY");
-            string? inclusionBase = Environment.GetEnvironmentVariable("INCLUSIONAI_BASE_URL");
-            if (!string.IsNullOrWhiteSpace(inclusionKey)
-                && !string.IsNullOrWhiteSpace(inclusionBase))
-            {
-                providers.Add(new RouterProvider(
-                    "InclusionAI",
-                    ToCompletionEndpoint(inclusionBase),
-                    inclusionKey,
-                    Environment.GetEnvironmentVariable("INCLUSIONAI_MODEL")
-                        ?? "inclusionai/ling-3.0-flash",
-                    false
-                ));
-            }
-
             return providers;
-        }
-
-        private static string ToCompletionEndpoint(string baseUrl)
-        {
-            string value = baseUrl.Trim().TrimEnd('/');
-            return value.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase)
-                ? value
-                : value + "/chat/completions";
         }
 
         private static bool IsTransientFailure(Exception failure)

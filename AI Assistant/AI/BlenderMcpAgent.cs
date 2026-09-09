@@ -98,20 +98,12 @@ namespace AI_Assistant.AI
                 await EnsureConnectedAsync();
 
                 string? apiKey = Environment.GetEnvironmentVariable("GROQ_API_KEY");
-                bool hasMiniMax = !string.IsNullOrWhiteSpace(
-                    Environment.GetEnvironmentVariable("MINIMAX_API_KEY")
-                );
                 bool hasOpenRouter = !string.IsNullOrWhiteSpace(
                     Environment.GetEnvironmentVariable("OPENROUTER_API_KEY")
                 );
-                bool hasInclusionAi = !string.IsNullOrWhiteSpace(
-                    Environment.GetEnvironmentVariable("INCLUSIONAI_API_KEY")
-                ) && !string.IsNullOrWhiteSpace(
-                    Environment.GetEnvironmentVariable("INCLUSIONAI_BASE_URL")
-                );
-                if (string.IsNullOrWhiteSpace(apiKey) && !hasOpenRouter && !hasMiniMax && !hasInclusionAi)
+                if (string.IsNullOrWhiteSpace(apiKey) && !hasOpenRouter)
                 {
-                    return "Nijedan Blender LLM provider nije konfigurisan. Postavi GROQ_API_KEY, OPENROUTER_API_KEY, MINIMAX_API_KEY ili INCLUSIONAI_API_KEY + INCLUSIONAI_BASE_URL.";
+                    return "Nijedan Blender LLM provider nije konfigurisan. Postavi GROQ_API_KEY ili OPENROUTER_API_KEY.";
                 }
 
                 string model = Environment.GetEnvironmentVariable("GROQ_BLENDER_MODEL") ?? "";
@@ -653,7 +645,7 @@ namespace AI_Assistant.AI
             if (providers.Count == 0)
             {
                 throw new InvalidOperationException(
-                    "Nijedan vision provider nije konfigurisan. Postavi GROQ_API_KEY ili OPENROUTER_API_KEY; za MiniMax postavi MINIMAX_API_KEY."
+                    "Nijedan vision provider nije konfigurisan. Postavi GROQ_API_KEY ili OPENROUTER_API_KEY."
                 );
             }
 
@@ -1088,39 +1080,6 @@ namespace AI_Assistant.AI
                 );
             }
 
-            string? minimaxKey = Environment.GetEnvironmentVariable("MINIMAX_API_KEY");
-            if (!string.IsNullOrWhiteSpace(minimaxKey))
-            {
-                string minimaxBase = Environment.GetEnvironmentVariable("MINIMAX_BASE_URL")
-                    ?? "https://api.minimax.io/v1";
-                providers.Add(
-                    new CompletionProvider(
-                        "MiniMax",
-                        ToCompletionEndpoint(minimaxBase),
-                        minimaxKey,
-                        Environment.GetEnvironmentVariable("MINIMAX_MODEL") ?? "MiniMax-M2.7",
-                        false
-                    )
-                );
-            }
-
-            string? inclusionKey = Environment.GetEnvironmentVariable("INCLUSIONAI_API_KEY");
-            string? inclusionBase = Environment.GetEnvironmentVariable("INCLUSIONAI_BASE_URL");
-            if (!string.IsNullOrWhiteSpace(inclusionKey)
-                && !string.IsNullOrWhiteSpace(inclusionBase))
-            {
-                providers.Add(
-                    new CompletionProvider(
-                        "InclusionAI",
-                        ToCompletionEndpoint(inclusionBase),
-                        inclusionKey,
-                        Environment.GetEnvironmentVariable("INCLUSIONAI_MODEL")
-                            ?? "inclusionai/ling-3.0-flash",
-                        false
-                    )
-                );
-            }
-
             return providers;
         }
 
@@ -1155,44 +1114,7 @@ namespace AI_Assistant.AI
                 ));
             }
 
-            string? minimaxKey = Environment.GetEnvironmentVariable("MINIMAX_API_KEY");
-            if (!string.IsNullOrWhiteSpace(minimaxKey))
-            {
-                providers.Add(new CompletionProvider(
-                    "MiniMax",
-                    ToCompletionEndpoint(Environment.GetEnvironmentVariable("MINIMAX_BASE_URL")
-                        ?? "https://api.minimax.io/v1"),
-                    minimaxKey,
-                    Environment.GetEnvironmentVariable("MINIMAX_VISION_MODEL") ?? "MiniMax-M3",
-                    false
-                ));
-            }
-
-            string? inclusionKey = Environment.GetEnvironmentVariable("INCLUSIONAI_API_KEY");
-            string? inclusionBase = Environment.GetEnvironmentVariable("INCLUSIONAI_BASE_URL");
-            string? inclusionVisionModel = Environment.GetEnvironmentVariable("INCLUSIONAI_VISION_MODEL");
-            if (!string.IsNullOrWhiteSpace(inclusionKey)
-                && !string.IsNullOrWhiteSpace(inclusionBase)
-                && !string.IsNullOrWhiteSpace(inclusionVisionModel))
-            {
-                providers.Add(new CompletionProvider(
-                    "InclusionAI",
-                    ToCompletionEndpoint(inclusionBase),
-                    inclusionKey,
-                    inclusionVisionModel,
-                    false
-                ));
-            }
-
             return providers;
-        }
-
-        private static string ToCompletionEndpoint(string baseUrl)
-        {
-            string value = baseUrl.Trim().TrimEnd('/');
-            return value.EndsWith("/chat/completions", StringComparison.OrdinalIgnoreCase)
-                ? value
-                : value + "/chat/completions";
         }
 
         private static void AddProviderHeaders(
